@@ -39,5 +39,17 @@ export const native = {
     identityFree(handle) {
         addon.identityFree(handle);
     },
+    sessionConnect(host, port, identityHandle) {
+        return addon.sessionConnect(host, port, identityHandle);
+    },
+    sessionRemoteAddr(handle) {
+        return addon.sessionRemoteAddr(handle);
+    },
+    sessionStationNodeId(handle) {
+        return addon.sessionStationNodeId(handle);
+    },
+    sessionClose(handle, identityHandle, reason) {
+        return addon.sessionClose(handle, identityHandle, reason);
+    },
 };
 //# sourceMappingURL=binding.js.map

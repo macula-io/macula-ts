@@ -20,9 +20,10 @@
 // returns a zero/negative sentinel; the caller must free it with
 // macula_free_string. On success `*err_out` is left untouched.
 //
-// Walking skeleton scope only: identity generation and its accessors.
-// No network I/O, no CONNECT/HELLO handshake, no RPC/pubsub/DHT --
-// those are separate, later work (see README.md's status section).
+// Scope so far: identity generation/accessors, plus transport +
+// handshake (Session connect/close). No RPC/pubsub/DHT/content/
+// streaming/UCAN yet -- those are separate, later work (see README.md's
+// status section).
 package main
 
 /*
@@ -32,14 +33,20 @@ package main
 import "C"
 
 import (
+	"context"
 	"errors"
 	"runtime/cgo"
 	"unsafe"
 
+	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/identity"
+	"github.com/macula-io/macula-go/transport"
 )
 
-var errInvalidIdentityHandle = errors.New("macula-ts/cabi: invalid identity handle")
+var (
+	errInvalidIdentityHandle = errors.New("macula-ts/cabi: invalid identity handle")
+	errInvalidSessionHandle  = errors.New("macula-ts/cabi: invalid session handle")
+)
 
 func setErr(errOut **C.char, err error) {
 	if errOut == nil || err == nil {
@@ -75,6 +82,20 @@ func identityFromHandle(h C.uintptr_t) (id identity.KeyPair, ok bool) {
 func deleteHandle(h C.uintptr_t) {
 	defer func() { recover() }()
 	cgo.Handle(h).Delete()
+}
+
+// sessionFromHandle is identityFromHandle's counterpart for
+// *connection.Session -- same guard, same reason: cgo.Handle.Value
+// panics on a handle this process never issued (or already freed)
+// instead of returning an error.
+func sessionFromHandle(h C.uintptr_t) (s *connection.Session, ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	s, ok = cgo.Handle(h).Value().(*connection.Session)
+	return
 }
 
 // bytes32FromC reads a fixed 32-byte C buffer into a Go []byte.
@@ -144,6 +165,93 @@ func macula_identity_private_bytes(identityHandle C.uintptr_t, out32 *C.uchar) C
 //export macula_identity_free
 func macula_identity_free(identityHandle C.uintptr_t) {
 	deleteHandle(identityHandle)
+}
+
+// macula_session_connect dials host:port and completes the full
+// CONNECT/HELLO handshake via connection.Connect, using WebPKI trust
+// (standard CA-bundle validation -- what the real production fleet
+// presents; Pinned/Insecure trust modes are not exposed yet, future
+// work). This is a real network round trip and can take up to
+// connection.HandshakeTimeout (30s, enforced internally by macula-go,
+// not duplicated here) -- like every export in this file, it has no
+// async awareness of its own; running it off the Node main thread is
+// addon/binding.cc's job (see ConnectWorker there), not cabi's.
+//
+//export macula_session_connect
+func macula_session_connect(host *C.char, port C.uint16_t, identityHandle C.uintptr_t, errOut **C.char) C.uintptr_t {
+	id, ok := identityFromHandle(identityHandle)
+	if !ok {
+		setErr(errOut, errInvalidIdentityHandle)
+		return 0
+	}
+	session, err := connection.Connect(context.Background(), C.GoString(host), uint16(port), transport.WebPKI{}, id)
+	if err != nil {
+		setErr(errOut, err)
+		return 0
+	}
+	return C.uintptr_t(cgo.NewHandle(session))
+}
+
+// macula_session_remote_addr returns the session's remote address as a
+// newly-allocated C string; the caller must free it via
+// macula_free_string.
+//
+//export macula_session_remote_addr
+func macula_session_remote_addr(sessionHandle C.uintptr_t, errOut **C.char) *C.char {
+	s, ok := sessionFromHandle(sessionHandle)
+	if !ok {
+		setErr(errOut, errInvalidSessionHandle)
+		return nil
+	}
+	return C.CString(s.RemoteAddr())
+}
+
+// macula_session_station_node_id copies the station's HELLO-verified
+// 32-byte NodeID (Ed25519 public key) into out32 -- proof, beyond "no
+// error was thrown", that this is a real, application-layer-verified
+// session: frame.Verify already checked this NodeID's signature over
+// the HELLO frame inside connection.Connect: this just surfaces it.
+//
+//export macula_session_station_node_id
+func macula_session_station_node_id(sessionHandle C.uintptr_t, out32 *C.uchar) C.int {
+	s, ok := sessionFromHandle(sessionHandle)
+	if !ok {
+		return -1
+	}
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(out32)), 32)
+	copy(dst, s.Station.NodeID)
+	return 0
+}
+
+// macula_session_close sends a signed GOODBYE and closes the
+// underlying QUIC connection (connection.Session.Close), then frees
+// the session handle -- a session is not meant to be reused after
+// this, closed or not. Requires identityHandle to still be a valid,
+// non-freed identity (Close signs GOODBYE with it): callers must not
+// dispose an Identity before closing every Session opened with it.
+// Close has an internal 250ms drain sleep plus a network write, so
+// like Connect this must run off the Node main thread (see
+// addon/binding.cc's CloseWorker).
+//
+//export macula_session_close
+func macula_session_close(sessionHandle C.uintptr_t, identityHandle C.uintptr_t, reason *C.char, errOut **C.char) C.int {
+	s, ok := sessionFromHandle(sessionHandle)
+	if !ok {
+		setErr(errOut, errInvalidSessionHandle)
+		return -1
+	}
+	id, ok := identityFromHandle(identityHandle)
+	if !ok {
+		setErr(errOut, errInvalidIdentityHandle)
+		return -1
+	}
+	err := s.Close(C.GoString(reason), nil, id)
+	deleteHandle(sessionHandle) // the Go-side connection is gone either way
+	if err != nil {
+		setErr(errOut, err)
+		return -1
+	}
+	return 0
 }
 
 func main() {} // required by -buildmode=c-shared, never actually run

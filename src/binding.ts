@@ -27,6 +27,16 @@ const addon = require("node-gyp-build")(repoRoot) as {
   identityNodeId(handle: Handle): Uint8Array;
   identityPrivateBytes(handle: Handle): Uint8Array;
   identityFree(handle: Handle): void;
+  // sessionConnect/sessionClose are backed by Napi::AsyncWorker on the
+  // C++ side (see addon/binding.cc) specifically because they're real
+  // network I/O -- a synchronous FFI call here would block the whole
+  // Node event loop for the duration of a QUIC dial + handshake (up to
+  // ~30s) or a close's drain sleep. They genuinely return Promises,
+  // not a sync call wrapped in Promise.resolve().
+  sessionConnect(host: string, port: number, identityHandle: Handle): Promise<bigint>;
+  sessionRemoteAddr(handle: Handle): string;
+  sessionStationNodeId(handle: Handle): Uint8Array;
+  sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void>;
 };
 
 // The addon always returns BigInt (see addon/binding.cc's comment on
@@ -53,5 +63,17 @@ export const native = {
   },
   identityFree(handle: Handle): void {
     addon.identityFree(handle);
+  },
+  sessionConnect(host: string, port: number, identityHandle: Handle): Promise<bigint> {
+    return addon.sessionConnect(host, port, identityHandle);
+  },
+  sessionRemoteAddr(handle: Handle): string {
+    return addon.sessionRemoteAddr(handle);
+  },
+  sessionStationNodeId(handle: Handle): Uint8Array {
+    return addon.sessionStationNodeId(handle);
+  },
+  sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void> {
+    return addon.sessionClose(handle, identityHandle, reason);
   },
 };

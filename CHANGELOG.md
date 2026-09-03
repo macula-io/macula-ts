@@ -2,6 +2,66 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-09-03
+
+Transport + handshake: `Session.connect`/`close`, live-verified against the
+real production fleet. Builds directly on 0.2.0's addon/packaging with no
+changes to that layer's shape.
+
+### Added
+
+- `cabi/main.go`: `macula_session_connect`, `macula_session_remote_addr`,
+  `macula_session_station_node_id`, `macula_session_close` -- thin exports
+  over macula-go's `connection.Connect`/`Session.Close` (WebPKI trust only
+  so far; `Pinned`/`Insecure` are future work). `sessionFromHandle` mirrors
+  `identityFromHandle`'s `recover()`-guarded lookup for the new handle type.
+- `addon/binding.cc`: `SessionConnect`/`SessionClose` are the first
+  `Napi::AsyncWorker`-backed exports in this addon -- both are real network
+  I/O (a QUIC dial + signed handshake round trip for connect; a 250ms drain
+  sleep + write for close), so both run on a libuv threadpool thread and
+  resolve/reject a real `Promise`, never blocking Node's main thread.
+  `SessionRemoteAddr`/`SessionStationNodeId` stay synchronous (pure local
+  memory reads, no I/O, same shape as the identity accessors).
+- `src/session.ts`: `Session.connect()` / `.remoteAddr` / `.stationNodeId` /
+  `.close()`. Mirrors `Identity`'s handle-lifecycle pattern (post-close
+  accessors throw, `close()` is idempotent) rather than inventing a new
+  convention. Adds `Identity#handleForFfi()` (package-internal) since JS
+  private fields are unreachable from outside a class body even within the
+  same package -- `Session` needs `Identity`'s raw handle to connect/close.
+- `src/session.test.ts` (offline, default CI): a doomed `connect()`
+  rejects with a real, bounded error instead of hanging forever.
+- `src/session.live.test.ts` (opt-in via `MACULA_TS_LIVE`, see README.md):
+  a real handshake against `station-de-frankfurt.macula.io:4433`,
+  post-close accessor guards, double-close idempotency -- all against an
+  actual connected session, not fakeable offline.
+- `.github/workflows/ci.yml`: a `workflow_dispatch`-only `test-live` job
+  running the live suite manually; the default push/PR job is unchanged
+  (still never touches the network beyond what `session.test.ts`'s doomed
+  localhost dial already did).
+
+### Verified
+
+- Real handshake against the real Frankfurt station: CONNECT sent,
+  Ed25519-signed HELLO received back and signature-verified,
+  `session.stationNodeId` is the station's real 32-byte NodeID (not all
+  zero) -- ~70-380ms depending on run.
+- Async boundary confirmed directly, not assumed: a concurrent
+  `setInterval(10ms)` kept firing for the full duration of an in-flight
+  real `connect()` call (6 ticks during a 70ms connect), proving the main
+  thread was never blocked.
+- 5 consecutive real connect/close cycles against the production station:
+  no crash, no leak, no hang, same station NodeID every time.
+- Post-close accessor guard and double-close idempotency, both against a
+  real connected-then-closed session (not simulated).
+- Zero-install-script property re-verified after this change (same fresh
+  packed-tarball-install check as 0.2.0): still holds.
+
+### Known gaps (deferred, not forgotten)
+
+- Only `linux-x64` prebuild coverage.
+- RPC (`call`/`serve`), pubsub, DHT, content transfer, streaming, UCAN,
+  `Pinned`/`Insecure` trust modes.
+
 ## [0.2.0] - 2026-09-03
 
 Replaced koffi (a generic FFI bridge) with a purpose-built native addon,

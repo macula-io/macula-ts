@@ -1,10 +1,10 @@
 # macula-ts
 
-**Status: early walking skeleton.** FFI binding over [macula-go](https://github.com/macula-io/macula-go)
-via a Go C-shared library, not feature-complete. Right now this package can
-do exactly one thing: mint and reconstruct a Macula peer identity. It does
-not yet dial a station, speak the CONNECT/HELLO handshake, or make any RPC
-call.
+**Status: early, not feature-complete.** FFI binding over
+[macula-go](https://github.com/macula-io/macula-go) via a Go C-shared
+library. Identity generation and a real transport + CONNECT/HELLO
+handshake against the production fleet both work end-to-end today. RPC,
+pubsub, DHT, content transfer, streaming, and UCAN don't exist yet.
 
 ## Why FFI over macula-go, not a native TypeScript reimplementation
 
@@ -95,15 +95,48 @@ directly.
 - `Identity.fromSeedBytes()` — deterministic reconstruction from a saved
   32-byte seed.
 - `identity.nodeId`, `identity.privateSeedBytes`, `identity.dispose()`.
+- `Session.connect(host, port, identity)` — dials a real macula-station and
+  completes the full CONNECT/HELLO handshake via macula-go's
+  `connection.Connect` (WebPKI trust). **Live-verified against the real
+  production fleet** (`station-de-frankfurt.macula.io:4433`): a real
+  Ed25519-signed CONNECT sent, a real HELLO received back and
+  signature-verified, in ~70-380ms depending on run. Async on both sides of
+  the FFI boundary (`Napi::AsyncWorker`, not a sync call wrapped in
+  `Promise.resolve()`) — confirmed directly by measuring the event loop
+  kept ticking (a concurrent `setInterval` fired repeatedly) for the full
+  duration of an in-flight real `connect()` call, not just assumed from the
+  implementation shape.
+- `session.remoteAddr`, `session.stationNodeId` (the HELLO-verified station
+  identity — proof this is a real application-layer session, not just a
+  QUIC/TLS handshake), `session.close(identity, reason?)`.
+- Session lifecycle safety, live-verified: using a session's accessors
+  after `close()` throws a clean error (not a crash); `close()` is
+  idempotent (safe to call twice); 5 consecutive real connect/close cycles
+  against the production station ran clean with no leak, crash, or hang.
 
 ## What's explicitly not yet implemented
 
-Everything else every sibling SDK has: the QUIC transport / CONNECT-HELLO
-handshake, RPC (`call`/`serve`), pubsub (`publish`/`watch`), DHT
+RPC (`call`/`serve`), pubsub (`publish`/`watch`), DHT
 (`find_record`/`put_record`), content transfer, streaming RPC, UCAN,
-direct-dial. Each of these is a separate, later slice of work — this repo
-only proves the FFI plumbing itself works end-to-end with one real
-operation.
+direct-dial, and `Pinned`/`Insecure` trust modes (`WebPKI` only so far).
+Each of these is a separate, later slice of work built on top of a working
+`Session`.
+
+## Live tests
+
+`src/session.live.test.ts` hits the real production fleet and is **not**
+part of default `npm test`/CI — opt in explicitly:
+
+```bash
+npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts
+```
+
+Matches macula-rust's `#[ignore]` and macula-dotnet's
+`[Trait("Category","Live")]` convention: real-network tests are written and
+runnable, just excluded from the default/CI run so a station outage doesn't
+make ordinary CI flaky. `.github/workflows/ci.yml` exposes this as a
+manually-triggered (`workflow_dispatch`) job, never run automatically on
+push/PR.
 
 ## Packaging: genuinely zero install-time scripts
 

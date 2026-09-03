@@ -1,3 +1,4 @@
+import { type Handle } from "./binding.js";
 export declare class Identity {
     #private;
     private constructor();
@@ -19,4 +20,11 @@ export declare class Identity {
     get privateSeedBytes(): Uint8Array;
     /** Frees the Go-side handle. Safe to call more than once. */
     dispose(): void;
+    /** The raw native handle, for Session.connect/close only -- they need
+     * it to establish/close a connection under this identity. JS private
+     * fields (#handle) are genuinely inaccessible from outside this
+     * class body, even to other code in this package, so this method is
+     * how Session and Identity cooperate across the FFI boundary. Not
+     * part of the intended public API. */
+    handleForFfi(): Handle;
 }

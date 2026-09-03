@@ -55,5 +55,14 @@ export class Identity {
             this.#handle = null;
         }
     }
+    /** The raw native handle, for Session.connect/close only -- they need
+     * it to establish/close a connection under this identity. JS private
+     * fields (#handle) are genuinely inaccessible from outside this
+     * class body, even to other code in this package, so this method is
+     * how Session and Identity cooperate across the FFI boundary. Not
+     * part of the intended public API. */
+    handleForFfi() {
+        return this.#requireHandle();
+    }
 }
 //# sourceMappingURL=identity.js.map
