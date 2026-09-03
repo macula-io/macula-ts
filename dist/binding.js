@@ -99,5 +99,11 @@ export const native = {
     sessionSubscribeStop(subscriptionHandle) {
         return addon.sessionSubscribeStop(subscriptionHandle);
     },
+    contentPut(sessionHandle, identityHandle, data, name) {
+        return addon.contentPut(sessionHandle, identityHandle, data, name);
+    },
+    contentGet(sessionHandle, identityHandle, mcidHex) {
+        return addon.contentGet(sessionHandle, identityHandle, mcidHex);
+    },
 };
 //# sourceMappingURL=binding.js.map

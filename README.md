@@ -271,9 +271,53 @@ directly.
   does not unref the `ThreadSafeFunction` itself, which would have
   broken that).
 
+- Content transfer — `session.putContent(data, name?)` / `session.getContent(mcid)`
+  (macula-go's `content.Put`/`content.Get`, ordinary CALL/RESULT against
+  four reserved `_content.*` procedures — `put_block`/`get_block`/
+  `put_manifest`/`get_manifest` — but sent on their OWN dedicated QUIC
+  stream, `Session.OpenDedicatedStream`, **not** the shared control
+  stream `call()`/`serve()`/the DHT methods/`subscribe()` all read from).
+  `data` above `manifest.DefaultChunkSize` (256 KiB) is chunked and
+  reassembled automatically, with `name` attached to the resulting
+  manifest — a single-block put ignores `name` entirely, matching
+  `content.Put`'s own documented behavior. `mcid` crosses the FFI
+  boundary as a lowercase hex string (68 hex chars = 34 bytes), the same
+  "raw identifier → hex" convention `DhtRecord.key`/`version`/`signature`
+  already use. **This is a one-time TRANSFER mechanism, not durable
+  object storage** — a station may forget content after serving it, and
+  there is no list/delete operation; don't build anything that assumes
+  otherwise. Because `Put`/`Get` each open a *fresh* dedicated stream,
+  neither is subject to `Session`'s same-Session exclusivity guard —
+  `putContent()`/`getContent()` run safely alongside an active
+  `serve()`/`subscribe()` (or each other) on the same `Session`, unlike
+  `call()`/the DHT methods.
+- **Live-verified against the real production fleet**: a 600-byte random
+  buffer `putContent()`'d then `getContent()`'d back byte-for-byte
+  identical; the same round trip with no `name` given; `getContent()` of
+  a well-formed but never-stored mcid rejecting with a typed
+  `ContentNotFoundError` (not a generic error or a hang); `putContent()`/
+  `getContent()` running successfully while a `serve()` is active on the
+  same `Session` (proving the dedicated-stream, no-exclusivity-guard
+  claim above, not just asserting it). Handle safety was probed directly
+  (garbage session/identity handles, an already-freed identity handle,
+  an empty data buffer, and malformed/wrong-length mcid hex) — every
+  case rejects with a clean JS error, never a process crash, through the
+  same `recover()`-guarded handle lookups `session.call()` already uses
+  (content transfer introduces no new Go-side handle type). Also
+  re-verified against the actual packaged, installed npm tarball — a
+  real `putContent`/`getContent` round trip using only the published
+  package, no source tree present.
+- A real bug was found and fixed while probing this directly: a
+  malformed-but-correctly-decoded-length mcid hex (right byte count,
+  garbage bytes) versus a wrong-*length* mcid hex both fell into one
+  `fmt.Errorf("...: %w", err)` on the Go side, and the wrong-length case
+  passes a `nil` `err` into that `%w` — Go's `fmt` package renders that
+  as the literal string `%!w(<nil>)` inside the thrown JS error message.
+  Split into two separate, correctly-worded error paths.
+
 ## What's explicitly not yet implemented
 
-Content transfer, streaming RPC, UCAN, direct-dial, per-realm
+Streaming RPC, UCAN, direct-dial, per-realm
 `call`/`serve`/`publish`/`subscribe` (the all-zero realm is used
 throughout for those four specifically — DHT's `putProcedureAdvertisement`
 DOES take an optional realm, since it has to match whatever realm the
@@ -290,11 +334,12 @@ working `Session`.
 ## Live tests
 
 `src/session.live.test.ts`, `src/rpc.live.test.ts`, `src/dht.live.test.ts`,
-and `src/pubsub.live.test.ts` hit the real production fleet and are
-**not** part of default `npm test`/CI — opt in explicitly:
+`src/pubsub.live.test.ts`, and `src/content.live.test.ts` hit the real
+production fleet and are **not** part of default `npm test`/CI — opt in
+explicitly:
 
 ```bash
-npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts
+npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts
 ```
 
 Matches macula-rust's `#[ignore]` and macula-dotnet's

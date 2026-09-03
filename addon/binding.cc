@@ -1353,6 +1353,166 @@ Napi::Value SessionSubscribeStop(const Napi::CallbackInfo& info) {
   return deferred.Promise();
 }
 
+// ---------------------------------------------------------------------
+// Content transfer (cabi/content.go): putContent/getContent. Each opens
+// its OWN dedicated QUIC stream on the Go side (content.Put/Get ->
+// Session.OpenDedicatedStream) -- separate from the shared control
+// stream every worker above reads from -- so, unlike SessionCall/
+// ServeWaitForCall/the DHT methods/subscribe, these never need a
+// same-Session exclusivity guard on the TypeScript side, and two
+// concurrent calls here don't race each other either. Real network I/O
+// either way (one or more signed CALLs on the new stream) -- still off
+// Node's main thread via Napi::AsyncWorker, same as everything else.
+// ---------------------------------------------------------------------
+
+class ContentPutWorker : public Napi::AsyncWorker {
+ public:
+  ContentPutWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                    uintptr_t identityHandle, std::string data, std::string name)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        data_(std::move(data)),
+        name_(std::move(name)) {}
+
+  void Execute() override {
+    char* errOut = nullptr;
+    char* mcidHex = macula_content_put(sessionHandle_, identityHandle_,
+                                        reinterpret_cast<unsigned char*>(const_cast<char*>(data_.data())),
+                                        static_cast<int>(data_.size()), const_cast<char*>(name_.c_str()), &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    mcidHex_.assign(mcidHex);
+    macula_free_string(mcidHex);
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Napi::String::New(Env(), mcidHex_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  std::string data_;
+  std::string name_;
+  std::string mcidHex_;
+};
+
+Napi::Value ContentPut(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 3 || !info[2].IsTypedArray()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, data: Uint8Array, name?: string)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  Napi::Uint8Array arr = info[2].As<Napi::Uint8Array>();
+  // Copied into a std::string (binary-safe: std::string tolerates
+  // embedded NULs and arbitrary bytes) on the main thread -- Execute()
+  // runs on a libuv threadpool thread and must never touch the original
+  // JS TypedArray, same rule ReadOptionalRealm's own doc states above.
+  std::string data(reinterpret_cast<const char*>(arr.Data()), arr.ByteLength());
+  std::string name = (info.Length() > 3 && info[3].IsString()) ? info[3].As<Napi::String>().Utf8Value() : "";
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new ContentPutWorker(env, deferred, sessionHandle, identityHandle, std::move(data), std::move(name));
+  worker->Queue();
+  return deferred.Promise();
+}
+
+// ContentGetWorker resolves with `null` (not a rejection) for
+// content.ErrNotFound -- an expected, routine outcome for a transfer
+// mechanism with no durability guarantee -- exactly the way
+// DhtFindRecordWorker's own notFound_ distinguishes "not found" from a
+// real transport-level failure above.
+class ContentGetWorker : public Napi::AsyncWorker {
+ public:
+  ContentGetWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                    uintptr_t identityHandle, std::string mcidHex)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        mcidHex_(std::move(mcidHex)) {}
+
+  void Execute() override {
+    char* errOut = nullptr;
+    int outLen = 0;
+    int notFound = 0;
+    unsigned char* data = macula_content_get(sessionHandle_, identityHandle_, const_cast<char*>(mcidHex_.c_str()),
+                                              &outLen, &notFound, &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    notFound_ = notFound != 0;
+    if (!notFound_) {
+      data_.assign(reinterpret_cast<char*>(data), static_cast<size_t>(outLen));
+      macula_free_bytes(data);
+    }
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    if (notFound_) {
+      deferred_.Resolve(Env().Null());
+      return;
+    }
+    deferred_.Resolve(
+        Napi::Buffer<uint8_t>::Copy(Env(), reinterpret_cast<const uint8_t*>(data_.data()), data_.size()));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  std::string mcidHex_;
+  bool notFound_ = false;
+  std::string data_;
+};
+
+Napi::Value ContentGet(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 3 || !info[2].IsString()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, mcidHex: string)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  std::string mcidHex = info[2].As<Napi::String>().Utf8Value();
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new ContentGetWorker(env, deferred, sessionHandle, identityHandle, std::move(mcidHex));
+  worker->Queue();
+  return deferred.Promise();
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("identityGenerate", Napi::Function::New(env, IdentityGenerate));
   exports.Set("identityFromSeedBytes", Napi::Function::New(env, IdentityFromSeedBytes));
@@ -1379,6 +1539,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("sessionPublish", Napi::Function::New(env, SessionPublish));
   exports.Set("sessionSubscribeStart", Napi::Function::New(env, SessionSubscribeStart));
   exports.Set("sessionSubscribeStop", Napi::Function::New(env, SessionSubscribeStop));
+  exports.Set("contentPut", Napi::Function::New(env, ContentPut));
+  exports.Set("contentGet", Napi::Function::New(env, ContentGet));
   return exports;
 }
 

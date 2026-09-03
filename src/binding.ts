@@ -124,6 +124,21 @@ const addon = require("node-gyp-build")(repoRoot) as {
     onEvent: (evt: { topic: string; publisher: Uint8Array; seq: number; payloadJson: string }) => void,
   ): Promise<bigint>;
   sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
+  // Content transfer (cabi/content.go). Each opens its OWN dedicated
+  // QUIC stream on the Go side (content.Put/Get -> Session.
+  // OpenDedicatedStream), separate from the shared control stream every
+  // other network-touching function above reads from -- so, unlike
+  // sessionCall/serveWaitForCall/the DHT methods/sessionSubscribeStart,
+  // neither of these needs the same-Session exclusivity guard
+  // session.ts applies to those. Real network I/O either way (one or
+  // more signed CALLs on the new stream) -- backed by Napi::AsyncWorker
+  // on the C++ side, same as sessionCall. contentGet resolves `null`
+  // for macula-go's content.ErrNotFound specifically (an expected,
+  // routine outcome for a transfer mechanism with no durability
+  // guarantee), the same convention dhtFindRecord uses for its own
+  // "not found" case.
+  contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string>;
+  contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null>;
 };
 
 // The addon always returns BigInt (see addon/binding.cc's comment on
@@ -249,5 +264,11 @@ export const native = {
   },
   sessionSubscribeStop(subscriptionHandle: Handle): Promise<void> {
     return addon.sessionSubscribeStop(subscriptionHandle);
+  },
+  contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string> {
+    return addon.contentPut(sessionHandle, identityHandle, data, name);
+  },
+  contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null> {
+    return addon.contentGet(sessionHandle, identityHandle, mcidHex);
   },
 };

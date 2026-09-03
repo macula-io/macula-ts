@@ -11,6 +11,7 @@
 // no UCAN -- those build on top of a working Session and are separate
 // work.
 import { native, type Handle } from "./binding.js";
+import { ContentNotFoundError } from "./content.js";
 import { DHT_DEFAULT_TTL_MS, DhtRecordType, type DhtRecord } from "./dht.js";
 import { Identity } from "./identity.js";
 import type { PublishOptions, PubsubEvent } from "./pubsub.js";
@@ -492,6 +493,60 @@ export class Session {
     };
     this.#activeSubscription = { topic, stop };
     return stop;
+  }
+
+  /** Content transfer: stores `data` (macula-go's content.Put, on this
+   * Session's own fresh dedicated QUIC stream -- Session.
+   * OpenDedicatedStream on the Go side, NOT the shared control stream
+   * call()/serve()/the DHT methods/subscribe() all read from), chunking
+   * automatically above manifest.DefaultChunkSize (256 KiB) and
+   * returning the hex-encoded mcid it's now addressable by. `name` is
+   * used ONLY on the chunked path (attached to the resulting manifest)
+   * -- a single-block put ignores it entirely, matching content.Put's
+   * own documented behavior; leave it unset for small blobs.
+   *
+   * NOT durable object storage -- see content.ts's own module doc: a
+   * station may forget this content later, and there is no list/delete
+   * operation. Treat this as "hand these bytes to a peer once."
+   *
+   * Because Put opens its own dedicated stream instead of reading the
+   * shared control stream, this is, unlike call()/serve()/the DHT
+   * methods/subscribe(), never subject to Session's same-Session
+   * exclusivity guard (#requireHandleNotServing) -- it can run
+   * concurrently with an active serve()/subscribe() (or another
+   * putContent()/getContent()) on the same Session without racing.
+   *
+   * Real network I/O (one or more signed CALLs on the new stream) --
+   * runs off the main thread on the native side, like every other
+   * network-touching method here. */
+  async putContent(data: Uint8Array, name = ""): Promise<{ mcid: string }> {
+    const handle = this.#requireHandle();
+    const mcid = await native.contentPut(handle, this.#identity.handleForFfi(), data, name);
+    return { mcid };
+  }
+
+  /** Content transfer: fetches and verifies (macula-go's content.Get,
+   * on its own fresh dedicated QUIC stream, same reasoning as
+   * putContent() -- including content.Get's own client-side hash
+   * re-check against `mcid`: a station may only be relaying content it
+   * doesn't itself store, so its answer is never trusted blindly) the
+   * content addressed by `mcid` (the hex string putContent() returned).
+   *
+   * Rejects with ContentNotFoundError (content.ts) specifically when
+   * the station reports it doesn't know this mcid -- an expected,
+   * routine outcome for a one-time transfer mechanism with no
+   * durability guarantee, not a transport failure; every other failure
+   * (a bad session, a malformed mcid, a real transport error) rejects
+   * with a plain Error instead.
+   *
+   * Same dedicated-stream, no-exclusivity-guard reasoning as
+   * putContent() -- safe alongside an active serve()/subscribe() on the
+   * same Session. Real network I/O, runs off the main thread. */
+  async getContent(mcid: string): Promise<Uint8Array> {
+    const handle = this.#requireHandle();
+    const data = await native.contentGet(handle, this.#identity.handleForFfi(), mcid);
+    if (data === null) throw new ContentNotFoundError(mcid);
+    return data;
   }
 }
 

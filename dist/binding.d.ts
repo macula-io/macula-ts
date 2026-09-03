@@ -30,4 +30,6 @@ export declare const native: {
         payloadJson: string;
     }) => void): Promise<bigint>;
     sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
+    contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string>;
+    contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null>;
 };

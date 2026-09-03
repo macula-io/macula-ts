@@ -2,6 +2,86 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - 2026-09-03
+
+Content transfer: `Session.putContent()`/`Session.getContent()`,
+live-verified against the real production fleet -- both against a dev
+build and, separately, against the actual packaged, installed npm
+tarball. Builds directly on 0.6.0's `Session.connect()` -- unlike every
+prior slice (`call`/`serve`, the DHT methods, `publish`/`subscribe`),
+this one reads and writes its OWN dedicated QUIC stream, not the shared
+control stream, so it introduces no new same-Session exclusivity rule.
+
+### Added
+
+- `cabi/content.go`: `macula_content_put` -- `content.Put`, chunking
+  automatically above `manifest.DefaultChunkSize` (256 KiB) and
+  returning the hex-encoded 34-byte MCID. `macula_content_get` --
+  `content.Get`, including its own client-side hash re-check against the
+  requested MCID (a station may only be *relaying* content it doesn't
+  itself store, so its answer is never trusted blindly -- see
+  `content/content.go`'s own doc). `*notFoundOut` distinguishes
+  `content.ErrNotFound` (an expected, routine outcome) from a real
+  transport failure, the same convention `macula_dht_find_record`
+  already established. `macula_free_bytes` frees the malloc'd buffer
+  `macula_content_get` returns on success -- content is arbitrary binary
+  data, not guaranteed-NUL-terminable text, so unlike every other
+  `*C.char`-returning export in this cabi it cannot cross as a C string.
+  Neither function introduces a new Go-side handle type -- both reuse the
+  existing session/identity handles and their `recover()`-guarded
+  lookups, so no new handle-safety surface was added.
+- `addon/binding.cc`: `ContentPutWorker`/`ContentGetWorker`
+  (`Napi::AsyncWorker`, same shape as every other network-touching
+  worker here -- real I/O, off Node's main thread).
+- `src/content.ts`: `ContentNotFoundError`, and this module's own doc
+  comment on the one thing every consumer needs to know before using
+  this at all -- **content transfer is a one-time TRANSFER mechanism,
+  not durable object storage**. A station may forget content after
+  serving it; there is no list/delete operation.
+- `src/session.ts`: `Session.putContent(data, name?)` and
+  `Session.getContent(mcid)`. Deliberately **not** routed through
+  `#requireHandleNotServing` (the guard `call()`/`serve()`/the DHT
+  methods/`subscribe()` all share) -- `content.Put`/`Get` each open a
+  *fresh* `Session.OpenDedicatedStream` QUIC stream of their own on the
+  Go side, never touching the shared control stream those others read
+  from, so they never race a concurrent `serve()`/`subscribe()` (or each
+  other) on the same `Session` -- confirmed live, not just reasoned
+  about (see below).
+- `src/content.live.test.ts` (opt-in via `MACULA_TS_LIVE`): a 600-byte
+  random buffer round-tripped byte-for-byte through `putContent()`/
+  `getContent()`; the same round trip with no `name` given (proving
+  `name`'s documented "chunked path only" behavior doesn't break the
+  single-block path); `getContent()` of a well-formed but never-stored
+  mcid rejecting with `ContentNotFoundError` specifically; `putContent()`/
+  `getContent()` succeeding while a `serve()` is active on the same
+  `Session` -- the actual, live proof of the dedicated-stream
+  no-exclusivity-guard claim above, exercising exactly the combination
+  `pubsub.live.test.ts`'s own exclusivity test proves throws for
+  `call()`/`subscribe()` instead.
+- `package.json`'s `test:live` script now runs all five live suites.
+
+### Fixed
+
+- A real bug found through the exact kind of handle/input probing this
+  project's own discipline calls for, not by inspection: passing a
+  correctly-hex-decoded but wrong-*length* mcid to `getContent()`
+  produced the literal string `%!w(<nil>)` inside the thrown error
+  message -- `macula_content_get`'s Go code folded two different failure
+  cases (a hex-decode error, and a right-hex-but-wrong-length value)
+  into one `fmt.Errorf("...: %w", err)`, and the second case passes a
+  `nil` `err` into that `%w`, which Go's `fmt` package renders as that
+  garbled placeholder rather than nothing. Split into two separate,
+  correctly-worded error paths; re-verified live against a real station
+  that the resulting message is now a clean, readable sentence.
+- Probed directly and confirmed already-safe (no new bug, but verified
+  rather than assumed): garbage session/identity handles, an
+  already-freed identity handle, and an empty data buffer passed to
+  `putContent`/`getContent` all reject with a clean JS error and never
+  crash the process -- through the same `recover()`-guarded
+  `sessionFromHandle`/`identityFromHandle` lookups every other export in
+  this cabi already uses; content transfer introduces no handle type of
+  its own for this to get wrong in a new way.
+
 ## [0.6.0] - 2026-09-03
 
 Pubsub: `Session.publish()`/`Session.subscribe()`, live-verified against
