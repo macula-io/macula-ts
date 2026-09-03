@@ -50,6 +50,34 @@ const addon = require("node-gyp-build")(repoRoot) as {
     payloadJson: string,
     timeoutMs: number,
   ): Promise<string>;
+  // UCAN (cabi/ucan.go). ucanMint/ucanDecode are pure local operations
+  // (no network I/O) -- unlike every other function in this section they
+  // are plain synchronous calls, not Promises, the same convention
+  // identityGenerate/identityNodeId use above. sessionCallWithUcan IS
+  // real network I/O (a signed CALL carrying the attached token, same
+  // round trip as sessionCall) -- Promise-returning, backed by
+  // Napi::AsyncWorker, same as sessionCall itself.
+  ucanMint(
+    identityHandle: Handle,
+    issuer: string,
+    audience: string,
+    capabilitiesJson: string,
+    expiresAt: number | undefined,
+    notBefore: number | undefined,
+    nonce: string,
+    factsJson: string | undefined,
+    proofsJson: string | undefined,
+  ): string;
+  ucanDecode(token: string): string;
+  sessionCallWithUcan(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    procedure: string,
+    realm: Uint8Array | undefined,
+    payloadJson: string,
+    timeoutMs: number,
+    ucanToken: string,
+  ): Promise<string>;
   sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
   sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
   // Resolves with a pendingCall Handle once a matching CALL arrives, or
@@ -187,6 +215,33 @@ export const native = {
     timeoutMs: number,
   ): Promise<string> {
     return addon.sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
+  },
+  ucanMint(
+    identityHandle: Handle,
+    issuer: string,
+    audience: string,
+    capabilitiesJson: string,
+    expiresAt: number | undefined,
+    notBefore: number | undefined,
+    nonce: string,
+    factsJson: string | undefined,
+    proofsJson: string | undefined,
+  ): string {
+    return addon.ucanMint(identityHandle, issuer, audience, capabilitiesJson, expiresAt, notBefore, nonce, factsJson, proofsJson);
+  },
+  ucanDecode(token: string): string {
+    return addon.ucanDecode(token);
+  },
+  sessionCallWithUcan(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    procedure: string,
+    realm: Uint8Array | undefined,
+    payloadJson: string,
+    timeoutMs: number,
+    ucanToken: string,
+  ): Promise<string> {
+    return addon.sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken);
   },
   sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void> {
     return addon.sessionAdvertise(sessionHandle, identityHandle, realm, procedure);

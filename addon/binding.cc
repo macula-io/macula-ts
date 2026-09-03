@@ -401,6 +401,155 @@ Napi::Value SessionCall(const Napi::CallbackInfo& info) {
 }
 
 // ---------------------------------------------------------------------
+// UCAN (cabi/ucan.go): mint/decode are pure local operations (no
+// network I/O -- no cgo call here ever blocks on the wire), so both
+// call straight into cabi synchronously, the same convention
+// IdentityGenerate/IdentityNodeId use above. SessionCallWithUcan is
+// SessionCall (above) plus one attached token -- real network I/O, so
+// unlike mint/decode it IS Napi::AsyncWorker-backed.
+// ---------------------------------------------------------------------
+
+Napi::Value UcanMint(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 9 || !info[1].IsString() || !info[2].IsString() || !info[3].IsString() || !info[6].IsString()) {
+    Napi::TypeError::New(env, "expected (identityHandle, issuer: string, audience: string, capabilitiesJson: "
+                               "string, expiresAt: number|undefined, notBefore: number|undefined, nonce: string, "
+                               "factsJson: string|undefined, proofsJson: string|undefined)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t identityHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  std::string issuer = info[1].As<Napi::String>().Utf8Value();
+  std::string audience = info[2].As<Napi::String>().Utf8Value();
+  std::string capabilitiesJson = info[3].As<Napi::String>().Utf8Value();
+
+  int hasExpiresAt = info[4].IsNumber() ? 1 : 0;
+  int64_t expiresAt = hasExpiresAt ? info[4].As<Napi::Number>().Int64Value() : 0;
+  int hasNotBefore = info[5].IsNumber() ? 1 : 0;
+  int64_t notBefore = hasNotBefore ? info[5].As<Napi::Number>().Int64Value() : 0;
+
+  std::string nonce = info[6].As<Napi::String>().Utf8Value();
+
+  bool hasFacts = info[7].IsString();
+  std::string factsJson = hasFacts ? info[7].As<Napi::String>().Utf8Value() : std::string();
+  bool hasProofs = info[8].IsString();
+  std::string proofsJson = hasProofs ? info[8].As<Napi::String>().Utf8Value() : std::string();
+
+  char* errOut = nullptr;
+  char* token = macula_ucan_mint(identityHandle, const_cast<char*>(issuer.c_str()), const_cast<char*>(audience.c_str()),
+                                  const_cast<char*>(capabilitiesJson.c_str()), hasExpiresAt, expiresAt, hasNotBefore,
+                                  notBefore, const_cast<char*>(nonce.c_str()),
+                                  hasFacts ? const_cast<char*>(factsJson.c_str()) : nullptr,
+                                  hasProofs ? const_cast<char*>(proofsJson.c_str()) : nullptr, &errOut);
+  if (!CheckErr(env, errOut)) return env.Null();
+  std::string result(token);
+  macula_free_string(token);
+  return Napi::String::New(env, result);
+}
+
+Napi::Value UcanDecode(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 1 || !info[0].IsString()) {
+    Napi::TypeError::New(env, "expected (token: string)").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  std::string token = info[0].As<Napi::String>().Utf8Value();
+
+  char* errOut = nullptr;
+  char* json = macula_ucan_decode(const_cast<char*>(token.c_str()), &errOut);
+  if (!CheckErr(env, errOut)) return env.Null();
+  std::string result(json);
+  macula_free_string(json);
+  return Napi::String::New(env, result);
+}
+
+class SessionCallWithUcanWorker : public Napi::AsyncWorker {
+ public:
+  SessionCallWithUcanWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                             uintptr_t identityHandle, std::string procedure, bool hasRealm, uint8_t realm[32],
+                             std::string payloadJson, int64_t timeoutMs, std::string ucanToken)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        procedure_(std::move(procedure)),
+        hasRealm_(hasRealm),
+        payloadJson_(std::move(payloadJson)),
+        timeoutMs_(timeoutMs),
+        ucanToken_(std::move(ucanToken)) {
+    if (hasRealm_) std::memcpy(realm_, realm, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    char* envelope = macula_session_call_with_ucan(sessionHandle_, identityHandle_, const_cast<char*>(procedure_.c_str()),
+                                                     hasRealm_ ? realm_ : nullptr, const_cast<char*>(payloadJson_.c_str()),
+                                                     timeoutMs_, const_cast<char*>(ucanToken_.c_str()), &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    envelopeJson_.assign(envelope);
+    macula_free_string(envelope);
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Napi::String::New(Env(), envelopeJson_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  std::string procedure_;
+  bool hasRealm_;
+  uint8_t realm_[32] = {0};
+  std::string payloadJson_;
+  int64_t timeoutMs_;
+  std::string ucanToken_;
+  std::string envelopeJson_;
+};
+
+Napi::Value SessionCallWithUcan(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 7 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber() || !info[6].IsString()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, procedure: string, realm: "
+                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number, ucanToken: string)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  std::string procedure = info[2].As<Napi::String>().Utf8Value();
+  uint8_t realmBuf[32];
+  unsigned char* realmPtr = ReadOptionalRealm(env, info[3], realmBuf, &ok);
+  if (!ok) return env.Undefined();
+  std::string payloadJson = info[4].As<Napi::String>().Utf8Value();
+  int64_t timeoutMs = info[5].As<Napi::Number>().Int64Value();
+  std::string ucanToken = info[6].As<Napi::String>().Utf8Value();
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new SessionCallWithUcanWorker(env, deferred, sessionHandle, identityHandle, std::move(procedure),
+                                                realmPtr != nullptr, realmBuf, std::move(payloadJson), timeoutMs,
+                                                std::move(ucanToken));
+  worker->Queue();
+  return deferred.Promise();
+}
+
+// ---------------------------------------------------------------------
 // Unary RPC: provider role (advertise + serve-wait-for-call + reply).
 // ---------------------------------------------------------------------
 
@@ -1524,6 +1673,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("sessionStationNodeId", Napi::Function::New(env, SessionStationNodeId));
   exports.Set("sessionClose", Napi::Function::New(env, SessionClose));
   exports.Set("sessionCall", Napi::Function::New(env, SessionCall));
+  exports.Set("ucanMint", Napi::Function::New(env, UcanMint));
+  exports.Set("ucanDecode", Napi::Function::New(env, UcanDecode));
+  exports.Set("sessionCallWithUcan", Napi::Function::New(env, SessionCallWithUcan));
   exports.Set("sessionAdvertise", Napi::Function::New(env, SessionAdvertise));
   exports.Set("sessionUnadvertise", Napi::Function::New(env, SessionUnadvertise));
   exports.Set("serveWaitForCall", Napi::Function::New(env, ServeWaitForCall));

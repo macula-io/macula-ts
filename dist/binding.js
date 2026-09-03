@@ -54,6 +54,15 @@ export const native = {
     sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs) {
         return addon.sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
     },
+    ucanMint(identityHandle, issuer, audience, capabilitiesJson, expiresAt, notBefore, nonce, factsJson, proofsJson) {
+        return addon.ucanMint(identityHandle, issuer, audience, capabilitiesJson, expiresAt, notBefore, nonce, factsJson, proofsJson);
+    },
+    ucanDecode(token) {
+        return addon.ucanDecode(token);
+    },
+    sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken) {
+        return addon.sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken);
+    },
     sessionAdvertise(sessionHandle, identityHandle, realm, procedure) {
         return addon.sessionAdvertise(sessionHandle, identityHandle, realm, procedure);
     },

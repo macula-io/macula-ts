@@ -16,6 +16,7 @@ import { DHT_DEFAULT_TTL_MS, DhtRecordType, type DhtRecord } from "./dht.js";
 import { Identity } from "./identity.js";
 import type { PublishOptions, PubsubEvent } from "./pubsub.js";
 import { DEFAULT_CALL_TIMEOUT_MS, MaculaCallError, SERVE_POLL_MS, type CallEnvelope, type JsonValue } from "./rpc.js";
+import { Ucan } from "./ucan.js";
 
 /** Options for Session.call(). */
 export interface CallOptions {
@@ -199,6 +200,53 @@ export class Session {
     const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
     const payloadJson = JSON.stringify(payload ?? null);
     const envelopeJson = await native.sessionCall(handle, this.#identity.handleForFfi(), procedure, undefined, payloadJson, timeoutMs);
+    const envelope = JSON.parse(envelopeJson) as CallEnvelope;
+    if (envelope.ok) return envelope.payload;
+    throw new MaculaCallError(envelope.bolt4);
+  }
+
+  /** Caller role: call(), attaching `ucanToken` to the outgoing CALL
+   * (macula-go's `connection.Session.CallWithUCAN`) -- for invoking a
+   * procedure a provider has gated behind a `ucan.Policy.Required`
+   * policy on its own side (this SDK does not implement that provider
+   * side itself -- see ucan.ts's own module doc). `ucanToken` may be a
+   * `Ucan` (as returned by `Ucan.mint()`/`Ucan.decode()` -- its `.token`
+   * is attached) or a raw token string directly.
+   *
+   * Same resolve/reject shape as `call()` in every other respect: the
+   * RESULT's payload on success, a `MaculaCallError` for a real BOLT#4
+   * ERROR frame (e.g. `unauthorized` for a token that fails the
+   * provider's policy check, or `unknown_next_peer` for a procedure
+   * nobody has advertised), a plain `Error` for anything that never got
+   * a wire-level answer at all.
+   *
+   * Deliberately attaches whatever token bytes it is given with NO local
+   * check relating this Session's own identity to `ucanToken`'s `aud`
+   * claim -- see ucan.ts's own module doc for why: macula's UCAN gate is
+   * a bearer-token check (signature + expiry against the token's
+   * issuer), and the real wire-level gate never looks at the caller's
+   * identity against `aud` either. A client-side guard here would both
+   * reject configurations the mesh accepts fine and misrepresent a
+   * security property that isn't actually enforced.
+   *
+   * Real network I/O, off the main thread on the native side, and
+   * subject to the identical same-Session exclusivity rule as `call()`
+   * (`#requireHandleNotServing`) -- both end up on the same shared
+   * control stream. */
+  async callWithUcan(procedure: string, payload: JsonValue, ucanToken: string | Ucan, opts: CallOptions = {}): Promise<JsonValue> {
+    const handle = this.#requireHandleNotServing("callWithUcan");
+    const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
+    const payloadJson = JSON.stringify(payload ?? null);
+    const token = typeof ucanToken === "string" ? ucanToken : ucanToken.token;
+    const envelopeJson = await native.sessionCallWithUcan(
+      handle,
+      this.#identity.handleForFfi(),
+      procedure,
+      undefined,
+      payloadJson,
+      timeoutMs,
+      token,
+    );
     const envelope = JSON.parse(envelopeJson) as CallEnvelope;
     if (envelope.ok) return envelope.payload;
     throw new MaculaCallError(envelope.bolt4);

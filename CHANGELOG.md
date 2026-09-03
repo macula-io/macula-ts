@@ -2,6 +2,144 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2026-09-03
+
+UCAN: `Ucan.mint()`/`Ucan.decode()` (offline, no network I/O) and
+`Session.callWithUcan()` (attaching a token to a real CALL), live-verified
+against the real production fleet. Builds on 0.7.0's RPC layer --
+`connection.Session.CallWithUCAN` is `Call` plus one attached token, so
+this composes directly with the existing `call()`/`session.ts` shape, no
+new transport-level plumbing. Ported from macula-php's `cabi/ucan.go`
+(`macula_call_with_ucan`), the identical FFI-over-macula-go pattern this
+project already uses, adapted to this project's own JSON-payload and
+`recover()`-guarded handle conventions rather than PHP's raw-bytes
+scalar-tuple one.
+
+### Added
+
+- `cabi/ucan.go`: `macula_ucan_mint` -- `ucan.Create`, self-issued and
+  signed by an existing identity handle; `macula_ucan_decode` --
+  `ucan.Decode` (parses claims WITHOUT verifying signature or expiry, the
+  same non-verifying contract `ucan.Decode` itself documents). Both are
+  pure local operations (no network I/O) and export synchronously, called
+  directly from `addon/binding.cc` rather than through an
+  `Napi::AsyncWorker` -- the same convention `macula_identity_generate`
+  already established for local, fast operations. Neither introduces a
+  new `cgo.Handle` type: a minted token crosses as plain ASCII text (a
+  JWT is already base64url + "."), decoded claims as a JSON string --
+  simpler than macula-php's own handle-based `ucan.Payload`/token
+  accessors, and with no new handle-safety surface to get wrong.
+  `macula_session_call_with_ucan` -- `rpc.go`'s `macula_session_call`
+  plus one attached `ucanToken` parameter, reusing its
+  `callEnvelope`/`callResponseToEnvelope` verbatim; real network I/O, so
+  this one DOES run through an `Napi::AsyncWorker`
+  (`SessionCallWithUcanWorker`).
+- `addon/binding.cc`: `UcanMint`/`UcanDecode` (plain synchronous
+  functions), `SessionCallWithUcanWorker`/`SessionCallWithUcan` (same
+  `Napi::AsyncWorker` shape as `SessionCallWorker`).
+- `src/ucan.ts`: `Ucan` (mint/decode, `issuer`/`audience`/`capabilities`/
+  `expiresAt`/`notBefore`/`nonce`/`facts`/`proofs`/`isExpired`
+  accessors), `UcanCapability`, `UcanFactValue` (deliberately DOES include
+  `boolean` -- a UCAN token's `fct` claim crosses this boundary as plain
+  JSON via Go's `encoding/json`, never macula's CBOR mesh wire, so
+  `rpc.ts`'s "no bool on the wire" rule does not apply to it), and
+  `UcanMintOptions`. `issuer`/`audience` DID strings are built
+  automatically as `did:macula:<hex NodeID>`, matching macula-go's own
+  tests (`ucan/ucan_test.go`, `connection/serve_ucan_test.go`) and
+  `examples/ucan/main.go` exactly rather than this SDK inventing a
+  different convention.
+- `src/session.ts`: `Session.callWithUcan(procedure, payload, ucanToken,
+  opts?)` -- `call()`, attaching a UCAN token (a `Ucan` or a raw token
+  string). Subject to the identical same-Session exclusivity guard as
+  `call()` (`#requireHandleNotServing`) -- both end up on the same shared
+  control stream.
+- `src/index.ts`: exports `Ucan`, `UcanCapability`, `UcanFactValue`,
+  `UcanMintOptions`.
+- `src/ucan.test.ts` (offline, default CI, 10 tests): a full mint round
+  trip through every claim (issuer/audience/capabilities/expiresAt/
+  notBefore/nonce/facts/proofs); mint with no options producing a token
+  with no expiry/notBefore/nonce/facts claims; `decode()` as `mint()`'s
+  own inverse; `isExpired` true for a past `exp` and false for a future
+  one; two different issuer identities producing different `iss` claims
+  and different tokens; `mint()` accepting an audience unrelated to any
+  real identity (see "no audience-matching guard" below); `mint()`
+  rejecting a wrong-length audience; `mint()` with a disposed identity
+  throwing instead of touching a freed handle; `decode()` of a malformed
+  token throwing; `decode()` of a token with a tampered payload segment
+  still parsing (proves this is genuinely non-verifying, not a
+  verify-then-decode that only happens to succeed on well-formed input).
+- `src/ucan.live.test.ts` (opt-in via `MACULA_TS_LIVE`, 3 tests): a
+  freshly minted `Ucan` attached via `callWithUcan()` to a real CALL
+  against a real advertised procedure, completing with the real
+  round-tripped RESULT; the same with a raw token string instead of a
+  `Ucan`; calling an unadvertised procedure with a token attached still
+  coming back a real `unknown_next_peer` (a token doesn't change ordinary
+  CALL error behavior). See "Known gaps" below for what this suite
+  deliberately does NOT prove.
+- `package.json`'s `test:live` script now runs all six live suites.
+
+### Design decision: no audience-matching guard
+
+This SDK's own research into the real verify chain (Erlang's
+`authorize_policy` + `macula_ucan_nif:verify/2`, identical across every
+SDK port including macula-go) established that macula's UCAN gate is a
+BEARER-token check: it verifies a token's signature and expiry against
+its own issuer, and never checks the calling identity against the
+token's `aud` claim. Accordingly, neither `Ucan.mint()` nor
+`Session.callWithUcan()` implements any client-side "does my identity
+match this token's audience" guard -- `mint()` accepts any 32-byte
+audience with no relationship check to the issuing identity (tested
+directly in `ucan.test.ts`), and `callWithUcan()` attaches whatever token
+bytes it is given unconditionally. Adding such a guard would both reject
+configurations the real wire-level gate accepts fine and misrepresent a
+security property the mesh does not actually enforce.
+
+### Verified
+
+- All 10 `ucan.test.ts` cases and all 3 `ucan.live.test.ts` cases passed
+  (also re-run together with the other five live suites via `npm run
+  test:live`, 18/18 passing).
+- Handle safety probed directly at the native layer (not just through the
+  public API): a garbage/never-issued identity handle passed to
+  `ucanMint` throws cleanly (`"macula-ts/cabi: invalid identity handle"`)
+  instead of crashing the process, through the same
+  `recover()`-guarded `identityFromHandle` lookup every other export in
+  this cabi already uses -- this slice introduces no handle type of its
+  own for that lookup to get wrong in a new way.
+- Zero-install-script property re-verified after this change, from a
+  fully clean tree (`node_modules`/`build`/`dist`/`prebuilds`/
+  `cabi/build` all removed first): `build:go` -> `install` ->
+  `typecheck` -> `test` -> `tsc` -> `build:prebuilds`, then a real packed
+  tarball installed into a fresh directory with a verbose install log
+  showing only the two declared runtime dependencies fetched -- no
+  `node-gyp`/compiler invocation at all -- and a standalone script using
+  only the installed `@macula-io/ts` package minted and decoded a real
+  UCAN token end to end (issuer/audience/expiresAt/facts/isExpired all
+  round-tripped correctly), confirming the new API works from the
+  published package alone, not just the dev build.
+
+### Known gaps (deferred, not forgotten)
+
+- **Provider-side UCAN policy gating is not implemented** -- macula-go's
+  `ucan.Policy`/`Session.ServeOneCallGated` (refusing an inbound CALL
+  before a handler runs unless its attached token verifies against a
+  required issuer) has no counterpart here. This SDK can mint a token and
+  attach it to an outgoing call, but cannot stand up a served procedure
+  that actually enforces one. `ucan.live.test.ts` proves the
+  attach-and-call mechanism reaches the wire and completes against a real
+  (ungated) procedure -- it does NOT prove enforcement, since there is no
+  gated procedure on the live fleet for this SDK to call without also
+  building that missing provider-side piece. macula-go's own
+  `connection/serve_ucan_test.go` and
+  `directdial/directdial_live_test.go`'s
+  `TestLiveDirectDialUCANGatedRoundTrip` already prove enforcement works
+  for this exact protocol when a gated provider is present.
+- `ucan.ComputeCID`/proof-chain validation is not exposed -- `proofs` is
+  carried through `Ucan.mint()`'s options and `Ucan#proofs` as opaque
+  strings, never computed or checked here.
+- Only `linux-x64` prebuild coverage (unchanged).
+- Streaming RPC, direct-dial, `Pinned`/`Insecure` trust modes (unchanged).
+
 ## [0.7.0] - 2026-09-03
 
 Content transfer: `Session.putContent()`/`Session.getContent()`,

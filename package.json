@@ -1,6 +1,6 @@
 {
   "name": "@macula-io/ts",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "TypeScript SDK for the Macula mesh (FFI over macula-go)",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,7 +28,7 @@
     "build:prebuilds": "npm run build:go && prebuildify --napi --strip",
     "build": "npm run build:addon:dev && tsc",
     "test": "vitest run",
-    "test:live": "MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts",
+    "test:live": "MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build:prebuilds && tsc"
   },

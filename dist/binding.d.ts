@@ -10,6 +10,9 @@ export declare const native: {
     sessionStationNodeId(handle: Handle): Uint8Array;
     sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void>;
     sessionCall(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number): Promise<string>;
+    ucanMint(identityHandle: Handle, issuer: string, audience: string, capabilitiesJson: string, expiresAt: number | undefined, notBefore: number | undefined, nonce: string, factsJson: string | undefined, proofsJson: string | undefined): string;
+    ucanDecode(token: string): string;
+    sessionCallWithUcan(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, ucanToken: string): Promise<string>;
     sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
     sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
     serveWaitForCall(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, timeoutMs: number): Promise<Handle | null>;

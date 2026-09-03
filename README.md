@@ -4,9 +4,12 @@
 [macula-go](https://github.com/macula-io/macula-go) via a Go C-shared
 library. Identity generation, a real transport + CONNECT/HELLO handshake,
 unary RPC (both roles — caller and provider), DHT record lookups/
-publication, and pubsub (publish/subscribe, both directions) against the
-production fleet all work end-to-end today. Content transfer, streaming
-RPC, and UCAN don't exist yet.
+publication, pubsub (publish/subscribe, both directions), content
+transfer, and UCAN minting/inspection + UCAN-gated calling against the
+production fleet all work end-to-end today. Streaming RPC, direct-dial,
+and UCAN policy gating on the *provider* side (this SDK can attach a
+token to a call, but cannot yet enforce one on a served procedure) don't
+exist yet.
 
 ## Why FFI over macula-go, not a native TypeScript reimplementation
 
@@ -315,9 +318,80 @@ directly.
   as the literal string `%!w(<nil>)` inside the thrown JS error message.
   Split into two separate, correctly-worded error paths.
 
+- UCAN — `Ucan.mint(issuer, audience, capabilities?, opts?)` (macula-go's
+  `ucan.Create`: a JWT-shaped, EdDSA-signed capability token, UCAN spec
+  version `"0.10.0"` — the older JWT-based draft macula's whole ecosystem
+  uses, not the current non-JWT/IPLD UCAN 1.0 spec) and
+  `Ucan.decode(token)` (macula-go's `ucan.Decode` — parses claims WITHOUT
+  verifying the signature or checking expiry; `Ucan#isExpired` is a local
+  claims check only, mirroring `ucan.IsExpired`'s exact semantics: no
+  `exp` claim means never expired, and a token expiring at exactly the
+  current second is not YET expired). `issuer`/`audience` DID strings are
+  built automatically as `did:macula:<hex NodeID>`, matching macula-go's
+  own tests/examples rather than inventing a different convention. Both
+  are pure local operations — no network I/O, no station involved, a
+  token can be minted entirely offline. This SDK does **not** expose
+  `ucan.Verify` or `ucan.Policy` (gating a *served* procedure behind a
+  required issuer) — only minting, inspecting, and attaching a token to
+  an outgoing call are implemented; enforcing one is provider-side, out
+  of scope for this slice.
+- `session.callWithUcan(procedure, payload, ucanToken, opts?)` — `call()`,
+  attaching a UCAN token to the outgoing CALL (macula-go's
+  `connection.Session.CallWithUCAN`), for invoking a procedure a provider
+  has gated behind a `ucan.Policy.Required` policy on its own side.
+  `ucanToken` accepts either a `Ucan` (its `.token` is attached) or a raw
+  token string. **Deliberately places no restriction relating the calling
+  identity to the token's own `aud` claim** — this SDK's own research
+  into the real verify chain (Erlang's `authorize_policy` +
+  `macula_ucan_nif:verify/2`, identical across every SDK port including
+  macula-go) established that macula's UCAN gate is a BEARER-token check:
+  it verifies the token's signature and expiry against its issuer only,
+  never the caller's identity against `aud`. A client-side "does my
+  identity match this token's audience" guard would both reject
+  configurations the real wire-level gate accepts fine and misrepresent
+  a security property the mesh does not actually enforce — so neither
+  `Ucan.mint()` nor `callWithUcan()` implements one.
+- Introduces **no new Go-side handle type** — `Ucan` carries no `cgo.Handle`
+  at all (a minted token crosses the FFI boundary as plain ASCII text,
+  decoded claims as JSON), so there is no new handle-safety surface for a
+  `cgo.Handle.Value()`/`.Delete()` panic to hide in; `callWithUcan()`
+  reuses the same session/identity handles (and their `recover()`-guarded
+  lookups) `call()` already uses.
+- **Live-verified against the real production fleet**: a freshly minted
+  `Ucan` (via `Ucan.mint()`, offline) attached to a real CALL via
+  `callWithUcan()` against a real advertised procedure, completing with
+  the real round-tripped RESULT payload — proving the client-side
+  attach-and-call mechanism reaches the wire and completes end to end;
+  the same with a raw token string instead of a `Ucan` object; a call to
+  a procedure nobody has advertised still coming back a real, structured
+  `unknown_next_peer` (a UCAN token doesn't change ordinary CALL error
+  behavior). **Honest limitation**: this SDK has no served-side UCAN
+  policy gate (see above), so the live test proves attach-and-call works,
+  not that a provider actually *enforces* the token — there is no gated
+  procedure on the live fleet this SDK can stand up to prove that side
+  without also implementing provider-side gating, which is out of scope
+  here. macula-go's own `connection/serve_ucan_test.go` and
+  `directdial/directdial_live_test.go` (its `TestLiveDirectDialUCANGatedRoundTrip`)
+  already prove the enforcement side of this exact protocol works when a
+  gated provider is present — this SDK exercises the same
+  `connection.Session.CallWithUCAN` those use, just without a gated peer
+  of its own to call.
+- `Ucan.mint()`/`Ucan.decode()` were also probed directly, not just the
+  happy path: an audience that isn't exactly 32 bytes throws before ever
+  reaching the Go side; minting with a disposed `Identity` throws instead
+  of touching a freed handle; a garbage/never-issued identity handle
+  passed at the native layer throws cleanly instead of crashing the
+  process; `decode()` of a malformed (wrong segment count, empty, not
+  base64url) token throws instead of returning garbage; `decode()` of a
+  token with a tampered payload segment still parses successfully
+  (confirms this is genuinely a non-verifying decode, not a
+  verify-then-decode that happens to succeed only on well-formed input).
+
 ## What's explicitly not yet implemented
 
-Streaming RPC, UCAN, direct-dial, per-realm
+Streaming RPC, direct-dial, provider-side UCAN policy gating
+(`ucan.Policy`/`ServeOneCallGated` — this SDK can mint/attach a token but
+not enforce one on a served procedure), per-realm
 `call`/`serve`/`publish`/`subscribe` (the all-zero realm is used
 throughout for those four specifically — DHT's `putProcedureAdvertisement`
 DOES take an optional realm, since it has to match whatever realm the
@@ -334,12 +408,12 @@ working `Session`.
 ## Live tests
 
 `src/session.live.test.ts`, `src/rpc.live.test.ts`, `src/dht.live.test.ts`,
-`src/pubsub.live.test.ts`, and `src/content.live.test.ts` hit the real
-production fleet and are **not** part of default `npm test`/CI — opt in
-explicitly:
+`src/pubsub.live.test.ts`, `src/content.live.test.ts`, and
+`src/ucan.live.test.ts` hit the real production fleet and are **not**
+part of default `npm test`/CI — opt in explicitly:
 
 ```bash
-npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts
+npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts
 ```
 
 Matches macula-rust's `#[ignore]` and macula-dotnet's
