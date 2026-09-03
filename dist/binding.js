@@ -16,42 +16,28 @@
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-
 const require = createRequire(import.meta.url);
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const addon = require("node-gyp-build")(repoRoot) as {
-  identityGenerate(): bigint;
-  identityFromSeedBytes(seed32: Uint8Array): bigint;
-  identityNodeId(handle: Handle): Uint8Array;
-  identityPrivateBytes(handle: Handle): Uint8Array;
-  identityFree(handle: Handle): void;
-};
-
-// The addon always returns BigInt (see addon/binding.cc's comment on
-// why: a JS `number` loses precision above 2^53 and nothing guarantees
-// a cgo.Handle value stays under that forever), but accepts either
-// shape back for convenience.
-export type Handle = number | bigint;
-
+const addon = require("node-gyp-build")(repoRoot);
 export const native = {
-  identityGenerate(): bigint {
-    return addon.identityGenerate();
-  },
-  identityFromSeedBytes(seed32: Uint8Array): bigint {
-    if (seed32.length !== 32) {
-      throw new Error(`macula-ts: seed must be exactly 32 bytes, got ${seed32.length}`);
-    }
-    return addon.identityFromSeedBytes(seed32);
-  },
-  identityNodeId(handle: Handle): Uint8Array {
-    return addon.identityNodeId(handle);
-  },
-  identityPrivateBytes(handle: Handle): Uint8Array {
-    return addon.identityPrivateBytes(handle);
-  },
-  identityFree(handle: Handle): void {
-    addon.identityFree(handle);
-  },
+    identityGenerate() {
+        return addon.identityGenerate();
+    },
+    identityFromSeedBytes(seed32) {
+        if (seed32.length !== 32) {
+            throw new Error(`macula-ts: seed must be exactly 32 bytes, got ${seed32.length}`);
+        }
+        return addon.identityFromSeedBytes(seed32);
+    },
+    identityNodeId(handle) {
+        return addon.identityNodeId(handle);
+    },
+    identityPrivateBytes(handle) {
+        return addon.identityPrivateBytes(handle);
+    },
+    identityFree(handle) {
+        addon.identityFree(handle);
+    },
 };
+//# sourceMappingURL=binding.js.map

@@ -54,15 +54,21 @@ convention).
 ## Architecture
 
 ```
-src/*.ts  --(koffi)-->  build/libmacula.so  --(cgo)-->  macula-go
+src/*.ts  --(node-gyp-build)-->  addon/binding.cc (N-API)  --(static link)-->  cabi/  --(cgo)-->  macula-go
 ```
 
 `cabi/` is a Go module that imports `macula-go` and builds with
-`go build -buildmode=c-shared` into a C ABI shared library. `src/binding.ts`
-loads that library via [koffi](https://koffi.dev) and declares its exact
-exported function signatures; `src/identity.ts` (and everything built on top
-of it later) is the actual public TypeScript API, never touching the raw
-FFI layer directly.
+`go build -buildmode=c-archive` into a C ABI static archive (`libmacula.a`
++ `libmacula.h`) — not a shared library. `addon/binding.cc` is a small,
+purpose-built [node-addon-api](https://github.com/nodejs/node-addon-api)
+N-API addon (not a generic FFI bridge) that links `libmacula.a` in
+statically, so the resulting `.node` file is self-contained: nothing to
+locate or `dlopen` at runtime, no separate shared library to ship
+alongside it. `src/binding.ts` loads that addon via
+[`node-gyp-build`](https://github.com/prebuild/node-gyp-build) (a
+zero-dependency runtime loader) and re-exports its typed functions;
+`src/identity.ts` (and everything built on top of it later) is the actual
+public TypeScript API, never touching the addon directly.
 
 **Memory ownership**, copied from macula-php's `cabi/` rather than
 reinvented: every opaque Go value (currently: an identity keypair) crosses
@@ -99,39 +105,60 @@ direct-dial. Each of these is a separate, later slice of work — this repo
 only proves the FFI plumbing itself works end-to-end with one real
 operation.
 
-## Known packaging gap
+## Packaging: genuinely zero install-time scripts
 
-`koffi` (the FFI library `src/binding.ts` uses to load `libmacula.so`) has
-its own native `install` script (`cnoke.cjs --prebuild --release`) and
-ships no prebuilt binaries directly in its npm tarball — meaning it
-inherits the same class of npm-install-script friction that
+An earlier version of this package used [koffi](https://koffi.dev) (a
+generic dynamic FFI bridge) to load `libmacula.so` at runtime. That was
+replaced — koffi has its own native `install` script
+(`cnoke.cjs --prebuild --release`) and ships no prebuilt binaries in its
+npm tarball, so it inherited the exact class of npm-install-script
+friction that
 [macula-mcp's better-sqlite3 dependency caused](https://github.com/macula-io/macula-mcp/blob/main/CHANGELOG.md)
-before that project moved to `node:sqlite`. There is currently no
-equally-capable, actively-maintained Node FFI library that ships genuinely
-zero-postinstall-script prebuilts (checked before choosing koffi over the
-`ffi-napi`/`node-ffi-napi` family, which are worse on this exact point).
-Proper packaging — most likely a dedicated N-API/napi-rs addon published
-with per-platform `optionalDependencies` and no install script at all,
-mirroring how `@swc/core`/`esbuild` ship — is deferred work, same as the
-cross-platform build matrix below.
+before that project moved to `node:sqlite`. No actively-maintained generic
+Node FFI library was found that avoids this (checked; the `ffi-napi`/
+`node-ffi-napi` family is worse on this exact point).
 
-`npm run build:native` currently only produces a Linux `.so` (this
-skeleton's own dev platform). No cross-platform CI build matrix
-(`.dylib`/`.dll`, multi-arch) exists yet — `.github/workflows/ci.yml` runs
-`ubuntu-latest` only.
+Instead, `addon/binding.cc` is a small addon purpose-built for exactly
+macula-ts's own exported functions (not a generic bridge), packaged with
+[`prebuildify`](https://github.com/prebuild/prebuildify) +
+[`node-gyp-build`](https://github.com/prebuild/node-gyp-build) — the same
+pattern used by `sharp`, `bcrypt`, and other native modules that need zero
+consumer-side compilation. The compiled `.node` binary for each supported
+platform is baked into `prebuilds/` and published as part of the npm
+package itself (**not** gitignored — that's the point: there is nothing to
+build or fetch at a consumer's `npm install` time). `package.json` has no
+`install`, `postinstall`, or `preinstall` script at all. This was verified
+directly, not assumed: the real packed tarball was installed into a fresh
+directory with no source tree present, and confirmed to complete in
+under a second with zero compiler invocation and a working end-to-end
+call through the addon.
+
+Only `linux-x64` is covered today (this skeleton's own dev platform) — no
+cross-platform build matrix (`darwin`/`win32`, `arm64`) exists yet.
+`.github/workflows/ci.yml` runs `ubuntu-latest` only, and its own final
+step re-verifies the zero-compile consumer install on every push.
 
 ## Development
 
 ```bash
-npm install       # also runs build:native via the "prepare" script
+npm run build:go   # builds cabi/build/libmacula.a -- must run BEFORE
+                    # npm install, since binding.gyp's mere presence in
+                    # this repo (not in the published package) makes npm
+                    # implicitly run `node-gyp rebuild` as part of
+                    # install, and that rebuild links against this archive
+npm install         # builds the native addon (via the implicit node-gyp
+                    # rebuild above) and installs JS deps
 npm run typecheck
 npm test
-npm run build
+npm run build:prebuilds   # regenerate prebuilds/ after touching addon/ or cabi/ -- commit the result
+npm run build             # local dev build: addon + tsc
 ```
 
-Requires Go >=1.27 (for `cabi/`) and Node >=24.18.1 (see `engines` in
-`package.json` — matches the same floor macula-mcp landed on for
-`node:sqlite`; earlier Node lines don't ship it).
+Requires Go >=1.27 (for `cabi/`), a C++ toolchain (for `addon/`), and Node
+>=24.18.1 (see `engines` in `package.json` — matches the same floor
+macula-mcp landed on for `node:sqlite`; earlier Node lines don't ship it).
+None of this is required to *consume* the published package — only to
+work on macula-ts itself.
 
 ## License
 

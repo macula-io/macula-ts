@@ -3,26 +3,35 @@
 ## Setup
 
 ```bash
-npm install
+npm run build:go   # builds cabi/build/libmacula.a -- must come first
+npm install          # builds the native addon (node-gyp, triggered
+                      # implicitly by binding.gyp's presence) + JS deps
 ```
 
-This also builds `cabi/`'s Go C-shared library (via the `prepare` script) so
-`npm test` works right after a fresh clone. Requires Go >=1.27 and Node
->=24.18.1 — see `.tool-versions` if you use asdf.
+`npm run build:go` has to run *before* `npm install`: this repo's
+`binding.gyp` (not part of the published package -- see README.md's
+"Packaging" section) makes npm implicitly run `node-gyp rebuild` as part
+of install, and that rebuild links against the Go archive, so it has to
+already exist. Requires Go >=1.27, a C++ toolchain, and Node >=24.18.1 —
+see `.tool-versions` if you use asdf.
 
 ## Build, typecheck, test
 
 ```bash
-npm run typecheck   # tsc --noEmit
-npm run build        # build:native + tsc
-npm test             # vitest run
+npm run typecheck        # tsc --noEmit
+npm run build             # build:addon:dev + tsc
+npm test                  # vitest run
+npm run build:prebuilds   # regenerate prebuilds/ -- commit the result
 ```
 
-All three run in CI (`.github/workflows/ci.yml`) on `ubuntu-latest` only —
-there is no cross-platform build matrix yet (see README.md's "Known
-packaging gap"). If you're changing anything under `cabi/`, rebuild it
-yourself first with `npm run build:native` before running the TS test
-suite, since vitest does not trigger a native rebuild on its own.
+All of this runs in CI (`.github/workflows/ci.yml`) on `ubuntu-latest`
+only — there is no cross-platform build matrix yet (see README.md's
+"Packaging" section). If you change anything under `addon/` or `cabi/`,
+rebuild with `npm run build:addon:dev` before running the TS test suite
+(vitest does not trigger a native rebuild on its own), and regenerate +
+commit `prebuilds/` with `npm run build:prebuilds` before pushing — CI's
+last step fails the build if the committed prebuild doesn't match a fresh
+one.
 
 ## Working across the FFI boundary
 
@@ -35,12 +44,16 @@ exported `//export` function:
   `cgo.Handle(h).Value()` directly — see the "Memory ownership" section of
   README.md for why this is not optional (`.Value()` and `.Delete()` panic,
   not error, on an invalid handle).
-- Verify the exact koffi call shape empirically (run it against the real
-  compiled library) before trusting it — koffi's inline `_Out_`/`_Inout_`
-  string syntax and its `koffi.out(koffi.pointer(x, 2))` array-signature
-  form aren't interchangeable for every parameter shape, and getting this
-  wrong fails silently or crashes rather than throwing a clear TypeScript
+- Add the matching N-API wrapper in `addon/binding.cc` and register it in
+  `Init()`. Verify the exact call shape empirically (run it, don't just
+  read the code) before trusting it — a mismatched buffer size or handle
+  width fails silently or crashes rather than throwing a clear TypeScript
   error.
+- Probe the new function's failure modes deliberately (an invalid handle,
+  a double-free, a wrong-length buffer) before considering it done — see
+  0.2.0's CHANGELOG entry for why: this exact discipline is what caught
+  the `errOut`-leak and the handle-panic bugs, neither of which showed up
+  on the happy path alone.
 - Add a test that asserts something the FFI call could only produce by
   actually reaching macula-go — not just "the call didn't throw". See
   `src/identity.test.ts`'s puzzle-difficulty assertion.

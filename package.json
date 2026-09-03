@@ -1,6 +1,6 @@
 {
   "name": "@macula-io/ts",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript SDK for the Macula mesh (FFI over macula-go)",
   "license": "Apache-2.0",
   "type": "module",
@@ -20,20 +20,25 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "build"
+    "prebuilds"
   ],
   "scripts": {
-    "build:native": "cd cabi && go mod tidy && CGO_ENABLED=1 go build -buildmode=c-shared -o ../build/libmacula.so .",
-    "build": "npm run build:native && tsc",
-    "prepare": "npm run build:native",
+    "build:go": "cd cabi && go mod tidy && CGO_ENABLED=1 go build -buildmode=c-archive -o build/libmacula.a .",
+    "build:addon:dev": "npm run build:go && node-gyp rebuild",
+    "build:prebuilds": "npm run build:go && prebuildify --napi --strip",
+    "build": "npm run build:addon:dev && tsc",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build:prebuilds && tsc"
   },
   "dependencies": {
-    "koffi": "^3.2.0"
+    "node-addon-api": "^8.9.2",
+    "node-gyp-build": "^4.8.4"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "node-gyp": "^13.0.2",
+    "prebuildify": "^6.0.1",
     "typescript": "^5.4.0",
     "vitest": "^3.2.7"
   },

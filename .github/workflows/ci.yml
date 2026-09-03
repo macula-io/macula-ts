@@ -9,7 +9,7 @@ on:
 jobs:
   test:
     # Single platform for now -- this repo has no cross-platform prebuilt
-    # matrix yet, see README.md's "Known packaging gap".
+    # matrix yet, see README.md's "Status" section.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +22,17 @@ jobs:
         with:
           node-version: "24.20.0"
 
-      - name: Install (also builds cabi/ via the prepare script)
+      # Must run before `npm install`: binding.gyp's mere presence makes
+      # npm implicitly run `node-gyp rebuild` as part of install (this is
+      # npm's own long-standing convention, not something declared in our
+      # scripts), and that rebuild links against cabi/build/libmacula.a,
+      # which has to exist first. This ordering requirement is a dev/CI
+      # concern only -- it does NOT affect consumers, since binding.gyp
+      # is not part of what gets published (see package.json's "files").
+      - name: Build the Go c-archive (cabi/)
+        run: npm run build:go
+
+      - name: Install (builds the native addon via node-gyp, using the archive above)
         run: npm install
 
       - name: Typecheck
@@ -31,5 +41,36 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Build
-        run: npm run build
+      - name: Build TypeScript output
+        run: npx tsc
+
+      - name: Confirm the committed prebuild is not stale
+        run: |
+          npm run build:prebuilds
+          if ! git diff --exit-code -- prebuilds/; then
+            echo "::error::committed prebuilds/ does not match a fresh build -- run 'npm run build:prebuilds' and commit the result"
+            exit 1
+          fi
+
+      - name: Verify a consumer install needs zero compilation
+        run: |
+          set -eu
+          npm pack --pack-destination /tmp
+          TARBALL=$(ls /tmp/macula-io-ts-*.tgz)
+          mkdir -p /tmp/consumer-install-test && cd /tmp/consumer-install-test
+          npm init -y >/dev/null
+          npm install "$TARBALL"
+          # binding.gyp/addon/cabi are excluded from the published package
+          # (see package.json's "files") -- if either shows up here, the
+          # packaging regressed and a consumer install would try to compile.
+          if [ -e node_modules/@macula-io/ts/binding.gyp ] || [ -d node_modules/@macula-io/ts/addon ] || [ -d node_modules/@macula-io/ts/cabi ]; then
+            echo "::error::published package still contains build sources -- consumer installs would try to compile"
+            exit 1
+          fi
+          node --input-type=module -e "
+            import { Identity } from '@macula-io/ts';
+            const id = Identity.generate();
+            if (id.nodeId.length !== 32) throw new Error('bad nodeId length');
+            id.dispose();
+            console.log('consumer-side install verified end to end, zero build steps');
+          "
