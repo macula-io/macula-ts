@@ -14,7 +14,7 @@ import { native, type Handle } from "./binding.js";
 import { ContentNotFoundError } from "./content.js";
 import { DHT_DEFAULT_TTL_MS, DhtRecordType, type DhtRecord } from "./dht.js";
 import { Identity } from "./identity.js";
-import type { PublishOptions, PubsubEvent } from "./pubsub.js";
+import type { PublishOptions, PubsubEvent, SubscribeOptions } from "./pubsub.js";
 import { DEFAULT_CALL_TIMEOUT_MS, MaculaCallError, SERVE_POLL_MS, type CallEnvelope, type JsonValue } from "./rpc.js";
 import { Ucan } from "./ucan.js";
 
@@ -64,6 +64,42 @@ export class Session {
   #identity: Identity;
   #activeServe: ActiveServe | null = null;
   #activeSubscription: ActiveSubscription | null = null;
+
+  // Serializes every operation that reads this Session's shared
+  // control stream: call()/callWithUcan()/the DHT methods, plus
+  // serve()'s advertise + each poll tick + unadvertise, plus
+  // subscribe()'s start + stop. macula-go's connection/frame_stream.go
+  // RecvFrame mutates a shared buffer with no mutex of its own, so two
+  // reads racing it corrupt the stream -- verified live: `Promise.all`
+  // of 4 concurrent call()s on one Session left EVERY later read on
+  // that same Session permanently failing "claimed frame length ...
+  // exceeds the 16777215-byte cap" (a torn buffer), not just that one
+  // batch. The `#activeServe`/`#activeSubscription` checks above only
+  // ever protected call()-family operations from an ACTIVE serve()/
+  // subscribe() -- they did nothing to stop two ordinary call()s (or a
+  // call() racing a DHT method) from racing each other, since neither
+  // flag is set in that case. This queue is what actually closes that
+  // gap: every control-stream-reading native call funnels through
+  // #enqueue, so only one is ever in flight at a time, regardless of
+  // which method it came from. publish()/putContent()/getContent() do
+  // NOT go through this -- see their own docs for why (a pure write,
+  // and each own dedicated QUIC stream, respectively -- neither reads
+  // this shared stream at all).
+  #queue: Promise<void> = Promise.resolve();
+
+  #enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.#queue.then(fn, fn);
+    // The chain itself must never become a rejected promise -- that
+    // would wedge every future caller behind a permanently-broken
+    // link. Each waiter still gets ITS OWN real result/rejection via
+    // the `result` returned below; only the internal sequencing link
+    // swallows the outcome.
+    this.#queue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
 
   private constructor(handle: Handle, identity: Identity) {
     this.#handle = handle;
@@ -165,7 +201,21 @@ export class Session {
   async close(identity: Identity, reason = ""): Promise<void> {
     if (this.#handle === null) return;
     if (this.#activeSubscription !== null) {
-      await this.#activeSubscription.stop();
+      // Swallowed, not awaited-and-propagated: a subscription whose
+      // connection already died (or whose stop() otherwise fails) must
+      // never prevent this Session from actually closing -- verified
+      // live that letting that rejection abort close() left the
+      // Session's handle un-nulled (leaked) and unclosable on every
+      // subsequent attempt. Whatever happened here is either already
+      // reported (subscribe()'s own onClosed, if that's why this
+      // failed) or genuinely not this method's problem to surface --
+      // close() closing the underlying session either way is the
+      // actual guarantee this method makes.
+      try {
+        await this.#activeSubscription.stop();
+      } catch (err) {
+        console.error(`macula-ts: session.close() couldn't cleanly stop an active subscription first (closing anyway):`, err);
+      }
     }
     const handle = this.#handle;
     this.#handle = null;
@@ -199,7 +249,9 @@ export class Session {
     const handle = this.#requireHandleNotServing("call");
     const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
     const payloadJson = JSON.stringify(payload ?? null);
-    const envelopeJson = await native.sessionCall(handle, this.#identity.handleForFfi(), procedure, undefined, payloadJson, timeoutMs);
+    const envelopeJson = await this.#enqueue(() =>
+      native.sessionCall(handle, this.#identity.handleForFfi(), procedure, undefined, payloadJson, timeoutMs),
+    );
     const envelope = JSON.parse(envelopeJson) as CallEnvelope;
     if (envelope.ok) return envelope.payload;
     throw new MaculaCallError(envelope.bolt4);
@@ -238,14 +290,16 @@ export class Session {
     const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
     const payloadJson = JSON.stringify(payload ?? null);
     const token = typeof ucanToken === "string" ? ucanToken : ucanToken.token;
-    const envelopeJson = await native.sessionCallWithUcan(
-      handle,
-      this.#identity.handleForFfi(),
-      procedure,
-      undefined,
-      payloadJson,
-      timeoutMs,
-      token,
+    const envelopeJson = await this.#enqueue(() =>
+      native.sessionCallWithUcan(
+        handle,
+        this.#identity.handleForFfi(),
+        procedure,
+        undefined,
+        payloadJson,
+        timeoutMs,
+        token,
+      ),
     );
     const envelope = JSON.parse(envelopeJson) as CallEnvelope;
     if (envelope.ok) return envelope.payload;
@@ -293,14 +347,37 @@ export class Session {
     const handle = this.#requireHandle();
     const identityHandle = this.#identity.handleForFfi();
 
-    await native.sessionAdvertise(handle, identityHandle, undefined, procedure);
+    // Marked BEFORE the advertise await below, not after -- closing the
+    // exact race window this repo's own live testing found: a
+    // concurrent call()/serve()/subscribe() checks #activeServe
+    // synchronously, so it must already be non-null by the time this
+    // function's first await yields control, not only once advertise
+    // has finished. The placeholder stop() is only reachable if
+    // something races this same synchronous tick (impossible in
+    // practice, single-threaded JS) or misuses the handle before
+    // startup finishes; rolled back to null below if advertise itself
+    // fails, so a failed serve() attempt doesn't leave the Session
+    // permanently (and incorrectly) marked as serving.
+    const placeholderStop = async (): Promise<void> => {
+      throw new Error(`macula-ts: session.serve("${procedure}") has not finished starting yet`);
+    };
+    this.#activeServe = { procedure, stop: placeholderStop };
+
+    try {
+      await this.#enqueue(() => native.sessionAdvertise(handle, identityHandle, undefined, procedure));
+    } catch (err) {
+      this.#activeServe = null;
+      throw err;
+    }
 
     let stopped = false;
     const loopDone = (async () => {
       while (!stopped) {
         let pendingHandle: Handle | null;
         try {
-          pendingHandle = await native.serveWaitForCall(handle, identityHandle, undefined, procedure, SERVE_POLL_MS);
+          pendingHandle = await this.#enqueue(() =>
+            native.serveWaitForCall(handle, identityHandle, undefined, procedure, SERVE_POLL_MS),
+          );
         } catch (err) {
           if (!stopped) {
             console.error(`macula-ts: session.serve("${procedure}") poll failed, stopping this server loop:`, err);
@@ -329,7 +406,7 @@ export class Session {
       await loopDone;
       this.#activeServe = null;
       if (this.#handle !== null) {
-        await native.sessionUnadvertise(handle, identityHandle, undefined, procedure);
+        await this.#enqueue(() => native.sessionUnadvertise(handle, identityHandle, undefined, procedure));
       }
     };
     this.#activeServe = { procedure, stop };
@@ -351,7 +428,7 @@ export class Session {
    * call this while serve() is active on the same Session. */
   async findRecordsByType(recordType: DhtRecordType | number): Promise<DhtRecord[]> {
     const handle = this.#requireHandleNotServing("findRecordsByType");
-    const json = await native.dhtFindRecordsByType(handle, this.#identity.handleForFfi(), recordType);
+    const json = await this.#enqueue(() => native.dhtFindRecordsByType(handle, this.#identity.handleForFfi(), recordType));
     return JSON.parse(json) as DhtRecord[];
   }
 
@@ -366,7 +443,7 @@ export class Session {
   async findRecords(key: Uint8Array): Promise<DhtRecord[]> {
     const handle = this.#requireHandleNotServing("findRecords");
     requireKey32(key);
-    const json = await native.dhtFindRecords(handle, this.#identity.handleForFfi(), key);
+    const json = await this.#enqueue(() => native.dhtFindRecords(handle, this.#identity.handleForFfi(), key));
     return JSON.parse(json) as DhtRecord[];
   }
 
@@ -379,7 +456,7 @@ export class Session {
   async findRecord(key: Uint8Array): Promise<DhtRecord | null> {
     const handle = this.#requireHandleNotServing("findRecord");
     requireKey32(key);
-    const json = await native.dhtFindRecord(handle, this.#identity.handleForFfi(), key);
+    const json = await this.#enqueue(() => native.dhtFindRecord(handle, this.#identity.handleForFfi(), key));
     return json === null ? null : (JSON.parse(json) as DhtRecord);
   }
 
@@ -422,13 +499,15 @@ export class Session {
     const handle = this.#requireHandleNotServing("putProcedureAdvertisement");
     requireKey32(servingStation);
     if (opts.realm !== undefined) requireKey32(opts.realm);
-    const json = await native.dhtPutProcedureAdvertisement(
-      handle,
-      this.#identity.handleForFfi(),
-      opts.realm,
-      procedure,
-      servingStation,
-      opts.ttlMs ?? DHT_DEFAULT_TTL_MS,
+    const json = await this.#enqueue(() =>
+      native.dhtPutProcedureAdvertisement(
+        handle,
+        this.#identity.handleForFfi(),
+        opts.realm,
+        procedure,
+        servingStation,
+        opts.ttlMs ?? DHT_DEFAULT_TTL_MS,
+      ),
     );
     return JSON.parse(json) as DhtRecord;
   }
@@ -447,7 +526,9 @@ export class Session {
     if (mcid.length !== 34) {
       throw new Error(`macula-ts: content_announcement mcid must be exactly 34 bytes, got ${mcid.length}`);
     }
-    const json = await native.dhtPutContentAnnouncement(handle, this.#identity.handleForFfi(), mcid, endpoint, ttlMs);
+    const json = await this.#enqueue(() =>
+      native.dhtPutContentAnnouncement(handle, this.#identity.handleForFfi(), mcid, endpoint, ttlMs),
+    );
     return JSON.parse(json) as DhtRecord;
   }
 
@@ -508,8 +589,18 @@ export class Session {
    * happen afterward, not just that one was requested.
    *
    * Real network I/O (the initial SUBSCRIBE send, and stop()'s
-   * UNSUBSCRIBE) -- both run off the main thread on the native side. */
-  async subscribe(topic: string, handler: (evt: PubsubEvent) => void): Promise<() => Promise<void>> {
+   * UNSUBSCRIBE) -- both run off the main thread on the native side.
+   *
+   * If the underlying connection dies (or any other transport error
+   * ends the background reader) rather than the returned stop() being
+   * called, this subscription tears itself down automatically -- the
+   * native handle is released and this Session is left closable and
+   * reusable for a fresh subscribe()/serve()/call() -- and, if
+   * provided, `opts.onClosed` is called once with the error. Verified
+   * live that, without this, such a subscription went silent forever
+   * (no further events, no error) and left this Session's handle
+   * permanently open even after close(). */
+  async subscribe(topic: string, handler: (evt: PubsubEvent) => void, opts: SubscribeOptions = {}): Promise<() => Promise<void>> {
     if (this.#activeServe !== null) {
       throw new Error(
         `macula-ts: Session.subscribe() while serve("${this.#activeServe.procedure}") is active on the same ` +
@@ -526,19 +617,66 @@ export class Session {
     const handle = this.#requireHandle();
     const identityHandle = this.#identity.handleForFfi();
 
-    const subscriptionHandle = await native.sessionSubscribeStart(handle, identityHandle, undefined, topic, (evt) => {
-      handler({ payload: JSON.parse(evt.payloadJson) as JsonValue, publisher: evt.publisher, seq: evt.seq });
-    });
-
-    const stop = async (): Promise<void> => {
-      // Cleared only AFTER the native call resolves, not before -- that
-      // call is what blocks until the Go-side reader goroutine has
-      // actually exited (see native.sessionSubscribeStop's own doc), so
-      // clearing this any earlier would let a concurrent call()/serve()/
-      // another subscribe() start racing the still-shutting-down reader.
-      await native.sessionSubscribeStop(subscriptionHandle);
-      this.#activeSubscription = null;
+    // Marked BEFORE the subscribe-start await below, not after -- same
+    // race-window fix as serve()'s own placeholder above, and for the
+    // identical reason (this repo's own live testing found the same
+    // class of race on both). Rolled back to null if starting the
+    // subscription itself fails.
+    const placeholderStop = async (): Promise<void> => {
+      throw new Error(`macula-ts: session.subscribe("${topic}") has not finished starting yet`);
     };
+    this.#activeSubscription = { topic, stop: placeholderStop };
+
+    // subscriptionHandle is assigned once (right after sessionSubscribeStart
+    // resolves, below) and only ever READ from here on -- realStop
+    // cannot run before that assignment, since nothing can call stop()
+    // (directly or via onClosed) before this function itself returns it.
+    let subscriptionHandle!: Handle;
+    let stopPromise: Promise<void> | null = null;
+
+    const realStop = async (): Promise<void> => {
+      this.#activeSubscription = null;
+      await this.#enqueue(() => native.sessionSubscribeStop(subscriptionHandle));
+    };
+    // Memoized so it is safe to call more than once, from more than one
+    // place -- the caller's own returned stop(), AND onClosed's own
+    // internal call below when the reader exits on its own -- without
+    // either double-invoking the native stop (which would either be a
+    // wasted call or, worse, race a second subscribe() that had since
+    // reused this Session). Whichever caller gets here first actually
+    // runs realStop(); everyone else gets that same settled outcome.
+    const stop = (): Promise<void> => {
+      if (stopPromise === null) stopPromise = realStop();
+      return stopPromise;
+    };
+
+    const onClosed = (error: Error): void => {
+      console.error(`macula-ts: session.subscribe("${topic}") ended unexpectedly, tearing it down:`, error);
+      // This internal call's own rejection (the underlying transport
+      // error realStop's native call surfaces once more, tearing down
+      // an already-dead subscription) is not new information -- error
+      // is already being reported via onClosed itself, right below.
+      // A caller's OWN explicit call to the returned stop() afterward
+      // still resolves/rejects for real, from the same memoized promise.
+      stop().catch(() => {});
+      opts.onClosed?.(error);
+    };
+
+    try {
+      subscriptionHandle = await this.#enqueue(() =>
+        native.sessionSubscribeStart(handle, identityHandle, undefined, topic, (msg) => {
+          if (msg.kind === "closed") {
+            onClosed(new Error(msg.error ?? "subscription closed"));
+            return;
+          }
+          handler({ payload: JSON.parse(msg.payloadJson) as JsonValue, publisher: msg.publisher, seq: msg.seq });
+        }),
+      );
+    } catch (err) {
+      this.#activeSubscription = null;
+      throw err;
+    }
+
     this.#activeSubscription = { topic, stop };
     return stop;
   }

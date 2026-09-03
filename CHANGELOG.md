@@ -2,6 +2,89 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0]
+
+Two real, live-measured concurrency bugs found by an adversarial review
+of the RPC/DHT/pubsub/content/UCAN work, fixed and re-verified — see
+README.md's new "Concurrency safety" section for the user-facing
+description.
+
+### Fixed
+
+- **Concurrent control-stream operations could permanently brick a
+  Session.** `Session.call()`/`callWithUcan()`/the DHT methods only
+  guarded against an *already-registered* `serve()`/`subscribe()` — two
+  concurrent `call()`s (no serve/subscribe involved at all) had nothing
+  stopping them from racing macula-go's `connection/frame_stream.go`
+  `RecvFrame`, which mutates a shared buffer with no mutex of its own.
+  Reproduced live: `Promise.all` of 4 concurrent `call()`s left every
+  later read on that same Session permanently failing to decode any
+  frame ("claimed frame length ... exceeds the 16777215-byte cap").
+  Fixed with a per-Session async queue (`Session#enqueue`) that every
+  control-stream-reading operation now funnels through — `call`,
+  `callWithUcan`, `findRecord`/`findRecords`/`findRecordsByType`,
+  `putProcedureAdvertisement`/`putContentAnnouncement`, `serve()`'s
+  advertise + each poll tick + unadvertise, `subscribe()`'s start +
+  stop. `publish()`/`putContent()`/`getContent()` are unaffected (a
+  pure write, and each own dedicated QUIC stream, respectively — neither
+  reads the shared stream). Also closed the race window in the existing
+  `serve()`/`subscribe()` exclusivity guards: `#activeServe`/
+  `#activeSubscription` are now marked synchronously, before either
+  method's first `await`, not after — the old ordering left a window a
+  concurrent call could slip through while the initial network call
+  (advertise / subscribe-send) was still in flight.
+  Re-verified live: the exact 4-concurrent-`call()` reproduction now
+  succeeds cleanly (all 4 resolve), and a follow-up ordinary `call()` on
+  the same Session afterward still succeeds — the Session is never left
+  bricked. A concurrent-`subscribe()` reproduction (two `subscribe()`
+  calls racing on one Session) now correctly allows only one to succeed.
+
+- **A subscription whose connection died was silent and hung the
+  process forever.** `cabi/pubsub.go`'s background reader goroutine only
+  ever reported its exit into an internal channel, never to JS; the
+  `ThreadSafeFunction` (which deliberately keeps Node's event loop alive
+  for a *healthy* subscription) was only released via the explicit
+  `stop()` path, never when the goroutine exited on its own; and
+  `Session.close()` awaited a failed `stop()` before nulling its handle,
+  so a dead subscription's `close()` call would itself fail, leaving the
+  Session's handle (and its underlying QUIC connection) permanently
+  leaked. Reproduced live at the raw native layer: killing a session out
+  from under an active subscription (not via its own `stop()`) delivered
+  no signal at all, and the process needed to be force-killed after 15s+
+  rather than exiting on its own.
+  Fixed: `cabi/pubsub.go`'s reader goroutine now delivers a terminal
+  "closed" signal (with the real underlying error) through the same
+  `ThreadSafeFunction` used for ordinary events whenever it exits for
+  any reason other than its own requested stop (`context.Canceled`) —
+  `addon/binding.cc`'s `OnMaculaSubscriptionClosed` mirrors the existing
+  `OnMaculaEvent` delivery path. `Session.subscribe()` now accepts an
+  optional `opts.onClosed(error)` callback and reacts to a "closed"
+  signal by automatically tearing the subscription down (releasing the
+  native handle, clearing internal state) whether or not a caller
+  provided one. `Session.subscribe()`'s returned `stop()` is now
+  idempotent and safe to call from more than one place (the caller's own
+  code, and this internal auto-teardown) without double-invoking the
+  native stop. `Session.close()` now swallows a failed subscription
+  `stop()` instead of letting it abort closing — it always proceeds to
+  actually close the underlying session and null its handle.
+  Re-verified live: the raw-layer reproduction above now delivers the
+  real underlying error through the "closed" signal, and the process
+  exits naturally with no external kill needed. Confirmed the legitimate
+  case is unaffected: a program that only `subscribe()`s and does
+  nothing else still stays alive for the life of a genuinely healthy
+  subscription (verified it is NOT killed early by this fix).
+
+- `PublishOptions.ttlMs`'s doc comment said "milliseconds since epoch";
+  the field is (and was always treated by the code as) a *duration* in
+  milliseconds, matching every other `ttlMs` in this SDK — fixed the doc
+  only, the actual behavior was already correct.
+
+- Stale doc comments: `cabi/main.go`'s header still said "No
+  pubsub/content transfer/streaming/UCAN yet" (all but streaming now
+  exist); `.github/workflows/ci.yml` still said "no cross-platform
+  prebuilt matrix yet" (five platforms exist since 0.8.0, built by the
+  separate `prebuilds.yml`).
+
 ## [Unreleased]
 
 Real cross-platform prebuild distribution, built on all prior protocol

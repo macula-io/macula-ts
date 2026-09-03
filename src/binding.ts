@@ -131,11 +131,17 @@ const addon = require("node-gyp-build")(repoRoot) as {
   // background reader goroutine, see addon/binding.cc) once per
   // delivered EVENT, for as long as the subscription stays open --
   // asynchronously, on its own schedule, not just once when the
-  // returned Promise resolves. sessionSubscribeStart's Promise resolves
-  // once the initial SUBSCRIBE has been sent and the reader goroutine
-  // started; sessionSubscribeStop's Promise resolves only once that
-  // goroutine has actually exited (UNSUBSCRIBE sent, no further onEvent
-  // call possible) -- not merely once a stop was requested.
+  // returned Promise resolves. It's also called (with kind: "closed",
+  // exactly once) if that goroutine ever exits on its own -- the
+  // connection died, or some other transport error -- rather than via
+  // sessionSubscribeStop; see session.ts's subscribe() for how that's
+  // handled (a real bug this SDK had and fixed: without this signal,
+  // such a subscription went silent forever). sessionSubscribeStart's
+  // Promise resolves once the initial SUBSCRIBE has been sent and the
+  // reader goroutine started; sessionSubscribeStop's Promise resolves
+  // only once that goroutine has actually exited (UNSUBSCRIBE sent, no
+  // further onEvent call possible) -- not merely once a stop was
+  // requested.
   sessionPublish(
     sessionHandle: Handle,
     identityHandle: Handle,
@@ -149,7 +155,11 @@ const addon = require("node-gyp-build")(repoRoot) as {
     identityHandle: Handle,
     realm: Uint8Array | undefined,
     topic: string,
-    onEvent: (evt: { topic: string; publisher: Uint8Array; seq: number; payloadJson: string }) => void,
+    onEvent: (
+      msg:
+        | { kind: "event"; topic: string; publisher: Uint8Array; seq: number; payloadJson: string }
+        | { kind: "closed"; error: string },
+    ) => void,
   ): Promise<bigint>;
   sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
   // Content transfer (cabi/content.go). Each opens its OWN dedicated
@@ -313,7 +323,11 @@ export const native = {
     identityHandle: Handle,
     realm: Uint8Array | undefined,
     topic: string,
-    onEvent: (evt: { topic: string; publisher: Uint8Array; seq: number; payloadJson: string }) => void,
+    onEvent: (
+      msg:
+        | { kind: "event"; topic: string; publisher: Uint8Array; seq: number; payloadJson: string }
+        | { kind: "closed"; error: string },
+    ) => void,
   ): Promise<bigint> {
     return addon.sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent);
   },

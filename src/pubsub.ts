@@ -9,11 +9,29 @@ import type { JsonValue } from "./rpc.js";
 
 /** Options for Session.publish(). */
 export interface PublishOptions {
-  /** Milliseconds since epoch when this event expires -- PublishSpec's
-   * own `ttl_ms` (frame/pubsub.go). Omitted means no TTL, not zero or an
-   * invented default -- macula-go's Publish has no fallback of its own
-   * for this field, unlike the DHT puts' TTL. */
+  /** How many milliseconds from now this event should live -- a
+   * DURATION, not a timestamp (matches every other ttlMs in this SDK,
+   * e.g. dht.ts's DHT_DEFAULT_TTL_MS) -- PublishSpec's own `ttl_ms`
+   * (frame/pubsub.go) is computed from this. Omitted means no TTL, not
+   * zero or an invented default -- macula-go's Publish has no fallback
+   * of its own for this field, unlike the DHT puts' TTL. */
   ttlMs?: number;
+}
+
+/** Options for Session.subscribe(). */
+export interface SubscribeOptions {
+  /** Called at most once, only if this subscription's background
+   * reader exits on its own -- the underlying session/connection died,
+   * or some other transport error ended the read loop -- rather than
+   * via the stop() subscribe() returned being called. See
+   * Session.subscribe()'s own doc for the full story (a real bug this
+   * SDK had and fixed: without this signal, such a subscription went
+   * silent forever and left the Session unable to close cleanly).
+   * Optional: even without a handler here, the subscription still
+   * tears itself down automatically and correctly the moment this
+   * happens -- this is purely a notification hook for a caller who
+   * wants to know why events stopped arriving. */
+  onClosed?: (error: Error) => void;
 }
 
 /** One delivered EVENT -- macula-go's frame.EventInfo, minus `Realm`

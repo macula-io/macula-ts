@@ -26,11 +26,15 @@ export declare const native: {
     dhtPutProcedureAdvertisement(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, servingStation32: Uint8Array, ttlMs: number): Promise<string>;
     dhtPutContentAnnouncement(sessionHandle: Handle, identityHandle: Handle, mcid34: Uint8Array, endpoint: string, ttlMs: number): Promise<string>;
     sessionPublish(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, topic: string, payloadJson: string, ttlMs: number): Promise<void>;
-    sessionSubscribeStart(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, topic: string, onEvent: (evt: {
+    sessionSubscribeStart(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, topic: string, onEvent: (msg: {
+        kind: "event";
         topic: string;
         publisher: Uint8Array;
         seq: number;
         payloadJson: string;
+    } | {
+        kind: "closed";
+        error: string;
     }) => void): Promise<bigint>;
     sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
     contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string>;

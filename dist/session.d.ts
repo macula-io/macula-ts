@@ -1,6 +1,6 @@
 import { DhtRecordType, type DhtRecord } from "./dht.js";
 import { Identity } from "./identity.js";
-import type { PublishOptions, PubsubEvent } from "./pubsub.js";
+import type { PublishOptions, PubsubEvent, SubscribeOptions } from "./pubsub.js";
 import { type JsonValue } from "./rpc.js";
 import { Ucan } from "./ucan.js";
 /** Options for Session.call(). */
@@ -262,8 +262,18 @@ export declare class Session {
      * happen afterward, not just that one was requested.
      *
      * Real network I/O (the initial SUBSCRIBE send, and stop()'s
-     * UNSUBSCRIBE) -- both run off the main thread on the native side. */
-    subscribe(topic: string, handler: (evt: PubsubEvent) => void): Promise<() => Promise<void>>;
+     * UNSUBSCRIBE) -- both run off the main thread on the native side.
+     *
+     * If the underlying connection dies (or any other transport error
+     * ends the background reader) rather than the returned stop() being
+     * called, this subscription tears itself down automatically -- the
+     * native handle is released and this Session is left closable and
+     * reusable for a fresh subscribe()/serve()/call() -- and, if
+     * provided, `opts.onClosed` is called once with the error. Verified
+     * live that, without this, such a subscription went silent forever
+     * (no further events, no error) and left this Session's handle
+     * permanently open even after close(). */
+    subscribe(topic: string, handler: (evt: PubsubEvent) => void, opts?: SubscribeOptions): Promise<() => Promise<void>>;
     /** Content transfer: stores `data` (macula-go's content.Put, on this
      * Session's own fresh dedicated QUIC stream -- Session.
      * OpenDedicatedStream on the Go side, NOT the shared control stream

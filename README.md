@@ -108,6 +108,46 @@ before this was caught and fixed with a `recover()`-guarded lookup
 function resolves handles through those, never through `cgo.Handle(h)`
 directly.
 
+## Concurrency safety (fixed after an adversarial review found real bugs)
+
+macula-go's `connection/frame_stream.go` `RecvFrame` mutates a Session's
+shared control-stream buffer with no mutex of its own — two reads racing
+it can permanently corrupt that Session's stream. Two real, live-measured
+bugs from this were found and fixed:
+
+- **Concurrent operations on one Session no longer race or brick it.**
+  Previously, `Session.call()`/`callWithUcan()`/the DHT methods only
+  refused to run while a `serve()`/`subscribe()` was *already
+  registered* — nothing stopped two ordinary `call()`s (or a `call()`
+  racing a DHT method) from racing each other, since neither role flag
+  was set in that case. Reproduced live: `Promise.all` of 4 concurrent
+  `call()`s on one Session left *every later read on that same Session*
+  permanently failing to decode any frame at all — not just that one
+  batch. Every control-stream-reading operation (`call`, `callWithUcan`,
+  the DHT methods, `serve()`'s advertise + each poll tick + unadvertise,
+  `subscribe()`'s start + stop) now funnels through one per-Session async
+  queue, so only one is ever in flight at a time. `publish()`,
+  `putContent()`, `getContent()` are unaffected — they don't read this
+  shared stream at all (see their own docs).
+- **A subscription whose connection dies is no longer silent.**
+  Previously, if the underlying session/connection died while a
+  `subscribe()` was active (a station restart, say), the handler was
+  never called again, nothing rejected, and — because the subscription's
+  `ThreadSafeFunction` deliberately keeps Node's event loop alive for a
+  healthy subscription — the process hung forever with no way to notice
+  or recover; `Session.close()` on that Session then failed too, leaving
+  its handle permanently open. `subscribe()` now takes an optional
+  `opts.onClosed(error)` callback, called once if this happens; even
+  without it, the subscription now tears itself down automatically and
+  correctly the moment the connection dies, and `Session.close()` no
+  longer lets a failed subscription teardown stop it from actually
+  closing.
+
+Both were reproduced against the real production fleet, fixed, then
+re-verified against the same reproduction plus the existing live/offline
+suites — see `CHANGELOG.md`'s corresponding entry for the exact
+before/after evidence.
+
 ## What's implemented
 
 - `Identity.generate()` — mints a fresh, S/Kademlia puzzle-hardened Ed25519

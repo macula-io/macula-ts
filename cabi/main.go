@@ -23,11 +23,14 @@
 // Scope so far: identity generation/accessors, transport + handshake
 // (Session connect/close), unary RPC (both roles: Session.Call as
 // caller, Session.Advertise + Session.ServeOneCall as provider -- see
-// rpc.go and serve.go), and DHT record client operations (dht.go:
+// rpc.go and serve.go), DHT record client operations (dht.go:
 // FindRecord/FindRecords/FindRecordsByType, plus PutRecord via two
-// type-specific builders). No pubsub/content transfer/streaming/UCAN
-// yet -- those are separate, later work (see README.md's status
-// section).
+// type-specific builders), pubsub (pubsub.go: Publish, and a
+// Subscribe/Unsubscribe pair backed by a background reader goroutine),
+// content transfer (content.go: Put/Get, each on its own dedicated QUIC
+// stream), and UCAN mint/inspect/attach-to-call (ucan.go). No streaming
+// RPC or direct-dial yet -- those are separate, later work (see
+// README.md's status section).
 //
 // RPC payloads cross this boundary as JSON text, not a bespoke
 // kind/value accessor scheme (contrast macula-php's cabi, which has no

@@ -9,8 +9,10 @@ on:
 
 jobs:
   test:
-    # Single platform for now -- this repo has no cross-platform prebuilt
-    # matrix yet, see README.md's "Status" section.
+    # This job only builds/tests linux-x64. The 5-platform prebuild
+    # matrix (linux-x64/arm64, darwin-x64/arm64, win32-x64) lives in
+    # prebuilds.yml, which builds and commits prebuilds/ back to main --
+    # see README.md's "Status" section.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -42,6 +42,30 @@ static inline void callEventCallback(macula_event_callback cb, void* user_data,
     const char* payload_json) {
   cb(user_data, topic, publisher32, seq, payload_json);
 }
+
+// macula_subscription_closed_callback is called exactly once, when this
+// subscription's background reader goroutine (started by
+// macula_session_subscribe_start below) exits for a reason OTHER than
+// its own requested stop() -- i.e. the underlying session/connection
+// died out from under it, or some other transport error ended the read
+// loop. err_message is never NULL when this fires (a clean,
+// caller-requested stop is context.Canceled and does NOT trigger this
+// callback at all -- the stop() caller already knows synchronously that
+// it asked for this and tears down through macula_session_subscribe_stop
+// instead). Provided by addon/binding.cc: OnMaculaSubscriptionClosed,
+// delivered through the SAME ThreadSafeFunction as ordinary events (see
+// that file's own doc) so the JS side learns "this subscription is now
+// dead" instead of staying silent forever -- verified live that,
+// without this, a subscription whose connection died left its handler
+// never called again, its ThreadSafeFunction (which deliberately keeps
+// Node's event loop alive for a healthy subscription) never released,
+// and the process unable to exit on its own.
+typedef void (*macula_subscription_closed_callback)(void* user_data, const char* err_message);
+
+static inline void callClosedCallback(macula_subscription_closed_callback cb, void* user_data,
+    const char* err_message) {
+  cb(user_data, err_message);
+}
 */
 import "C"
 
@@ -236,6 +260,7 @@ func macula_session_subscribe_start(
 	realm32 *C.uchar,
 	topic *C.char,
 	cb C.macula_event_callback,
+	closedCb C.macula_subscription_closed_callback,
 	userData unsafe.Pointer,
 	errOut **C.char,
 ) C.uintptr_t {
@@ -260,13 +285,37 @@ func macula_session_subscribe_start(
 	sub := &subscription{cancel: cancel, doneCh: make(chan error, 1)}
 
 	go func() {
-		sub.doneCh <- session.RunSubscriber(ctx, spec, id, func(evt frame.EventInfo) error {
+		err := session.RunSubscriber(ctx, spec, id, func(evt frame.EventInfo) error {
 			deliverEvent(evt, cb, userData)
 			return nil
 		})
+		// A clean, caller-requested stop is context.Canceled -- the
+		// stop() caller already knows synchronously it asked for this
+		// and tears down via macula_session_subscribe_stop, so no
+		// signal is needed here for that case. Anything else means
+		// this loop ended on its own (the connection died, a real
+		// transport error, etc) with nobody else aware of it yet --
+		// this is the ONLY place that will ever find out, so it must
+		// say so rather than going silent.
+		if !errors.Is(err, context.Canceled) {
+			deliverClosed(err, closedCb, userData)
+		}
+		sub.doneCh <- err
 	}()
 
 	return C.uintptr_t(cgo.NewHandle(sub))
+}
+
+// deliverClosed calls closedCb via the callClosedCallback trampoline,
+// same threading rules as deliverEvent above (runs on the background
+// reader goroutine's own OS thread; the addon's own implementation of
+// closedCb does nothing blocking, it just queues a NonBlockingCall and
+// returns). err is never nil when this is called (see the one call site
+// above) -- always rendered as a real message, never silently dropped.
+func deliverClosed(err error, cb C.macula_subscription_closed_callback, userData unsafe.Pointer) {
+	cErr := C.CString(err.Error())
+	defer C.free(unsafe.Pointer(cErr))
+	C.callClosedCallback(cb, userData, cErr)
 }
 
 // macula_session_subscribe_stop cancels the background reader goroutine

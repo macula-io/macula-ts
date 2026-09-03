@@ -1337,6 +1337,7 @@ extern "C" void OnMaculaEvent(void* user_data, const char* topic, const unsigned
   napi_status status = ctx->tsfn.NonBlockingCall(
       data, [](Napi::Env env, Napi::Function jsCallback, EventCallbackData* d) {
         Napi::Object evt = Napi::Object::New(env);
+        evt.Set("kind", Napi::String::New(env, "event"));
         evt.Set("topic", Napi::String::New(env, d->topic));
         evt.Set("publisher", Napi::Buffer<uint8_t>::Copy(env, d->publisher, 32));
         evt.Set("seq", Napi::Number::New(env, static_cast<double>(d->seq)));
@@ -1349,6 +1350,42 @@ extern "C" void OnMaculaEvent(void* user_data, const char* topic, const unsigned
     // or its queue is full -- either way this one event is dropped, not
     // fatal; NonBlockingCall did not take ownership of data on a
     // non-ok status, so this side must free it.
+    delete data;
+  }
+}
+
+// ClosedCallbackData/OnMaculaSubscriptionClosed mirror EventCallbackData/
+// OnMaculaEvent immediately above exactly, for the "this subscription's
+// background reader exited on its own" signal cabi/pubsub.go's
+// macula_subscription_closed_callback delivers (see that file's own doc
+// for why this exists at all -- without it, a subscription whose
+// connection died left the JS side silently waiting forever). Delivered
+// through the SAME ThreadSafeFunction as ordinary events, distinguished
+// on the JS side by the `kind` field (see session.ts's subscribe()) --
+// deliberately not a second TSFN: it is the identical JS handler
+// function underneath either way, and reusing the one TSFN needs no new
+// lifetime reasoning beyond what SubscriptionContext already has.
+struct ClosedCallbackData {
+  std::string errorMessage;
+};
+
+extern "C" void OnMaculaSubscriptionClosed(void* user_data, const char* err_message) {
+  auto* ctx = static_cast<SubscriptionContext*>(user_data);
+  auto* data = new ClosedCallbackData();
+  // err_message is never NULL from the one Go-side call site (see
+  // cabi/pubsub.go's deliverClosed), but guard anyway rather than
+  // assume a C string invariant across the FFI boundary.
+  data->errorMessage.assign(err_message != nullptr ? err_message : "subscription closed");
+
+  napi_status status = ctx->tsfn.NonBlockingCall(
+      data, [](Napi::Env env, Napi::Function jsCallback, ClosedCallbackData* d) {
+        Napi::Object evt = Napi::Object::New(env);
+        evt.Set("kind", Napi::String::New(env, "closed"));
+        evt.Set("error", Napi::String::New(env, d->errorMessage));
+        jsCallback.Call({evt});
+        delete d;
+      });
+  if (status != napi_ok) {
     delete data;
   }
 }
@@ -1372,7 +1409,7 @@ class SessionSubscribeStartWorker : public Napi::AsyncWorker {
     char* errOut = nullptr;
     uintptr_t handle = macula_session_subscribe_start(sessionHandle_, identityHandle_, hasRealm_ ? realm_ : nullptr,
                                                         const_cast<char*>(topic_.c_str()), OnMaculaEvent,
-                                                        static_cast<void*>(ctx_), &errOut);
+                                                        OnMaculaSubscriptionClosed, static_cast<void*>(ctx_), &errOut);
     if (errOut != nullptr) {
       std::string msg(errOut);
       macula_free_string(errOut);
