@@ -1,0 +1,20 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Go build artifacts -- the compiled cabi/ library is NOT committed.
+# `npm install`'s "prepare" script (and CI) build it fresh every time;
+# see README.md's "Known packaging gap" for why this isn't yet shipped
+# as a proper prebuilt package.
+/build/*.so
+/build/*.dylib
+/build/*.dll
+/build/*.h
+cabi/*.so
+cabi/*.dylib
+cabi/*.dll
+cabi/*.h
+
+# OS
+.DS_Store

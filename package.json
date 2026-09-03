@@ -1,0 +1,43 @@
+{
+  "name": "@macula-io/ts",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the Macula mesh (FFI over macula-go)",
+  "license": "Apache-2.0",
+  "type": "module",
+  "homepage": "https://github.com/macula-io/macula-ts#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/macula-io/macula-ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/macula-io/macula-ts/issues"
+  },
+  "author": {
+    "name": "Macula",
+    "email": "raf.lefever@erlef.org"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "build"
+  ],
+  "scripts": {
+    "build:native": "cd cabi && go mod tidy && CGO_ENABLED=1 go build -buildmode=c-shared -o ../build/libmacula.so .",
+    "build": "npm run build:native && tsc",
+    "prepare": "npm run build:native",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "koffi": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=24.18.1"
+  }
+}
