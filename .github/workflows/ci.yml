@@ -53,6 +53,16 @@ jobs:
             exit 1
           fi
 
+      # TEMPORARY diagnostic for a reproducibility investigation -- remove
+      # once the staleness check above is confirmed stable across runs.
+      - name: Upload freshly-built addon for offline diff (diagnostic)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-linux-x64-node
+          path: prebuilds/linux-x64/*.node
+          if-no-files-found: warn
+
       - name: Verify a consumer install needs zero compilation
         run: |
           set -eu
