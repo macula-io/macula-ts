@@ -469,6 +469,131 @@ export class Session {
         const json = await this.#enqueue(() => native.dhtPutContentAnnouncement(handle, this.#identity.handleForFfi(), mcid, endpoint, ttlMs));
         return JSON.parse(json);
     }
+    /** Direct-dial (caller side): finds `procedure`'s currently-advertised
+     * serving station and its dialable host/port (macula-go's
+     * `directdial.Resolve`), via this Session used only to query the DHT
+     * -- it does not need to be connected to the station that ends up
+     * serving `procedure`. Retries past DHT propagation lag internally (up
+     * to ~5s, macula-go's own fixed schedule, not configurable here); a
+     * `procedure` nobody ever called `advertiseDirect()` for rejects
+     * cleanly after that window (a plain `Error` wrapping macula-go's
+     * `ErrProcedureNotAdvertised`), never a hang.
+     *
+     * `opts.realm` must match whatever realm `procedure` was
+     * `advertiseDirect()`d under, or the discovery URI the two sides
+     * derive disagrees and this rejects the same way as if nothing was
+     * ever advertised at all -- see `AdvertiseDirectOptions.realm`'s own
+     * doc (directdial.ts). `callDirect()`/`callDirectWithUcan()` call this
+     * internally; it's exposed on its own for callers that just want the
+     * resolved station/host/port without also dialing and calling it (e.g.
+     * diagnostics).
+     *
+     * Real network I/O, off the main thread on the native side, subject to
+     * the same same-Session exclusivity rule as `call()`/the DHT methods
+     * (`#requireHandleNotServing`). */
+    async resolveDirect(procedure, opts = {}) {
+        const handle = this.#requireHandleNotServing("resolveDirect");
+        const realm = realmBytesFromHex(opts.realm);
+        const json = await this.#enqueue(() => native.directdialResolve(handle, this.#identity.handleForFfi(), realm, procedure));
+        return JSON.parse(json);
+    }
+    /** Direct-dial (caller side): resolves `procedure`'s provider (via
+     * `resolveDirect()`, through this Session) and calls it there, in one
+     * hop, in a SEPARATE connection macula-go opens, application-layer-pins
+     * against the resolved station identity, and closes again, entirely
+     * internally (macula-go's `directdial.Call`) -- this Session's own
+     * connection is never touched beyond the DHT lookup. The provider must
+     * have `advertiseDirect()`d `procedure` (or the Erlang/Rust/Go
+     * equivalent) -- a plain `serve()`-side `Advertise` alone publishes no
+     * discoverable DHT record, and this rejects with `ErrProcedureNotAdvertised`.
+     *
+     * Same resolve/reject shape as `call()`: the RESULT's payload on
+     * success, a `MaculaCallError` (rpc.ts) for a real BOLT#4 ERROR frame
+     * from the resolved provider, a plain `Error` for a resolve failure, a
+     * dial failure, an identity-trust violation (the dialed peer proved a
+     * DIFFERENT identity than the DHT chain resolved), or anything else
+     * that never got a wire-level answer at all.
+     *
+     * Real network I/O (DHT lookups, a fresh QUIC dial, then the CALL
+     * itself) -- off the main thread on the native side, subject to the
+     * same same-Session exclusivity rule as `call()` for THIS Session's own
+     * DHT-querying use (the separate dialed connection this opens
+     * internally is not this Session and is never exposed as one). */
+    async callDirect(procedure, payload, opts = {}) {
+        const handle = this.#requireHandleNotServing("callDirect");
+        const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
+        const payloadJson = JSON.stringify(payload ?? null);
+        const realm = realmBytesFromHex(opts.realm);
+        const envelopeJson = await this.#enqueue(() => native.directdialCall(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs));
+        const envelope = JSON.parse(envelopeJson);
+        if (envelope.ok)
+            return envelope.payload;
+        throw new MaculaCallError(envelope.bolt4);
+    }
+    /** Direct-dial (caller side): `callDirect()`, attaching `ucanToken` to
+     * the outgoing CALL (macula-go's `directdial.CallWithUCAN`) -- for
+     * reaching a direct-dial-advertised procedure a provider has gated
+     * behind a `ucan.Policy.Required` policy. Every hecate-om capability is
+     * advertised via `advertiseDirect()` specifically so it's reachable
+     * ONLY this way -- plain `callDirect()` cannot resolve or attach a
+     * token to it. Same `ucanToken` shape, no-audience-check, and
+     * resolve/reject conventions as `callWithUcan()` (see both that
+     * method's and ucan.ts's own doc for why: macula's UCAN gate is a
+     * bearer-token check, not an audience match).
+     *
+     * Same I/O and exclusivity notes as `callDirect()`. */
+    async callDirectWithUcan(procedure, payload, ucanToken, opts = {}) {
+        const handle = this.#requireHandleNotServing("callDirectWithUcan");
+        const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
+        const payloadJson = JSON.stringify(payload ?? null);
+        const realm = realmBytesFromHex(opts.realm);
+        const token = typeof ucanToken === "string" ? ucanToken : ucanToken.token;
+        const envelopeJson = await this.#enqueue(() => native.directdialCallWithUcan(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs, token));
+        const envelope = JSON.parse(envelopeJson);
+        if (envelope.ok)
+            return envelope.payload;
+        throw new MaculaCallError(envelope.bolt4);
+    }
+    /** Direct-dial (provider side): publishes `procedure` as
+     * direct-dial-reachable at THIS Session's own currently-connected
+     * station (macula-go's `directdial.AdvertiseDirect`) -- a plain
+     * ADVERTISE (so an inbound CALL routed here via the DHT-resolved path
+     * still has something to route to -- a real bug macula-go fixed live
+     * 2026-08-30: skipping this let resolve+dial complete cleanly against a
+     * station with nothing registered to answer, `ServeOneCall` never
+     * seeing it) plus a signed `procedure_advertisement` DHT record naming
+     * this Session's own station.
+     *
+     * Unlike `serve()`'s own internal advertise (still all-zero-realm-only
+     * in this SDK -- see `serve()`'s own doc), this method threads
+     * `opts.realm` all the way through, matching `directdial.AdvertiseDirect`
+     * itself: `resolveDirect()`/`callDirect()`/`callDirectWithUcan()` only
+     * ever reach a procedure `advertiseDirect()`d under the EXACT SAME
+     * realm.
+     *
+     * A station's registration for a procedure does not survive the
+     * connection that sent it being replaced -- a long-lived provider needs
+     * to call this again on its own schedule; see `keepAdvertisedDirect()`
+     * (directdial.ts) for that loop, built on top of this method rather
+     * than duplicating macula-go's own `KeepAdvertisedDirect` here.
+     *
+     * **Must NOT be called on a Session that is also actively
+     * `serve()`-ing** -- enforced by the same `#requireHandleNotServing`
+     * guard `call()`/the DHT methods use, for the identical reason: this
+     * method's own `PutRecord` CALL reads a RESULT off the same shared
+     * control stream `serve()`'s poll loop is also reading, and the two
+     * would race (matches `directdial.AdvertiseDirect`'s own doc). A
+     * provider that also serves `procedure` needs a SEPARATE Session (and
+     * identity -- this fleet enforces one connection per identity, kicking
+     * whichever connects second) to call this on.
+     *
+     * Real network I/O (a fire-and-forget ADVERTISE write plus a signed
+     * PutRecord CALL) -- off the main thread on the native side. */
+    async advertiseDirect(procedure, opts = {}) {
+        const handle = this.#requireHandleNotServing("advertiseDirect");
+        const realm = realmBytesFromHex(opts.realm);
+        await this.#enqueue(() => native.directdialAdvertise(handle, this.#identity.handleForFfi(), realm, procedure, opts.ttlMs ?? DHT_DEFAULT_TTL_MS));
+    }
     /** Pubsub: sends a signed PUBLISH for `topic` (macula-go's
      * connection.Session.Publish, which also attaches the end-to-end
      * publisher_sig a relayed EVENT needs to survive beyond one hop --

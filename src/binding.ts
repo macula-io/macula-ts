@@ -182,6 +182,39 @@ const addon = require("node-gyp-build")(repoRoot) as {
   // "not found" case.
   contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string>;
   contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null>;
+  // Direct-dial (cabi/directdial.go). All four are real network I/O --
+  // one or more signed CALLs, plus, for directdialCall/
+  // directdialCallWithUcan, a fresh one-hop QUIC dial macula-go opens/
+  // pins/closes entirely internally -- backed by Napi::AsyncWorker, same
+  // as sessionCall/the DHT methods. directdialResolve resolves with JSON
+  // text (a DirectDialTarget, per directdial.ts); directdialCall/
+  // directdialCallWithUcan resolve with the SAME callEnvelope JSON shape
+  // sessionCall/sessionCallWithUcan do (rpc.ts's CallEnvelope).
+  directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<string>;
+  directdialCall(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    procedure: string,
+    realm: Uint8Array | undefined,
+    payloadJson: string,
+    timeoutMs: number,
+  ): Promise<string>;
+  directdialCallWithUcan(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    procedure: string,
+    realm: Uint8Array | undefined,
+    payloadJson: string,
+    timeoutMs: number,
+    ucanToken: string,
+  ): Promise<string>;
+  directdialAdvertise(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    procedure: string,
+    ttlMs: number,
+  ): Promise<void>;
 };
 
 // The addon always returns BigInt (see addon/binding.cc's comment on
@@ -347,5 +380,38 @@ export const native = {
   },
   contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null> {
     return addon.contentGet(sessionHandle, identityHandle, mcidHex);
+  },
+  directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<string> {
+    return addon.directdialResolve(sessionHandle, identityHandle, realm, procedure);
+  },
+  directdialCall(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    procedure: string,
+    realm: Uint8Array | undefined,
+    payloadJson: string,
+    timeoutMs: number,
+  ): Promise<string> {
+    return addon.directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
+  },
+  directdialCallWithUcan(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    procedure: string,
+    realm: Uint8Array | undefined,
+    payloadJson: string,
+    timeoutMs: number,
+    ucanToken: string,
+  ): Promise<string> {
+    return addon.directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken);
+  },
+  directdialAdvertise(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    procedure: string,
+    ttlMs: number,
+  ): Promise<void> {
+    return addon.directdialAdvertise(sessionHandle, identityHandle, realm, procedure, ttlMs);
   },
 };

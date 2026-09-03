@@ -117,5 +117,17 @@ export const native = {
     contentGet(sessionHandle, identityHandle, mcidHex) {
         return addon.contentGet(sessionHandle, identityHandle, mcidHex);
     },
+    directdialResolve(sessionHandle, identityHandle, realm, procedure) {
+        return addon.directdialResolve(sessionHandle, identityHandle, realm, procedure);
+    },
+    directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs) {
+        return addon.directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
+    },
+    directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken) {
+        return addon.directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken);
+    },
+    directdialAdvertise(sessionHandle, identityHandle, realm, procedure, ttlMs) {
+        return addon.directdialAdvertise(sessionHandle, identityHandle, realm, procedure, ttlMs);
+    },
 };
 //# sourceMappingURL=binding.js.map

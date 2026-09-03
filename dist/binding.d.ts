@@ -40,4 +40,8 @@ export declare const native: {
     sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
     contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string>;
     contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null>;
+    directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<string>;
+    directdialCall(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number): Promise<string>;
+    directdialCallWithUcan(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, ucanToken: string): Promise<string>;
+    directdialAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, ttlMs: number): Promise<void>;
 };

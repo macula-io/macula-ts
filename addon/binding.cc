@@ -1725,6 +1725,323 @@ Napi::Value ContentGet(const Napi::CallbackInfo& info) {
   return deferred.Promise();
 }
 
+// ---------------------------------------------------------------------
+// Direct-dial (cabi/directdial.go): caller-side resolve+one-hop-call
+// (macula_directdial_resolve/_call/_call_with_ucan) and provider-side
+// advertise-direct (macula_directdial_advertise). All four are real
+// network I/O -- one or more signed CALLs, plus, for _call/
+// _call_with_ucan, a fresh one-hop QUIC dial macula-go opens/pins/closes
+// entirely internally -- same Napi::AsyncWorker threading requirement as
+// SessionCall/the DHT methods above.
+// ---------------------------------------------------------------------
+
+class DirectDialResolveWorker : public Napi::AsyncWorker {
+ public:
+  DirectDialResolveWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                           uintptr_t identityHandle, bool hasRealm, uint8_t realm[32], std::string procedure)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        hasRealm_(hasRealm),
+        procedure_(std::move(procedure)) {
+    if (hasRealm_) std::memcpy(realm_, realm, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    char* json = macula_directdial_resolve(sessionHandle_, identityHandle_, hasRealm_ ? realm_ : nullptr,
+                                            const_cast<char*>(procedure_.c_str()), &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    resultJson_.assign(json);
+    macula_free_string(json);
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Napi::String::New(Env(), resultJson_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  bool hasRealm_;
+  uint8_t realm_[32] = {0};
+  std::string procedure_;
+  std::string resultJson_;
+};
+
+Napi::Value DirectDialResolve(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 4 || !info[3].IsString()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, realm: Uint8Array|undefined, procedure: string)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  uint8_t realmBuf[32];
+  unsigned char* realmPtr = ReadOptionalRealm(env, info[2], realmBuf, &ok);
+  if (!ok) return env.Undefined();
+  std::string procedure = info[3].As<Napi::String>().Utf8Value();
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new DirectDialResolveWorker(env, deferred, sessionHandle, identityHandle, realmPtr != nullptr,
+                                              realmBuf, std::move(procedure));
+  worker->Queue();
+  return deferred.Promise();
+}
+
+class DirectDialCallWorker : public Napi::AsyncWorker {
+ public:
+  DirectDialCallWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                        uintptr_t identityHandle, std::string procedure, bool hasRealm, uint8_t realm[32],
+                        std::string payloadJson, int64_t timeoutMs)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        procedure_(std::move(procedure)),
+        hasRealm_(hasRealm),
+        payloadJson_(std::move(payloadJson)),
+        timeoutMs_(timeoutMs) {
+    if (hasRealm_) std::memcpy(realm_, realm, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    char* envelope = macula_directdial_call(sessionHandle_, identityHandle_, const_cast<char*>(procedure_.c_str()),
+                                             hasRealm_ ? realm_ : nullptr, const_cast<char*>(payloadJson_.c_str()),
+                                             timeoutMs_, &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    envelopeJson_.assign(envelope);
+    macula_free_string(envelope);
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Napi::String::New(Env(), envelopeJson_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  std::string procedure_;
+  bool hasRealm_;
+  uint8_t realm_[32] = {0};
+  std::string payloadJson_;
+  int64_t timeoutMs_;
+  std::string envelopeJson_;
+};
+
+Napi::Value DirectDialCall(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 6 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, procedure: string, realm: "
+                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  std::string procedure = info[2].As<Napi::String>().Utf8Value();
+  uint8_t realmBuf[32];
+  unsigned char* realmPtr = ReadOptionalRealm(env, info[3], realmBuf, &ok);
+  if (!ok) return env.Undefined();
+  std::string payloadJson = info[4].As<Napi::String>().Utf8Value();
+  int64_t timeoutMs = info[5].As<Napi::Number>().Int64Value();
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new DirectDialCallWorker(env, deferred, sessionHandle, identityHandle, std::move(procedure),
+                                           realmPtr != nullptr, realmBuf, std::move(payloadJson), timeoutMs);
+  worker->Queue();
+  return deferred.Promise();
+}
+
+class DirectDialCallWithUcanWorker : public Napi::AsyncWorker {
+ public:
+  DirectDialCallWithUcanWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                                uintptr_t identityHandle, std::string procedure, bool hasRealm, uint8_t realm[32],
+                                std::string payloadJson, int64_t timeoutMs, std::string ucanToken)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        procedure_(std::move(procedure)),
+        hasRealm_(hasRealm),
+        payloadJson_(std::move(payloadJson)),
+        timeoutMs_(timeoutMs),
+        ucanToken_(std::move(ucanToken)) {
+    if (hasRealm_) std::memcpy(realm_, realm, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    char* envelope = macula_directdial_call_with_ucan(
+        sessionHandle_, identityHandle_, const_cast<char*>(procedure_.c_str()), hasRealm_ ? realm_ : nullptr,
+        const_cast<char*>(payloadJson_.c_str()), timeoutMs_, const_cast<char*>(ucanToken_.c_str()), &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    envelopeJson_.assign(envelope);
+    macula_free_string(envelope);
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Napi::String::New(Env(), envelopeJson_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  std::string procedure_;
+  bool hasRealm_;
+  uint8_t realm_[32] = {0};
+  std::string payloadJson_;
+  int64_t timeoutMs_;
+  std::string ucanToken_;
+  std::string envelopeJson_;
+};
+
+Napi::Value DirectDialCallWithUcan(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 7 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber() || !info[6].IsString()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, procedure: string, realm: "
+                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number, ucanToken: string)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  std::string procedure = info[2].As<Napi::String>().Utf8Value();
+  uint8_t realmBuf[32];
+  unsigned char* realmPtr = ReadOptionalRealm(env, info[3], realmBuf, &ok);
+  if (!ok) return env.Undefined();
+  std::string payloadJson = info[4].As<Napi::String>().Utf8Value();
+  int64_t timeoutMs = info[5].As<Napi::Number>().Int64Value();
+  std::string ucanToken = info[6].As<Napi::String>().Utf8Value();
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new DirectDialCallWithUcanWorker(env, deferred, sessionHandle, identityHandle, std::move(procedure),
+                                                   realmPtr != nullptr, realmBuf, std::move(payloadJson), timeoutMs,
+                                                   std::move(ucanToken));
+  worker->Queue();
+  return deferred.Promise();
+}
+
+class DirectDialAdvertiseWorker : public Napi::AsyncWorker {
+ public:
+  DirectDialAdvertiseWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                             uintptr_t identityHandle, bool hasRealm, uint8_t realm[32], std::string procedure,
+                             int64_t ttlMs)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        hasRealm_(hasRealm),
+        procedure_(std::move(procedure)),
+        ttlMs_(ttlMs) {
+    if (hasRealm_) std::memcpy(realm_, realm, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    macula_directdial_advertise(sessionHandle_, identityHandle_, hasRealm_ ? realm_ : nullptr,
+                                 const_cast<char*>(procedure_.c_str()), ttlMs_, &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+    }
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Env().Undefined());
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  bool hasRealm_;
+  uint8_t realm_[32] = {0};
+  std::string procedure_;
+  int64_t ttlMs_;
+};
+
+Napi::Value DirectDialAdvertise(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 4 || !info[3].IsString()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, realm: Uint8Array|undefined, procedure: "
+                               "string, ttlMs?: number)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  uint8_t realmBuf[32];
+  unsigned char* realmPtr = ReadOptionalRealm(env, info[2], realmBuf, &ok);
+  if (!ok) return env.Undefined();
+  std::string procedure = info[3].As<Napi::String>().Utf8Value();
+  int64_t ttlMs = info.Length() > 4 && info[4].IsNumber() ? info[4].As<Napi::Number>().Int64Value() : 0;
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new DirectDialAdvertiseWorker(env, deferred, sessionHandle, identityHandle, realmPtr != nullptr,
+                                                realmBuf, std::move(procedure), ttlMs);
+  worker->Queue();
+  return deferred.Promise();
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("identityGenerate", Napi::Function::New(env, IdentityGenerate));
   exports.Set("identityFromSeedBytes", Napi::Function::New(env, IdentityFromSeedBytes));
@@ -1757,6 +2074,10 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("sessionSubscribeStop", Napi::Function::New(env, SessionSubscribeStop));
   exports.Set("contentPut", Napi::Function::New(env, ContentPut));
   exports.Set("contentGet", Napi::Function::New(env, ContentGet));
+  exports.Set("directdialResolve", Napi::Function::New(env, DirectDialResolve));
+  exports.Set("directdialCall", Napi::Function::New(env, DirectDialCall));
+  exports.Set("directdialCallWithUcan", Napi::Function::New(env, DirectDialCallWithUcan));
+  exports.Set("directdialAdvertise", Napi::Function::New(env, DirectDialAdvertise));
   return exports;
 }
 

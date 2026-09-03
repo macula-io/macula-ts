@@ -4,4 +4,5 @@ export { MaculaCallError } from "./rpc.js";
 export { DhtRecordType, DHT_DEFAULT_TTL_MS } from "./dht.js";
 export { ContentNotFoundError } from "./content.js";
 export { Ucan } from "./ucan.js";
+export { keepAdvertisedDirect, KEEP_ADVERTISED_DIRECT_INTERVAL_MS, } from "./directdial.js";
 //# sourceMappingURL=index.js.map

@@ -5,3 +5,4 @@ export { DhtRecordType, DHT_DEFAULT_TTL_MS, type DhtRecord } from "./dht.js";
 export type { PublishOptions, PubsubEvent } from "./pubsub.js";
 export { ContentNotFoundError } from "./content.js";
 export { Ucan, type UcanCapability, type UcanFactValue, type UcanMintOptions } from "./ucan.js";
+export { keepAdvertisedDirect, KEEP_ADVERTISED_DIRECT_INTERVAL_MS, type DirectDialTarget, type AdvertiseDirectOptions, type KeepAdvertisedDirectOptions, } from "./directdial.js";

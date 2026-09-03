@@ -5,11 +5,12 @@
 library. Identity generation, a real transport + CONNECT/HELLO handshake,
 unary RPC (both roles — caller and provider), DHT record lookups/
 publication, pubsub (publish/subscribe, both directions), content
-transfer, and UCAN minting/inspection + UCAN-gated calling against the
-production fleet all work end-to-end today. Streaming RPC, direct-dial,
-and UCAN policy gating on the *provider* side (this SDK can attach a
-token to a call, but cannot yet enforce one on a served procedure) don't
-exist yet.
+transfer, UCAN minting/inspection + UCAN-gated calling, and direct-dial
+(resolve + one-hop dial, both roles — caller and provider) against the
+production fleet all work end-to-end today. Streaming RPC, streaming/
+content direct-dial, cert-chain-authorized direct-dial, and UCAN policy
+gating on the *provider* side (this SDK can attach a token to a call, but
+cannot yet enforce one on a served procedure) don't exist yet.
 
 ## Why FFI over macula-go, not a native TypeScript reimplementation
 
@@ -468,11 +469,87 @@ before/after evidence.
   (confirms this is genuinely a non-verifying decode, not a
   verify-then-decode that happens to succeed only on well-formed input).
 
+- Direct-dial — `session.resolveDirect(procedure, opts?)`,
+  `session.callDirect(procedure, payload, opts?)`,
+  `session.callDirectWithUcan(procedure, payload, ucanToken, opts?)`
+  (caller side: macula-go's `directdial.Resolve`/`Call`/`CallWithUCAN`)
+  and `session.advertiseDirect(procedure, opts?)` plus a standalone
+  `keepAdvertisedDirect(session, procedure, opts?)` helper (provider
+  side: `directdial.AdvertiseDirect`, and a port of its own
+  `KeepAdvertisedDirect` free function). Resolves a signed
+  `procedure_advertisement` DHT record to its serving station's own
+  signed `station_endpoint`, retrying past DHT-propagation lag
+  internally, then dials that station directly in one hop instead of
+  depending on ordinary advertise-gossip having reached whichever
+  station the caller happens to already be connected to. Trust is
+  enforced at the application layer, not the dial's TLS: the freshly
+  connected peer's own HELLO-proven identity is checked against the
+  exact pubkey the signed DHT chain resolved, entirely inside macula-go
+  — this SDK surfaces the outcome (a clean rejection on mismatch), it
+  doesn't re-implement the check. `advertiseDirect()` mirrors
+  `directdial.AdvertiseDirect` exactly: a plain ADVERTISE **and** a
+  signed `procedure_advertisement` DHT record, both on the same call —
+  skipping the plain ADVERTISE would let resolve+dial complete cleanly
+  against a station with nothing registered to route the CALL to, a real
+  bug macula-go fixed live 2026-08-30 (found by verifying an actual
+  RESULT came back through direct-dial, not just accepting a clean
+  `unknown_next_peer` as proof enough) — this SDK inherits that fix by
+  construction.
+- `resolveDirect`/`callDirect`/`callDirectWithUcan`/`advertiseDirect` are
+  all subject to the same same-Session exclusivity guard `call()`/the
+  DHT methods already use, extended to a new case: `advertiseDirect()`'s
+  own `PutRecord` CALL must not run on a Session whose receive loop
+  belongs to an active `serve()` (its reply would be consumed by
+  `serve()`'s poll loop instead and the put would time out) — a
+  long-lived provider that also serves the same procedure needs a
+  SEPARATE `Session` (and identity — this fleet enforces one connection
+  per identity, kicking whichever connects second) to keep
+  re-advertising on, which is exactly why `keepAdvertisedDirect()` is a
+  standalone function taking whichever `Session` it's given, not a
+  `Session` method — mirroring why macula-go's own `KeepAdvertisedDirect`
+  is a free function too.
+- **Live-verified against the real production fleet, self-contained**:
+  every assertion makes its OWN test procedure direct-dial-reachable via
+  `advertiseDirect()` first, then reaches it purely through
+  `resolveDirect()`/`callDirect()` — proving both roles for real using
+  only code this session controls, the same self-verification shape the
+  RPC stage's own live test uses for `call()`/`serve()`, not dependent on
+  finding a pre-existing direct-dialable procedure on the shared demo
+  fleet. `resolveDirect()`'s resolved station checked byte-for-byte
+  against the provider `Session`'s own `stationNodeId`, with a real,
+  non-empty host and plausible port; `callDirect()` then completes a
+  genuine one-hop round trip through that resolved station, the
+  provider's `serve()` handler actually invoked and its exact reply
+  received back. `callDirectWithUcan()` attaches a freshly minted `Ucan`
+  to a real direct-dial CALL and completes it end to end against an
+  ungated procedure — same **honest limitation** as plain
+  `callWithUcan()`'s own live test: no served-side UCAN policy gate in
+  this SDK, so this proves attach-and-call reaches the wire over
+  direct-dial, not that a provider enforces the token (macula-go's own
+  `directdial_live_test.go`'s `TestLiveDirectDialUCANGatedRoundTrip`
+  proves the enforcement side against a real gated provider). A negative
+  case was probed directly: `resolveDirect()`/`callDirect()` against a
+  procedure nobody ever `advertiseDirect()`d fail with a real, clear
+  error after macula-go's own bounded ~5s DHT-retry window — confirmed to
+  actually take over a second (not an instant, suspicious client-side
+  failure) and confirmed not to hang past that window; `callDirect()`'s
+  resulting rejection is a plain `Error`, specifically **not** a
+  `MaculaCallError`, since a resolve failure never reaches a real peer at
+  all. Also re-verified against the actual packaged, installed npm
+  tarball — a real `advertiseDirect()` → `resolveDirect()` →
+  `callDirect()` round trip against the live fleet using only the
+  installed package, no source tree present.
+
 ## What's explicitly not yet implemented
 
-Streaming RPC, direct-dial, provider-side UCAN policy gating
-(`ucan.Policy`/`ServeOneCallGated` — this SDK can mint/attach a token but
-not enforce one on a served procedure), per-realm `serve`/`advertise`
+Streaming RPC, streaming/content direct-dial (`OpenStreamDirect`,
+`PutDirect`/`GetDirect` — plain `Session.call`/`serve` direct-dial is
+implemented, see above), cert-chain-authorized direct-dial
+(`ResolveWithCertChain`/`CallWithCertChain`/`AdvertiseDirectWithCertChain`
+— Slice 7c Direction B, opt-in even in macula-go itself), provider-side
+UCAN policy gating (`ucan.Policy`/`ServeOneCallGated` — this SDK can
+mint/attach a token but not enforce one on a served procedure), per-realm
+`serve`/`advertise`
 (these two still only ever use the all-zero realm — `call`/`callWithUcan`/
 `publish`/`subscribe`, and DHT's `putProcedureAdvertisement`, all DO now
 take an optional realm), a generic "put any DHT record type
@@ -488,12 +565,13 @@ working `Session`.
 ## Live tests
 
 `src/session.live.test.ts`, `src/rpc.live.test.ts`, `src/dht.live.test.ts`,
-`src/pubsub.live.test.ts`, `src/content.live.test.ts`, and
-`src/ucan.live.test.ts` hit the real production fleet and are **not**
-part of default `npm test`/CI — opt in explicitly:
+`src/pubsub.live.test.ts`, `src/content.live.test.ts`,
+`src/ucan.live.test.ts`, and `src/directdial.live.test.ts` hit the real
+production fleet and are **not** part of default `npm test`/CI — opt in
+explicitly:
 
 ```bash
-npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts
+npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts src/directdial.live.test.ts
 ```
 
 Matches macula-rust's `#[ignore]` and macula-dotnet's
