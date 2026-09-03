@@ -451,10 +451,55 @@ directory with no source tree present, and confirmed to complete in
 under a second with zero compiler invocation and a working end-to-end
 call through the addon.
 
-Only `linux-x64` is covered today (this skeleton's own dev platform) — no
-cross-platform build matrix (`darwin`/`win32`, `arm64`) exists yet.
-`.github/workflows/ci.yml` runs `ubuntu-latest` only, and its own final
-step re-verifies the zero-compile consumer install on every push.
+Five platforms are covered: `linux-x64`, `linux-arm64`, `darwin-arm64`,
+`darwin-x64`, and `win32-x64` (`git ls-files prebuilds/` shows all five).
+`.github/workflows/prebuilds.yml` builds each on a **real** GitHub-hosted
+runner for that platform — `CGO_ENABLED=1` needs a matching, native C
+toolchain per target, so cross-compiling cabi/'s Go archive from Linux
+isn't the right approach here, the same reason `sharp`/`bcrypt`/etc. use
+real per-OS runners for this rather than cross-compiling. It's triggered
+by a push touching `cabi/`, `addon/`, `binding.gyp`, or `package.json`,
+or manually via `workflow_dispatch`; a final job collects whichever
+platforms built successfully and commits `prebuilds/` back to `main`
+(the workflow doesn't wait for every platform to succeed before
+committing the ones that did). `.github/workflows/ci.yml`'s own
+"Confirm the committed prebuild is not stale" step re-verifies, on every
+push, that `linux-x64`'s committed binary still matches a fresh rebuild
+of current source — byte for byte, not just "compiles". Getting that
+check to actually hold took two real fixes, both live-verified against
+the GitHub Actions build, not assumed:
+
+- Go's default `-buildvcs=auto` stamps the *current* git commit hash
+  into the binary. A committed artifact that embeds the hash of the
+  tree it was built from is structurally never "not stale" against a
+  check run at any later commit — including the very commit that adds
+  the file. `build:go` now passes `-buildvcs=false`.
+- `-trimpath` normalizes the absolute build-time paths cgo would
+  otherwise bake into the object (including its own temp directory),
+  standard practice for reproducible Go builds and kept alongside the
+  fix above even though it wasn't, on its own, the deciding factor.
+
+Windows needed one more thing `binding.gyp` didn't have: an
+`OS=="win"` conditions block (library linking only — `ws2_32`, `ntdll`,
+`userenv`, `bcrypt`, the usual set a Go c-archive needs there) and a
+portable `build:go` script — npm always runs `package.json` scripts
+through `cmd.exe` on Windows regardless of which shell invoked
+`npm run`, so the original POSIX inline-env-var syntax
+(`CGO_ENABLED=1 go build ...`) failed there even when the enclosing CI
+step used an MSYS2 bash shell; replaced with `go env -w CGO_ENABLED=1`
+ahead of the build, a single command with no OS-specific quoting.
+`cabi`'s archive is built there with a MinGW64 gcc (installed via
+`msys2/setup-msys2`, since cgo needs a gcc-compatible compiler and MSVC
+— what `node-gyp` itself uses for `addon/binding.cc` — doesn't qualify),
+and links cleanly against the MSVC-built addon: the two toolchains'
+plain-C, `extern "C"` object output is COFF-format-compatible.
+
+One platform GitHub itself took off the table mid-session: `macos-13`
+(the originally-planned plain-Intel runner) queued indefinitely and
+never got a runner — GitHub fully retired that image on 2025-12-08.
+`macos-15-intel`, GitHub's documented replacement (the last x64 macOS
+image it ships, supported until August 2027), picked up a runner
+immediately once swapped in.
 
 ## Development
 

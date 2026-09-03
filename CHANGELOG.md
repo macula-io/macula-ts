@@ -2,6 +2,79 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+Real cross-platform prebuild distribution, built on all prior protocol
+work (no changes to `cabi/main.go`, `addon/binding.cc`, or any protocol
+logic this round — packaging/CI only). `prebuilds/` now ships five
+platforms instead of one: `linux-x64`, `linux-arm64`, `darwin-arm64`,
+`darwin-x64`, `win32-x64` (`git ls-files prebuilds/` shows all five).
+
+### Added
+
+- `.github/workflows/prebuilds.yml`: a build matrix across real
+  GitHub-hosted runners (`ubuntu-latest`, `ubuntu-24.04-arm`,
+  `macos-latest`, `macos-15-intel`, `windows-latest`) — `CGO_ENABLED=1`
+  needs a matching native C toolchain per target, so cross-compiling
+  `cabi/`'s Go archive from Linux isn't the right approach here, the
+  same reason `sharp`/`bcrypt` and other real native npm packages use
+  per-OS runners for this. Each leg builds the Go c-archive, the N-API
+  addon (`node-gyp rebuild`), and that platform's `prebuildify` output;
+  a final job collects whichever legs succeeded (not gated on all of
+  them) and commits `prebuilds/` back to `main`. Triggered by a push
+  touching `cabi/`, `addon/`, `binding.gyp`, or `package.json`, or
+  manually via `workflow_dispatch`.
+- `binding.gyp`: an `OS=="win"` conditions block (library linking only
+  — `ws2_32`, `ntdll`, `userenv`, `bcrypt`), the missing piece for
+  Windows that only ever had `linux`/`mac` conditions before.
+
+### Fixed
+
+Three real, live-verified bugs surfaced by actually running the new
+workflow on real infrastructure rather than assuming the YAML was
+correct (per this repo's own discipline: don't declare something done
+without watching it actually happen):
+
+- **Windows `build:go` never ran.** `package.json`'s script used POSIX
+  inline env-var-prefix syntax (`CGO_ENABLED=1 go build ...`). npm
+  always runs `package.json` scripts through `cmd.exe` on Windows
+  regardless of which shell invoked `npm run` — confirmed live: it
+  still failed even when the enclosing CI step used an MSYS2 bash
+  shell, because npm itself re-spawns `cmd.exe` for the script content.
+  Replaced with `go env -w CGO_ENABLED=1` ahead of the build, a single
+  command with no OS-specific quoting.
+- **`macos-13` is gone.** The originally-planned plain-Intel runner
+  queued indefinitely across two separate workflow runs and never got a
+  runner. GitHub fully retired the macOS 13 image on 2025-12-08.
+  Swapped for `macos-15-intel`, GitHub's documented replacement (the
+  last x64 macOS image it ships, supported until August 2027) — picked
+  up a runner immediately.
+- **The pre-existing "Confirm the committed prebuild is not stale" CI
+  check had failed on every single commit since 21a3a7f** (verified via
+  `gh run list` history) — not something this round introduced, but
+  directly in the way of proving the new pipeline actually works, so
+  fixed rather than worked around. Root cause, found via a temporary
+  diagnostic artifact and `go version -m`: Go's default `-buildvcs=auto`
+  stamps the *current* git commit hash into the binary, so a committed
+  build artifact structurally can never match a fresh rebuild done at
+  any later commit. `build:go` now passes `-buildvcs=false` (and
+  `-trimpath`, standard practice for reproducible Go builds, added
+  alongside it though it wasn't the deciding factor on its own). The
+  check has now passed clean end to end, confirmed live.
+
+### Known gaps
+
+- `test-live` (the manually-triggered job that runs the real-station
+  test suite in CI) fails with `sendmsg: network is unreachable` — a
+  pre-existing, unrelated limitation: standard GitHub-hosted runners
+  have no IPv6 egress, and the station this SDK targets is IPv6-only.
+  Not touched this round; out of scope for a packaging/CI stage that
+  changes no protocol code. This stage's own verification was the
+  offline `npx vitest run` (green, live tests correctly skipped) plus a
+  full local zero-install-script re-verification (fresh `npm pack` +
+  install into an empty directory, no gyp/go/compile signals in a
+  verbose install log) — neither needs network access to the mesh.
+
 ## [0.8.0] - 2026-09-03
 
 UCAN: `Ucan.mint()`/`Ucan.decode()` (offline, no network I/O) and
