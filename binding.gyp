@@ -25,6 +25,18 @@
               "-framework Security"
             ]
           }
+        ],
+        [
+          "OS==\"win\"",
+          {
+            "libraries": [
+              "../cabi/build/libmacula.a",
+              "ws2_32.lib",
+              "ntdll.lib",
+              "userenv.lib",
+              "bcrypt.lib"
+            ]
+          }
         ]
       ]
     }

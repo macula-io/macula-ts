@@ -1,0 +1,137 @@
+name: Prebuilds
+
+# Builds the native addon for every supported platform on a REAL runner for
+# that platform (not cross-compiled from Linux) and commits the resulting
+# prebuilds/ binaries back to main. Go's c-archive build needs CGO_ENABLED=1
+# with a matching, per-platform C toolchain -- the same reason sharp, bcrypt,
+# and other real native npm packages use GitHub-hosted per-OS runners here
+# rather than cross-compiling.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cabi/**"
+      - "addon/**"
+      - "binding.gyp"
+      - ".github/workflows/prebuilds.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x64 Linux -- already the repo's committed baseline platform.
+          - os: ubuntu-latest
+            platform: linux-x64
+          # arm64 Linux -- GitHub-hosted, free for public repos since 2025.
+          - os: ubuntu-24.04-arm
+            platform: linux-arm64
+          # macos-latest is Apple Silicon (arm64) on GitHub-hosted runners.
+          - os: macos-latest
+            platform: darwin-arm64
+          # macos-13 is the last Intel (x64) hosted macOS image.
+          - os: macos-13
+            platform: darwin-x64
+          - os: windows-latest
+            platform: win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+
+      # Windows only: cgo needs a gcc-compatible C compiler to build
+      # cabi/'s c-archive. windows-latest ships MSVC (which node-gyp uses
+      # for addon/binding.cc below) but no gcc -- MSYS2's MinGW64 supplies
+      # one. path-type: inherit keeps go/node/npm (installed above via the
+      # normal Windows PATH) reachable from the msys2 shell too.
+      - name: Install MinGW gcc for cgo (Windows only)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+
+      - name: Build the Go c-archive (cabi/)
+        if: runner.os != 'Windows'
+        run: npm run build:go
+
+      - name: Build the Go c-archive (cabi/) -- Windows, via MinGW gcc
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: CC=gcc npm run build:go
+
+      # Same ordering constraint as ci.yml: binding.gyp's presence makes
+      # `npm install` implicitly run `node-gyp rebuild`, which links
+      # against cabi/build/libmacula.a -- must exist first (built above).
+      - name: Install (builds the native addon via node-gyp)
+        run: npm install
+
+      - name: Produce this platform's prebuild
+        run: npx prebuildify --napi --strip
+
+      - name: Verify the prebuild exists
+        shell: bash
+        run: test -f "prebuilds/${{ matrix.platform }}"/*.node
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-${{ matrix.platform }}
+          path: prebuilds/${{ matrix.platform }}/*.node
+          if-no-files-found: error
+
+  commit-prebuilds:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/prebuild-artifacts
+
+      - name: Assemble prebuilds/
+        run: |
+          set -eu
+          for dir in /tmp/prebuild-artifacts/prebuild-*; do
+            platform=$(basename "$dir" | sed 's/^prebuild-//')
+            mkdir -p "prebuilds/$platform"
+            cp "$dir"/*.node "prebuilds/$platform/"
+          done
+          git status --porcelain -- prebuilds/
+
+      - name: Commit prebuilds
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prebuilds
+          if git diff --cached --quiet -- prebuilds/; then
+            echo "prebuilds/ already up to date, nothing to commit"
+            exit 0
+          fi
+          git commit -m "$(cat <<'EOF'
+          Update cross-platform prebuilds
+
+          Rebuilt by the prebuilds workflow from the current cabi/ and
+          addon/ sources.
+
+          Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+          Claude-Session: https://claude.ai/code/session_01QFHPxb2H9GANFJFMw1yB6F
+          EOF
+          )"
+          git push
