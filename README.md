@@ -157,6 +157,18 @@ before/after evidence.
 - `Identity.fromSeedBytes()` — deterministic reconstruction from a saved
   32-byte seed.
 - `identity.nodeId`, `identity.privateSeedBytes`, `identity.dispose()`.
+- `identity.sign(data)` — a generic Ed25519 signing primitive over
+  macula-go's `identity.KeyPair.Sign` (a direct `ed25519.Sign` wrapper): no
+  application-specific message format is baked in anywhere on this path,
+  `data` is signed exactly as given and the raw 64-byte signature comes
+  back unmodified. Verified against an independent verifier (Node's own
+  `crypto.verify`, not macula-go and not this SDK's own code) that the
+  signature is genuinely valid Ed25519 over the exact data and the exact
+  public key — a stub returning 64 arbitrary bytes could not survive that
+  check, nor tampering with either the data or the signature afterward.
+  Deterministic (signing the same data twice yields the same signature,
+  since Ed25519 has no per-signature nonce randomness); using a disposed
+  `Identity` throws instead of signing with a freed handle.
 - `Session.connect(host, port, identity)` — dials a real macula-station and
   completes the full CONNECT/HELLO handshake via macula-go's
   `connection.Connect` (WebPKI trust). **Live-verified against the real

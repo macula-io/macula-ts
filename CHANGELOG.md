@@ -2,6 +2,42 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0]
+
+### Added
+
+- `Identity.sign(data)` — a generic Ed25519 signing primitive, reached
+  through `cabi/identity_sign.go` (new: `macula_identity_sign`, a direct
+  wrapper over macula-go's existing `identity.KeyPair.Sign`, which itself
+  wraps `ed25519.Sign`) and `addon/binding.cc`'s new `IdentitySign`. Pure
+  local computation — no network I/O — so, like `identityNodeId` and
+  `ucanMint`/`ucanDecode`, it's a plain synchronous call on both the Go
+  and N-API sides, not `Napi::AsyncWorker`-backed. Deliberately bakes in
+  no application-specific message format anywhere on this path: `data`
+  crosses the FFI boundary as an opaque byte buffer and is signed exactly
+  as given; whatever byte-layout convention a caller needs (e.g. an
+  ownership-proof format binding this signature to some other value) is
+  that caller's own concern, built from plain bytes before calling this.
+  Verified against an independent verifier — Node's own `crypto.verify`
+  (via a JWK import of the identity's raw 32-byte NodeID, RFC 8037's
+  OKP/Ed25519 JWK shape — not macula-go, not this SDK's own code) — that
+  the signature is genuinely valid Ed25519 over the exact data and the
+  exact public key, and that tampering with either the data or the
+  signature afterward invalidates it; a stub returning 64 arbitrary bytes
+  could satisfy a length check but not that. Also verified: signing the
+  same data twice with the same identity produces the same signature
+  (Ed25519 has no per-signature nonce randomness the way ECDSA does);
+  signing different data produces a different signature; `sign()` after
+  `dispose()` throws cleanly instead of touching a freed handle (probed
+  directly against the raw addon export, both a garbage handle and a
+  freed one, confirming neither takes the process down). Re-verified the
+  zero-install-script packaging guarantee end to end for this change
+  specifically: `npm pack` + install into a fresh empty directory, no
+  compile signals in the verbose install log, `binding.gyp`/`addon/`/
+  `cabi/` absent from the installed package, and the independent-verifier
+  check above re-run successfully against that installed, prebuilt
+  package (not just the local dev build).
+
 ## [0.9.0]
 
 Two real, live-measured concurrency bugs found by an adversarial review

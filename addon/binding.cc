@@ -123,6 +123,32 @@ Napi::Value IdentityFree(const Napi::CallbackInfo& info) {
   return env.Undefined();
 }
 
+// IdentitySign: a generic Ed25519 signing primitive (cabi/identity_sign.go's
+// macula_identity_sign, a direct identity.KeyPair.Sign wrapper). No
+// application-specific message format lives here or on the Go side --
+// data is signed exactly as given. Pure local computation (ed25519.Sign),
+// no network I/O -- synchronous, like IdentityNodeId above, not
+// Napi::AsyncWorker-backed.
+Napi::Value IdentitySign(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  bool ok = false;
+  uintptr_t handle = ToHandle(env, info.Length() > 0 ? info[0] : env.Undefined(), &ok);
+  if (!ok) return env.Null();
+  if (info.Length() < 2 || !info[1].IsTypedArray()) {
+    Napi::TypeError::New(env, "expected (identityHandle, data: Uint8Array)").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  Napi::Uint8Array data = info[1].As<Napi::Uint8Array>();
+
+  Napi::Buffer<uint8_t> out = Napi::Buffer<uint8_t>::New(env, 64);
+  int rc = macula_identity_sign(handle, data.Data(), static_cast<int>(data.ByteLength()), out.Data());
+  if (rc != 0) {
+    Napi::Error::New(env, "invalid or already-freed identity handle").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  return out;
+}
+
 // Session.connect/close are real network I/O (a QUIC dial plus a
 // CONNECT/HELLO round trip, up to macula-go's own 30s handshake
 // timeout for connect; a 250ms drain sleep plus a write for close).
@@ -1705,6 +1731,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("identityNodeId", Napi::Function::New(env, IdentityNodeId));
   exports.Set("identityPrivateBytes", Napi::Function::New(env, IdentityPrivateBytes));
   exports.Set("identityFree", Napi::Function::New(env, IdentityFree));
+  exports.Set("identitySign", Napi::Function::New(env, IdentitySign));
   exports.Set("sessionConnect", Napi::Function::New(env, SessionConnect));
   exports.Set("sessionRemoteAddr", Napi::Function::New(env, SessionRemoteAddr));
   exports.Set("sessionStationNodeId", Napi::Function::New(env, SessionStationNodeId));

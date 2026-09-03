@@ -5,6 +5,7 @@ export declare const native: {
     identityNodeId(handle: Handle): Uint8Array;
     identityPrivateBytes(handle: Handle): Uint8Array;
     identityFree(handle: Handle): void;
+    identitySign(handle: Handle, data: Uint8Array): Uint8Array;
     sessionConnect(host: string, port: number, identityHandle: Handle): Promise<bigint>;
     sessionRemoteAddr(handle: Handle): string;
     sessionStationNodeId(handle: Handle): Uint8Array;

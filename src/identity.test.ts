@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createHash } from "node:crypto";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { Identity } from "./identity.js";
 
 // The one concrete, falsifiable claim this walking skeleton exists to
@@ -71,5 +71,77 @@ describe("Identity", () => {
     const id = Identity.generate();
     id.dispose();
     expect(() => id.nodeId).toThrow(/used after dispose/);
+  });
+
+  describe("sign()", () => {
+    // Builds a Node KeyObject from this identity's raw 32-byte NodeID
+    // (an Ed25519 public key) via the JWK import path -- Node's
+    // crypto.verify has no "raw Ed25519 public key bytes" key format of
+    // its own to hand a Buffer to directly, but it does support
+    // importing a JWK, and OKP/Ed25519 JWKs are just base64url(raw
+    // public key bytes) (RFC 8037). This gives an independent verifier
+    // (not macula-go, not this SDK's own code) something to check the
+    // signature against.
+    function verifierFor(nodeId: Uint8Array): ReturnType<typeof createPublicKey> {
+      return createPublicKey({
+        key: { kty: "OKP", crv: "Ed25519", x: Buffer.from(nodeId).toString("base64url") },
+        format: "jwk",
+      });
+    }
+
+    it("produces a real 64-byte Ed25519 signature verifiable by an independent verifier over the exact data and public key", () => {
+      const id = Identity.generate();
+      try {
+        const nodeId = id.nodeId;
+        const data = new TextEncoder().encode("macula-ts: sign() live-verification payload");
+        const sig = id.sign(data);
+
+        expect(sig.length).toBe(64);
+        expect(verify(null, Buffer.from(data), verifierFor(nodeId), Buffer.from(sig))).toBe(true);
+
+        // Tampering with either the signed data or the signature bytes
+        // must invalidate it -- a stub returning 64 arbitrary bytes
+        // could satisfy the length check above but could not survive
+        // this.
+        const tamperedData = Buffer.from(data);
+        tamperedData[0] ^= 0xff;
+        expect(verify(null, tamperedData, verifierFor(nodeId), Buffer.from(sig))).toBe(false);
+
+        const tamperedSig = Buffer.from(sig);
+        tamperedSig[0] ^= 0xff;
+        expect(verify(null, Buffer.from(data), verifierFor(nodeId), tamperedSig)).toBe(false);
+      } finally {
+        id.dispose();
+      }
+    });
+
+    it("is deterministic: signing the same data twice with the same identity produces the same signature", () => {
+      const id = Identity.generate();
+      try {
+        const data = new TextEncoder().encode("same data, signed twice");
+        const sigA = id.sign(data);
+        const sigB = id.sign(data);
+        expect(Buffer.from(sigA).equals(Buffer.from(sigB))).toBe(true);
+      } finally {
+        id.dispose();
+      }
+    });
+
+    it("signing different data produces a different signature", () => {
+      const id = Identity.generate();
+      try {
+        const sigA = id.sign(new TextEncoder().encode("data A"));
+        const sigB = id.sign(new TextEncoder().encode("data B"));
+        expect(Buffer.from(sigA).equals(Buffer.from(sigB))).toBe(false);
+      } finally {
+        id.dispose();
+      }
+    });
+
+    it("throws after dispose() instead of signing with a freed handle", () => {
+      const id = Identity.generate();
+      id.dispose();
+      expect(() => id.sign(new TextEncoder().encode("too late"))).toThrow(/used after dispose/);
+    });
   });
 });

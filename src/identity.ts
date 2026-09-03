@@ -56,6 +56,22 @@ export class Identity {
     return native.identityPrivateBytes(this.#requireHandle());
   }
 
+  /** Signs data with this identity's private key (Ed25519, via
+   * macula-go's identity.KeyPair.Sign -- a direct ed25519.Sign wrapper)
+   * and returns the raw 64-byte signature. This is a generic signing
+   * primitive: no application-specific message format is baked in
+   * here or on the Go side -- data is signed exactly as given, byte
+   * for byte. A caller that needs a particular byte-layout convention
+   * (e.g. an ownership-proof format binding this signature to some
+   * other value) builds those bytes itself and passes the result in;
+   * that convention is the caller's concern, not this method's.
+   * Deterministic: signing the same data twice with the same identity
+   * produces the same signature (Ed25519 has no per-signature nonce
+   * randomness the way ECDSA does). */
+  sign(data: Uint8Array): Uint8Array {
+    return native.identitySign(this.#requireHandle(), data);
+  }
+
   /** Frees the Go-side handle. Safe to call more than once. */
   dispose(): void {
     if (this.#handle !== null) {

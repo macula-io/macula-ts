@@ -27,6 +27,11 @@ const addon = require("node-gyp-build")(repoRoot) as {
   identityNodeId(handle: Handle): Uint8Array;
   identityPrivateBytes(handle: Handle): Uint8Array;
   identityFree(handle: Handle): void;
+  // A generic Ed25519 signing primitive (identity.KeyPair.Sign) -- no
+  // application-specific message format baked in anywhere on this path;
+  // data is signed exactly as given. Pure local computation, no network
+  // I/O -- synchronous, like identityNodeId above.
+  identitySign(handle: Handle, data: Uint8Array): Uint8Array;
   // sessionConnect/sessionClose are backed by Napi::AsyncWorker on the
   // C++ side (see addon/binding.cc) specifically because they're real
   // network I/O -- a synchronous FFI call here would block the whole
@@ -203,6 +208,9 @@ export const native = {
   },
   identityFree(handle: Handle): void {
     addon.identityFree(handle);
+  },
+  identitySign(handle: Handle, data: Uint8Array): Uint8Array {
+    return addon.identitySign(handle, data);
   },
   sessionConnect(host: string, port: number, identityHandle: Handle): Promise<bigint> {
     return addon.sessionConnect(host, port, identityHandle);

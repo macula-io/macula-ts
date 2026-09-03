@@ -39,6 +39,9 @@ export const native = {
     identityFree(handle) {
         addon.identityFree(handle);
     },
+    identitySign(handle, data) {
+        return addon.identitySign(handle, data);
+    },
     sessionConnect(host, port, identityHandle) {
         return addon.sessionConnect(host, port, identityHandle);
     },
