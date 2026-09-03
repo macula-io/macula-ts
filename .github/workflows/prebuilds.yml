@@ -36,8 +36,12 @@ jobs:
           # macos-latest is Apple Silicon (arm64) on GitHub-hosted runners.
           - os: macos-latest
             platform: darwin-arm64
-          # macos-13 is the last Intel (x64) hosted macOS image.
-          - os: macos-13
+          # macos-13 was GitHub's last plain Intel (x64) macOS image but
+          # was fully retired 2025-12-08 (confirmed live: its job queued
+          # indefinitely, never got a runner). macos-15-intel is the
+          # documented replacement -- the last x64 macOS image GitHub
+          # ships, supported until August 2027.
+          - os: macos-15-intel
             platform: darwin-x64
           - os: windows-latest
             platform: win32-x64
