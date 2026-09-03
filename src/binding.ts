@@ -67,6 +67,34 @@ const addon = require("node-gyp-build")(repoRoot) as {
   pendingCallPayloadJson(pendingHandle: Handle): string;
   pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void>;
   pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void>;
+  // DHT records (cabi/dht.go). All five are real network I/O (a signed
+  // CALL under the hood, same as sessionCall) -- backed by
+  // Napi::AsyncWorker on the C++ side, same reasoning as sessionCall.
+  // Each resolves with JSON text (a DhtRecord or DhtRecord[], per
+  // dht.ts), except dhtFindRecord, which resolves `null` for
+  // macula-go's dht.ErrNotFound specifically (an expected, common
+  // outcome, not an error) rather than rejecting. dhtPutProcedureAdvertisement/
+  // _ContentAnnouncement wrap macula-go's REAL constructors -- see
+  // cabi/dht.go's own doc for why there is no single generic "put any
+  // record type with an arbitrary JSON payload" function.
+  dhtFindRecordsByType(sessionHandle: Handle, identityHandle: Handle, recordType: number): Promise<string>;
+  dhtFindRecords(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string>;
+  dhtFindRecord(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string | null>;
+  dhtPutProcedureAdvertisement(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    procedure: string,
+    servingStation32: Uint8Array,
+    ttlMs: number,
+  ): Promise<string>;
+  dhtPutContentAnnouncement(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    mcid34: Uint8Array,
+    endpoint: string,
+    ttlMs: number,
+  ): Promise<string>;
 };
 
 // The addon always returns BigInt (see addon/binding.cc's comment on
@@ -142,5 +170,33 @@ export const native = {
   },
   pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void> {
     return addon.pendingCallReplyError(pendingHandle, detail);
+  },
+  dhtFindRecordsByType(sessionHandle: Handle, identityHandle: Handle, recordType: number): Promise<string> {
+    return addon.dhtFindRecordsByType(sessionHandle, identityHandle, recordType);
+  },
+  dhtFindRecords(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string> {
+    return addon.dhtFindRecords(sessionHandle, identityHandle, key32);
+  },
+  dhtFindRecord(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string | null> {
+    return addon.dhtFindRecord(sessionHandle, identityHandle, key32);
+  },
+  dhtPutProcedureAdvertisement(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    procedure: string,
+    servingStation32: Uint8Array,
+    ttlMs: number,
+  ): Promise<string> {
+    return addon.dhtPutProcedureAdvertisement(sessionHandle, identityHandle, realm, procedure, servingStation32, ttlMs);
+  },
+  dhtPutContentAnnouncement(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    mcid34: Uint8Array,
+    endpoint: string,
+    ttlMs: number,
+  ): Promise<string> {
+    return addon.dhtPutContentAnnouncement(sessionHandle, identityHandle, mcid34, endpoint, ttlMs);
   },
 };

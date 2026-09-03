@@ -662,6 +662,391 @@ Napi::Value PendingCallReply(const Napi::CallbackInfo& info, bool isError) {
 Napi::Value PendingCallReplyResult(const Napi::CallbackInfo& info) { return PendingCallReply(info, false); }
 Napi::Value PendingCallReplyErrorFn(const Napi::CallbackInfo& info) { return PendingCallReply(info, true); }
 
+// ---------------------------------------------------------------------
+// DHT records (cabi/dht.go): PutRecord/FindRecord/FindRecords/
+// FindRecordsByType. All four are real network I/O (a signed CALL under
+// the hood, connection.Session.Call) -- like SessionCall, each runs off
+// Node's main thread via Napi::AsyncWorker.
+// ---------------------------------------------------------------------
+
+// Reads a MANDATORY 32-byte Uint8Array DHT storage key into out -- a
+// DHT key, unlike a realm (ReadOptionalRealm above), has no meaningful
+// "use the default" reading, so there's no nil-tolerant counterpart
+// here.
+void ReadKey32(const Napi::Env& env, const Napi::Value& v, uint8_t* out, bool* ok) {
+  *ok = true;
+  if (!v.IsTypedArray()) {
+    *ok = false;
+    Napi::TypeError::New(env, "expected a 32-byte Uint8Array key").ThrowAsJavaScriptException();
+    return;
+  }
+  Napi::Uint8Array arr = v.As<Napi::Uint8Array>();
+  if (arr.ByteLength() != 32) {
+    *ok = false;
+    Napi::RangeError::New(env, "key must be exactly 32 bytes").ThrowAsJavaScriptException();
+    return;
+  }
+  std::memcpy(out, arr.Data(), 32);
+}
+
+class DhtFindRecordsByTypeWorker : public Napi::AsyncWorker {
+ public:
+  DhtFindRecordsByTypeWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                              uintptr_t identityHandle, uint8_t recordType)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        recordType_(recordType) {}
+
+  void Execute() override {
+    char* errOut = nullptr;
+    char* json = macula_dht_find_records_by_type(sessionHandle_, identityHandle_, recordType_, &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    recordsJson_.assign(json);
+    macula_free_string(json);
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Napi::String::New(Env(), recordsJson_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  uint8_t recordType_;
+  std::string recordsJson_;
+};
+
+Napi::Value DhtFindRecordsByType(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 3 || !info[2].IsNumber()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, recordType: number)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  int32_t recordType = info[2].As<Napi::Number>().Int32Value();
+  if (recordType < 0 || recordType > 255) {
+    Napi::RangeError::New(env, "recordType must be 0-255").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker =
+      new DhtFindRecordsByTypeWorker(env, deferred, sessionHandle, identityHandle, static_cast<uint8_t>(recordType));
+  worker->Queue();
+  return deferred.Promise();
+}
+
+class DhtFindRecordsWorker : public Napi::AsyncWorker {
+ public:
+  DhtFindRecordsWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                        uintptr_t identityHandle, uint8_t key[32])
+      : Napi::AsyncWorker(env), deferred_(deferred), sessionHandle_(sessionHandle), identityHandle_(identityHandle) {
+    std::memcpy(key_, key, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    char* json = macula_dht_find_records(sessionHandle_, identityHandle_, key_, &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    recordsJson_.assign(json);
+    macula_free_string(json);
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Napi::String::New(Env(), recordsJson_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  uint8_t key_[32] = {0};
+  std::string recordsJson_;
+};
+
+Napi::Value DhtFindRecords(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info.Length() > 0 ? info[0] : env.Undefined(), &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info.Length() > 1 ? info[1] : env.Undefined(), &ok);
+  if (!ok) return env.Undefined();
+  uint8_t key[32];
+  ReadKey32(env, info.Length() > 2 ? info[2] : env.Undefined(), key, &ok);
+  if (!ok) return env.Undefined();
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new DhtFindRecordsWorker(env, deferred, sessionHandle, identityHandle, key);
+  worker->Queue();
+  return deferred.Promise();
+}
+
+// DhtFindRecordWorker resolves with `null` (not a rejection) for
+// dht.ErrNotFound -- an expected, common outcome, distinguished from a
+// real transport-level failure exactly the way ServeWaitForCallWorker's
+// noCall_ distinguishes "nothing this tick" from an actual error above.
+class DhtFindRecordWorker : public Napi::AsyncWorker {
+ public:
+  DhtFindRecordWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                       uintptr_t identityHandle, uint8_t key[32])
+      : Napi::AsyncWorker(env), deferred_(deferred), sessionHandle_(sessionHandle), identityHandle_(identityHandle) {
+    std::memcpy(key_, key, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    int notFound = 0;
+    char* json = macula_dht_find_record(sessionHandle_, identityHandle_, key_, &notFound, &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    notFound_ = notFound != 0;
+    if (!notFound_) {
+      recordJson_.assign(json);
+      macula_free_string(json);
+    }
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    if (notFound_) {
+      deferred_.Resolve(Env().Null());
+      return;
+    }
+    deferred_.Resolve(Napi::String::New(Env(), recordJson_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  uint8_t key_[32] = {0};
+  bool notFound_ = false;
+  std::string recordJson_;
+};
+
+Napi::Value DhtFindRecord(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info.Length() > 0 ? info[0] : env.Undefined(), &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info.Length() > 1 ? info[1] : env.Undefined(), &ok);
+  if (!ok) return env.Undefined();
+  uint8_t key[32];
+  ReadKey32(env, info.Length() > 2 ? info[2] : env.Undefined(), key, &ok);
+  if (!ok) return env.Undefined();
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new DhtFindRecordWorker(env, deferred, sessionHandle, identityHandle, key);
+  worker->Queue();
+  return deferred.Promise();
+}
+
+// macula_dht_put_procedure_advertisement/_content_announcement both
+// build via macula-go's REAL constructors (dht.NewProcedureAdvertisement/
+// NewContentAnnouncement), not a generic JSON-payload path -- see
+// cabi/dht.go's own doc on why a generic put would silently mis-encode
+// these types' raw-byte fields. Both are real network I/O (dht.PutRecord
+// is a signed CALL under the hood), same threading requirement as
+// SessionCall.
+
+class DhtPutProcedureAdvertisementWorker : public Napi::AsyncWorker {
+ public:
+  DhtPutProcedureAdvertisementWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                                      uintptr_t identityHandle, bool hasRealm, uint8_t realm[32],
+                                      std::string procedure, uint8_t servingStation[32], int64_t ttlMs)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        hasRealm_(hasRealm),
+        procedure_(std::move(procedure)),
+        ttlMs_(ttlMs) {
+    if (hasRealm_) std::memcpy(realm_, realm, 32);
+    std::memcpy(servingStation_, servingStation, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    char* json = macula_dht_put_procedure_advertisement(sessionHandle_, identityHandle_, hasRealm_ ? realm_ : nullptr,
+                                                          const_cast<char*>(procedure_.c_str()), servingStation_,
+                                                          ttlMs_, &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    recordJson_.assign(json);
+    macula_free_string(json);
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Napi::String::New(Env(), recordJson_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  bool hasRealm_;
+  uint8_t realm_[32] = {0};
+  std::string procedure_;
+  uint8_t servingStation_[32] = {0};
+  int64_t ttlMs_;
+  std::string recordJson_;
+};
+
+Napi::Value DhtPutProcedureAdvertisement(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 6 || !info[3].IsString() || !info[5].IsNumber()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, realm: Uint8Array|undefined, procedure: "
+                               "string, servingStation: Uint8Array, ttlMs: number)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  uint8_t realmBuf[32];
+  unsigned char* realmPtr = ReadOptionalRealm(env, info[2], realmBuf, &ok);
+  if (!ok) return env.Undefined();
+  std::string procedure = info[3].As<Napi::String>().Utf8Value();
+  uint8_t servingStation[32];
+  ReadKey32(env, info[4], servingStation, &ok);
+  if (!ok) return env.Undefined();
+  int64_t ttlMs = info[5].As<Napi::Number>().Int64Value();
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new DhtPutProcedureAdvertisementWorker(env, deferred, sessionHandle, identityHandle,
+                                                          realmPtr != nullptr, realmBuf, std::move(procedure),
+                                                          servingStation, ttlMs);
+  worker->Queue();
+  return deferred.Promise();
+}
+
+class DhtPutContentAnnouncementWorker : public Napi::AsyncWorker {
+ public:
+  DhtPutContentAnnouncementWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                                   uintptr_t identityHandle, uint8_t mcid[34], std::string endpoint, int64_t ttlMs)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        endpoint_(std::move(endpoint)),
+        ttlMs_(ttlMs) {
+    std::memcpy(mcid_, mcid, 34);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    char* json = macula_dht_put_content_announcement(sessionHandle_, identityHandle_, mcid_,
+                                                       const_cast<char*>(endpoint_.c_str()), ttlMs_, &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    recordJson_.assign(json);
+    macula_free_string(json);
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Napi::String::New(Env(), recordJson_));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  uint8_t mcid_[34] = {0};
+  std::string endpoint_;
+  int64_t ttlMs_;
+  std::string recordJson_;
+};
+
+Napi::Value DhtPutContentAnnouncement(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 4 || !info[3].IsString()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, mcid: 34-byte Uint8Array, endpoint: "
+                               "string, ttlMs: number)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  if (!info[2].IsTypedArray() || info[2].As<Napi::Uint8Array>().ByteLength() != 34) {
+    Napi::RangeError::New(env, "mcid must be exactly 34 bytes").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  uint8_t mcid[34];
+  std::memcpy(mcid, info[2].As<Napi::Uint8Array>().Data(), 34);
+  std::string endpoint = info[3].As<Napi::String>().Utf8Value();
+  int64_t ttlMs = info.Length() > 4 && info[4].IsNumber() ? info[4].As<Napi::Number>().Int64Value() : 0;
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker =
+      new DhtPutContentAnnouncementWorker(env, deferred, sessionHandle, identityHandle, mcid, std::move(endpoint), ttlMs);
+  worker->Queue();
+  return deferred.Promise();
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("identityGenerate", Napi::Function::New(env, IdentityGenerate));
   exports.Set("identityFromSeedBytes", Napi::Function::New(env, IdentityFromSeedBytes));
@@ -680,6 +1065,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("pendingCallPayloadJson", Napi::Function::New(env, PendingCallPayloadJson));
   exports.Set("pendingCallReplyResult", Napi::Function::New(env, PendingCallReplyResult));
   exports.Set("pendingCallReplyError", Napi::Function::New(env, PendingCallReplyErrorFn));
+  exports.Set("dhtFindRecordsByType", Napi::Function::New(env, DhtFindRecordsByType));
+  exports.Set("dhtFindRecords", Napi::Function::New(env, DhtFindRecords));
+  exports.Set("dhtFindRecord", Napi::Function::New(env, DhtFindRecord));
+  exports.Set("dhtPutProcedureAdvertisement", Napi::Function::New(env, DhtPutProcedureAdvertisement));
+  exports.Set("dhtPutContentAnnouncement", Napi::Function::New(env, DhtPutContentAnnouncement));
   return exports;
 }
 

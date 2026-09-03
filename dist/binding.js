@@ -75,5 +75,20 @@ export const native = {
     pendingCallReplyError(pendingHandle, detail) {
         return addon.pendingCallReplyError(pendingHandle, detail);
     },
+    dhtFindRecordsByType(sessionHandle, identityHandle, recordType) {
+        return addon.dhtFindRecordsByType(sessionHandle, identityHandle, recordType);
+    },
+    dhtFindRecords(sessionHandle, identityHandle, key32) {
+        return addon.dhtFindRecords(sessionHandle, identityHandle, key32);
+    },
+    dhtFindRecord(sessionHandle, identityHandle, key32) {
+        return addon.dhtFindRecord(sessionHandle, identityHandle, key32);
+    },
+    dhtPutProcedureAdvertisement(sessionHandle, identityHandle, realm, procedure, servingStation32, ttlMs) {
+        return addon.dhtPutProcedureAdvertisement(sessionHandle, identityHandle, realm, procedure, servingStation32, ttlMs);
+    },
+    dhtPutContentAnnouncement(sessionHandle, identityHandle, mcid34, endpoint, ttlMs) {
+        return addon.dhtPutContentAnnouncement(sessionHandle, identityHandle, mcid34, endpoint, ttlMs);
+    },
 };
 //# sourceMappingURL=binding.js.map

@@ -3,9 +3,9 @@
 **Status: early, not feature-complete.** FFI binding over
 [macula-go](https://github.com/macula-io/macula-go) via a Go C-shared
 library. Identity generation, a real transport + CONNECT/HELLO handshake,
-and unary RPC (both roles — caller and provider) against the production
-fleet all work end-to-end today. Pubsub, DHT, content transfer, streaming
-RPC, and UCAN don't exist yet.
+unary RPC (both roles — caller and provider), and DHT record lookups/
+publication against the production fleet all work end-to-end today.
+Pubsub, content transfer, streaming RPC, and UCAN don't exist yet.
 
 ## Why FFI over macula-go, not a native TypeScript reimplementation
 
@@ -168,23 +168,82 @@ directly.
   handles — a garbage or already-answered handle throws a clean JS error
   instead of crashing the process.
 
+- DHT record client operations — `session.findRecordsByType(recordType)`,
+  `session.findRecords(key)`, `session.findRecord(key)` (macula-go's
+  `dht.FindRecordsByType`/`FindRecords`/`FindRecord`, thin CALL wrappers
+  to the mesh's own reserved `_dht.*` procedures under the DHT's own
+  all-zero realm, threaded internally — never passed from the TS side),
+  and `session.putProcedureAdvertisement(procedure, servingStation,
+  opts?)` / `session.putContentAnnouncement(mcid, endpoint, ttlMs?)`
+  (macula-go's real `dht.NewProcedureAdvertisement`/
+  `NewContentAnnouncement` constructors, signed via `dht.Sign` and
+  stored via `dht.PutRecord`). There is deliberately no single generic
+  `putRecord(type, arbitraryPayload)` — see below.
+- **Live-verified against the real production fleet**:
+  `findRecordsByType(StationEndpoint)` returns real records the fleet's
+  own stations publish, each one's `quic_port` payload field decoded and
+  checked as a plausible port number (proof the payload was genuinely
+  parsed via `cborToJSON`, not opaquely passed through);
+  `putProcedureAdvertisement()` followed by `findRecord()`/
+  `findRecords()` on that record's own computed storage key
+  round-trips the exact same signed record (`version`/`signature`
+  match) with its `procedure_uri` payload field decoded correctly;
+  `findRecord()` for a storage key nothing was ever put at resolves
+  `null` cleanly, not a hang or a thrown error;
+  `putContentAnnouncement()` similarly round-trips through
+  `findRecord()` with `endpoint` and `mcid` payload fields intact
+  (probed directly during development, not part of the committed
+  suite — `findRecordsByType`/`findRecord`/`findRecords`/
+  `putProcedureAdvertisement` are the ones this stage's live test
+  actually asserts on every run).
+- A real bug was found and fixed while building this: a first draft
+  exposed one generic `macula_dht_put_record(type, key, payloadJSON,
+  ttl)` taking an arbitrary JSON payload for any record type, the same
+  shape RPC payloads already use. That's wrong for DHT records
+  specifically — `procedure_advertisement`/`content_announcement`
+  payloads carry raw 32/34-byte pubkey/MCID fields that MUST be actual
+  CBOR byte strings for a real resolver's `bytesField()` reads to
+  succeed, and `wirevalue.go`'s `jsonToCbor` (by its own doc) has no
+  path that produces CBOR bytes going *in* — only `cborToJSON` produces
+  the `"0x"`-hex convention going *out*. The generic path would have
+  signed and stored successfully while silently writing those fields as
+  CBOR text instead, producing a record no real reader could parse.
+  Replaced with two typed builders wrapping macula-go's own
+  `dht.NewProcedureAdvertisement`/`NewContentAnnouncement` (which build
+  those fields correctly) instead of reimplementing that encoding here.
+  A second, separate bug (caught by the live round-trip test itself,
+  not by inspection): `NewProcedureAdvertisement`'s `procedureURI` must
+  be the realm-qualified `dht.DiscoveryURI(realm, procedure)`, not a
+  bare procedure name, or the advertiser and any resolver compute
+  different storage keys and `findRecord()` never finds what
+  `putProcedureAdvertisement()` just stored — confirmed by first getting
+  this wrong in the test itself. Fixed by having
+  `putProcedureAdvertisement()` build the qualified URI internally
+  (`dht.DiscoveryURI`) from a plain `procedure` string and an optional
+  `realm`, rather than trusting every caller to hex-encode and
+  concatenate it correctly by hand.
+
 ## What's explicitly not yet implemented
 
-Pubsub (`publish`/`watch`), DHT (`find_record`/`put_record`), content
-transfer, streaming RPC, UCAN, direct-dial, per-realm `call`/`serve` (the
-all-zero realm is used throughout — the FFI layer already threads a realm
-parameter through, just not yet exposed on the public TS API), and
-`Pinned`/`Insecure` trust modes (`WebPKI` only so far). Each of these is a
-separate, later slice of work built on top of a working `Session`.
+Pubsub (`publish`/`watch`), content transfer, streaming RPC, UCAN,
+direct-dial, per-realm `call`/`serve` (the all-zero realm is used
+throughout for those two specifically — DHT's `putProcedureAdvertisement`
+DOES take an optional realm, since it has to match whatever realm the
+procedure is actually served under), a generic "put any DHT record type
+with an arbitrary payload" function (see above for why), a
+`station_endpoint` record builder (macula-go has none either — stations
+publish those themselves, not clients), and `Pinned`/`Insecure` trust
+modes (`WebPKI` only so far). Each of these is a separate, later slice of
+work built on top of a working `Session`.
 
 ## Live tests
 
-`src/session.live.test.ts` and `src/rpc.live.test.ts` hit the real
-production fleet and are **not** part of default `npm test`/CI — opt in
-explicitly:
+`src/session.live.test.ts`, `src/rpc.live.test.ts`, and
+`src/dht.live.test.ts` hit the real production fleet and are **not** part
+of default `npm test`/CI — opt in explicitly:
 
 ```bash
-npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts
+npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts
 ```
 
 Matches macula-rust's `#[ignore]` and macula-dotnet's

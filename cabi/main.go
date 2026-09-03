@@ -21,10 +21,13 @@
 // macula_free_string. On success `*err_out` is left untouched.
 //
 // Scope so far: identity generation/accessors, transport + handshake
-// (Session connect/close), and unary RPC (both roles: Session.Call as
+// (Session connect/close), unary RPC (both roles: Session.Call as
 // caller, Session.Advertise + Session.ServeOneCall as provider -- see
-// rpc.go and serve.go). No pubsub/DHT/content/streaming/UCAN yet --
-// those are separate, later work (see README.md's status section).
+// rpc.go and serve.go), and DHT record client operations (dht.go:
+// FindRecord/FindRecords/FindRecordsByType, plus PutRecord via two
+// type-specific builders). No pubsub/content transfer/streaming/UCAN
+// yet -- those are separate, later work (see README.md's status
+// section).
 //
 // RPC payloads cross this boundary as JSON text, not a bespoke
 // kind/value accessor scheme (contrast macula-php's cabi, which has no

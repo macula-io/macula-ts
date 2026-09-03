@@ -2,6 +2,153 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-09-03
+
+DHT record client operations, live-verified against the real production
+fleet. Builds directly on 0.4.0's RPC layer -- `dht.FindRecord`/
+`FindRecords`/`FindRecordsByType`/`PutRecord` (macula-go's `dht` package)
+are themselves thin CALL wrappers to the mesh's own reserved `_dht.*`
+procedures, so this composes with `connection.Session` exactly like
+`Session.call()` does, no new transport-level plumbing.
+
+### Added
+
+- `cabi/dht.go`: `macula_dht_find_records_by_type`, `macula_dht_find_records`,
+  `macula_dht_find_record` -- thin wrappers over `dht.FindRecordsByType`/
+  `FindRecords`/`FindRecord`. `macula_dht_find_record` distinguishes
+  `dht.ErrNotFound` (an expected, common outcome, surfaced via a
+  `notFoundOut` int flag) from a real transport failure (`errOut`), the
+  same two-signal shape `macula_serve_wait_for_call`'s `noCallOut`
+  already established for "keep polling" vs. "actually broken". Records
+  cross as JSON (`dhtRecordJSON`) -- payload reuses `cborToJSON`
+  exactly like an RPC reply; `key`/`version`/`signature` (raw bytes with
+  no native JSON shape) cross as lowercase hex, deliberately distinct
+  from `wirevalue.go`'s own `"0x"`-prefixed convention for bytes found
+  *inside* a payload.
+- `cabi/dht.go`: `macula_dht_put_procedure_advertisement` and
+  `macula_dht_put_content_announcement` -- typed builders wrapping
+  macula-go's REAL `dht.NewProcedureAdvertisement`/
+  `NewContentAnnouncement` constructors (then `dht.Sign` + `dht.PutRecord`),
+  not a generic JSON-payload path. See "Fixed" below for why a generic
+  path was tried first and rejected. `macula_dht_put_procedure_advertisement`
+  also builds the realm-qualified discovery URI itself via macula-go's
+  own `dht.DiscoveryURI(realm, procedure)` rather than taking a
+  pre-qualified string from the caller.
+- `addon/binding.cc`: `DhtFindRecordsByTypeWorker`, `DhtFindRecordsWorker`,
+  `DhtFindRecordWorker`, `DhtPutProcedureAdvertisementWorker`,
+  `DhtPutContentAnnouncementWorker` -- all `Napi::AsyncWorker`-backed
+  (each is a signed CALL under the hood, real network I/O), same
+  reasoning as `SessionCallWorker`. `ReadKey32` is `ReadOptionalRealm`'s
+  mandatory counterpart for a DHT storage key (no meaningful "use a
+  default" reading for a lookup key the way there is for a realm).
+- `src/dht.ts`: `DhtRecordType` (the three type tags -- `station_endpoint`
+  is listed because `find*()` can return one, even though macula-go has
+  no client-side constructor for it, stations publish those themselves),
+  `DhtRecord`, `DHT_DEFAULT_TTL_MS`.
+- `src/session.ts`: `Session.findRecordsByType(recordType)`,
+  `.findRecords(key)`, `.findRecord(key)` (resolves `null` for
+  not-found, matching `dht.ErrNotFound`'s "expected, not exceptional"
+  status), `.putProcedureAdvertisement(procedure, servingStation, opts?)`,
+  `.putContentAnnouncement(mcid, endpoint, ttlMs?)`. All five reuse
+  `call()`'s same-Session exclusivity guard against an active `serve()`
+  (factored out into `#requireHandleNotServing`, `call()` itself
+  refactored to use it too, behavior unchanged) -- these all end up on
+  the same shared control stream a CALL does, since `dht.FindRecord` et
+  al. are themselves just `connection.Session.Call` under the hood.
+- `src/dht.live.test.ts` (opt-in via `MACULA_TS_LIVE`):
+  `findRecordsByType(StationEndpoint)` against the real fleet, each
+  returned record's `quic_port` payload field decoded and range-checked;
+  `putProcedureAdvertisement()` followed by `findRecord()`/`findRecords()`
+  on that record's own storage key round-tripping the exact stored
+  record (`version`/`signature` match, `procedure_uri` payload field
+  decoded correctly); `findRecord()` for a key nothing was ever put at
+  resolving `null` cleanly.
+- `package.json`'s `test:live` script now runs all three live suites.
+
+### Fixed
+
+- A first draft exposed one generic `macula_dht_put_record(recordType,
+  key, payloadJSON, ttlMs)` accepting an arbitrary JSON payload for any
+  record type, mirroring how RPC payloads already cross this boundary.
+  Caught before shipping: `procedure_advertisement`'s
+  `advertiser_node`/`serving_station` fields (and
+  `content_announcement`'s `announcer_node`/`mcid`) are raw pubkey/MCID
+  bytes that MUST round-trip as CBOR byte strings (major type 2) for a
+  real resolver's `bytesField()` reads to succeed -- and
+  `wirevalue.go`'s `jsonToCbor`, by its own doc, has no path that
+  produces CBOR bytes going *in* (only `cborToJSON` produces the
+  `"0x"`-hex convention going *out*). The generic path signed and stored
+  successfully while silently writing those fields as CBOR TEXT instead
+  -- a record no real reader could parse. Replaced with the two typed
+  builders described above, which call macula-go's real constructors
+  (already correctly byte-typed) instead of reimplementing that encoding
+  here.
+- A second bug, caught by the live round-trip test itself (not by
+  inspection): an early version of `Session.putProcedureAdvertisement()`
+  took a bare procedure name and passed it straight through to
+  `dht.NewProcedureAdvertisement` as `procedureURI`. That constructor's
+  own doc says `procedureURI` must be the realm-qualified discovery URI
+  (`dht.DiscoveryURI(realm, procedure)`) "or the DHT storage key will
+  not agree" between advertiser and resolver -- exactly what happened:
+  `putProcedureAdvertisement()` stored successfully, but the live test's
+  own independently-computed storage key (correctly using
+  `DiscoveryURI`) never found it, because the stored record's actual key
+  was different. Fixed by having `macula_dht_put_procedure_advertisement`
+  build the qualified URI internally via `dht.DiscoveryURI`, so a caller
+  supplies a plain procedure name and an optional realm and can no
+  longer get this wrong.
+
+### Verified
+
+- All three `dht.live.test.ts` scenarios passed against
+  `station-de-frankfurt.macula.io:4433` (also re-run together with
+  `session.live.test.ts`/`rpc.live.test.ts` via `npm run test:live`,
+  9/9 passing, and again from a fully clean rebuild --
+  `node_modules`/`build`/`dist`/`prebuilds`/`cabi/build` removed,
+  `build:go` -> `install` -> `build:prebuilds` -> `tsc`, then the live
+  suite re-run against that clean build).
+- `findRecordsByType(StationEndpoint)` returns real station-published
+  records from the live fleet (not empty, not stubbed) -- each one's
+  `key`/`version`/`signature` checked as well-formed hex of the right
+  length, `createdAt`/`expiresAt` checked as plausible recent
+  timestamps with `expiresAt > createdAt`, and `quic_port` (decoded out
+  of the payload) checked as a real port number -- proof the payload was
+  genuinely parsed via `cborToJSON`, not opaquely passed through.
+- `putContentAnnouncement()` (built, but not part of the committed
+  suite -- only `findRecordsByType`/`findRecord`/`findRecords`/
+  `putProcedureAdvertisement` are, matching this stage's explicit scope)
+  was still probed directly against the live station before being
+  considered done: put, then found via `findRecord()` on its own
+  `dht.ContentKey`-derived storage key, with `endpoint` and `mcid`
+  payload fields round-tripping correctly.
+- Deliberately probed, not just the happy path: a garbage/never-issued
+  session handle passed to every new `dht*` native export throws a
+  clean error instead of crashing the process (all five); a wrong-length
+  key/servingStation/mcid (31, 33, or non-34 bytes where 32 or 34 is
+  required) throws a clean `RangeError` from the addon's own argument
+  validation before ever reaching the Go side.
+- Zero-install-script property re-verified after this change (same
+  fresh-tarball-install check as prior releases): a real `npm pack`
+  tarball installed into a directory with no source tree present,
+  verbose install log showing only the two declared runtime
+  dependencies fetched -- no `node-gyp`/compiler invocation -- and a
+  consumer-side script confirming `DhtRecordType` and
+  `Session.prototype.findRecordsByType`/`putProcedureAdvertisement`/
+  `putContentAnnouncement` are present and callable from the published
+  package alone.
+
+### Known gaps (deferred, not forgotten)
+
+- Only `linux-x64` prebuild coverage.
+- No generic "put any DHT record type with an arbitrary JSON payload"
+  function, and no `station_endpoint` builder (macula-go has neither
+  either -- see this release's "Fixed" section and README.md).
+- Pubsub, content transfer, streaming RPC, UCAN, direct-dial,
+  `Pinned`/`Insecure` trust modes. `call()`/`serve()` still default to
+  the all-zero realm only (unchanged this release);
+  `putProcedureAdvertisement()` is the first public method that DOES
+  take an explicit realm.
+
 ## [0.4.0] - 2026-09-03
 
 Unary RPC, both roles: `Session.call()` (caller) and `Session.serve()`

@@ -11,6 +11,7 @@
 // no UCAN -- those build on top of a working Session and are separate
 // work.
 import { native } from "./binding.js";
+import { DHT_DEFAULT_TTL_MS } from "./dht.js";
 import { DEFAULT_CALL_TIMEOUT_MS, MaculaCallError, SERVE_POLL_MS } from "./rpc.js";
 export class Session {
     #handle;
@@ -51,6 +52,21 @@ export class Session {
             throw new Error("macula-ts: Session used after close()");
         }
         return this.#handle;
+    }
+    /** call()'s own handle-plus-exclusivity guard, factored out since the
+     * DHT methods below (findRecord/findRecords/findRecordsByType/
+     * putRecord) all end up on this Session's same shared control stream
+     * too -- macula-go's dht.FindRecord et al. are themselves just a
+     * connection.Session.Call under the hood (see cabi/dht.go), so mixing
+     * one of these with an active serve() on this Session races exactly
+     * the way call() itself would. */
+    #requireHandleNotServing(caller) {
+        const handle = this.#requireHandle();
+        if (this.#activeServe !== null) {
+            throw new Error(`macula-ts: Session.${caller}() while serve("${this.#activeServe.procedure}") is active on the same ` +
+                `Session races on the shared control stream -- open a second Session for the other role.`);
+        }
+        return handle;
     }
     /** The address this session's underlying QUIC connection is with. */
     get remoteAddr() {
@@ -101,11 +117,7 @@ export class Session {
      * not queued) -- open a second Session for the other role instead,
      * exactly what this SDK's own live test does. */
     async call(procedure, payload, opts = {}) {
-        const handle = this.#requireHandle();
-        if (this.#activeServe !== null) {
-            throw new Error(`macula-ts: Session.call() while serve("${this.#activeServe.procedure}") is active on the same Session ` +
-                `races on the shared control stream -- open a second Session for the other role.`);
-        }
+        const handle = this.#requireHandleNotServing("call");
         const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
         const payloadJson = JSON.stringify(payload ?? null);
         const envelopeJson = await native.sessionCall(handle, this.#identity.handleForFfi(), procedure, undefined, payloadJson, timeoutMs);
@@ -188,6 +200,111 @@ export class Session {
         };
         this.#activeServe = { procedure, stop };
         return stop;
+    }
+    /** DHT: returns every record of `recordType` currently visible from
+     * the station this Session is connected to (macula-go's
+     * dht.FindRecordsByType, via a signed CALL to `_dht.find_records_by_type`
+     * under the DHT's own reserved realm -- threaded internally, this
+     * method never touches a realm itself). Coverage depends on that
+     * station's own view of the mesh, not a global guarantee. Neither
+     * this nor findRecord/findRecords verifies a returned record's
+     * signature or checks its expiry -- see DhtRecord's own doc (dht.ts).
+     *
+     * Real network I/O, off the main thread on the native side, exactly
+     * like call() -- and subject to the same same-Session exclusivity
+     * rule as call() (see #requireHandleNotServing's own doc): do not
+     * call this while serve() is active on the same Session. */
+    async findRecordsByType(recordType) {
+        const handle = this.#requireHandleNotServing("findRecordsByType");
+        const json = await native.dhtFindRecordsByType(handle, this.#identity.handleForFfi(), recordType);
+        return JSON.parse(json);
+    }
+    /** DHT: returns every record stored at `key` -- the full
+     * signer-deduped multiset at that storage key (macula-go's
+     * dht.FindRecords), e.g. every procedure_advertisement for one
+     * procedure, not just the first one found. `key` must be exactly 32
+     * bytes -- see dht/record.go's ProcedureKey/StationEndpointKey/
+     * ContentKey (macula-go) for how those are derived from the thing
+     * being looked up. Same I/O and exclusivity notes as
+     * findRecordsByType(). */
+    async findRecords(key) {
+        const handle = this.#requireHandleNotServing("findRecords");
+        requireKey32(key);
+        const json = await native.dhtFindRecords(handle, this.#identity.handleForFfi(), key);
+        return JSON.parse(json);
+    }
+    /** DHT: returns ONE record by storage key (macula-go's
+     * dht.FindRecord). Resolves `null` when none exists -- mirrors
+     * macula-go's own dht.ErrNotFound, translated to a value instead of a
+     * thrown error since "not found" is an expected, routine outcome
+     * here, not exceptional. Same I/O and exclusivity notes as
+     * findRecordsByType(). */
+    async findRecord(key) {
+        const handle = this.#requireHandleNotServing("findRecord");
+        requireKey32(key);
+        const json = await native.dhtFindRecord(handle, this.#identity.handleForFfi(), key);
+        return json === null ? null : JSON.parse(json);
+    }
+    /** DHT: builds the realm-qualified discovery URI (macula-go's
+     * dht.DiscoveryURI), then builds (dht.NewProcedureAdvertisement),
+     * signs, and stores a procedure_advertisement naming this Session's
+     * own Identity as `procedure`'s advertiser and `servingStation` (32
+     * bytes -- a station's NodeID, typically this Session's own
+     * `stationNodeId`) as the station that serves it.
+     *
+     * `realm` should be the SAME realm `procedure` is (or will be) served
+     * under via `serve()` -- defaults to the all-zero realm, matching
+     * `call()`/`serve()`'s own current default (see their own docs' known
+     * gap: realm isn't yet a public parameter on either). This method
+     * builds the qualified URI itself (dht.DiscoveryURI) rather than
+     * taking a pre-qualified string, since NewProcedureAdvertisement's own
+     * doc is explicit that "the advertiser and the resolver must derive
+     * the identical URI or the DHT storage key will not agree" -- a
+     * caller-supplied pre-qualified string invites exactly that class of
+     * bug (verified directly: an earlier draft of this SDK's own live
+     * test got this wrong by hand-qualifying the URI itself, and its
+     * following findRecord() came back not-found until this method built
+     * the URI internally instead).
+     *
+     * Wraps macula-go's REAL constructor rather than a generic
+     * JSON-payload builder deliberately -- see cabi/dht.go's own doc on
+     * why: two of this record type's payload fields (advertiser_node,
+     * serving_station) are raw 32-byte pubkeys that must be actual CBOR
+     * byte strings for a real resolver to read, and this SDK's generic
+     * JSON<->cbor.Value conversion (rpc.ts's JsonValue, wirevalue.go) has
+     * no way to produce those going IN -- only OUT, as "0x"-prefixed hex
+     * (see DhtRecord's own doc). `ttlMs` defaults to DHT_DEFAULT_TTL_MS
+     * (48h). Resolves with the signed record actually stored. Same I/O
+     * and exclusivity notes as findRecordsByType(). */
+    async putProcedureAdvertisement(procedure, servingStation, opts = {}) {
+        const handle = this.#requireHandleNotServing("putProcedureAdvertisement");
+        requireKey32(servingStation);
+        if (opts.realm !== undefined)
+            requireKey32(opts.realm);
+        const json = await native.dhtPutProcedureAdvertisement(handle, this.#identity.handleForFfi(), opts.realm, procedure, servingStation, opts.ttlMs ?? DHT_DEFAULT_TTL_MS);
+        return JSON.parse(json);
+    }
+    /** DHT: builds (macula-go's dht.NewContentAnnouncement), signs, and
+     * stores a content_announcement naming this Session's own Identity as
+     * `mcid`'s (34 bytes) announcer, reachable at `endpoint` (a dialable
+     * seed URL, e.g. "https://host:4433" -- NOT a station_endpoint's
+     * split host/port). Same reasoning as putProcedureAdvertisement()'s
+     * own doc for wrapping macula-go's real constructor instead of a
+     * generic JSON-payload builder (announcer_node/mcid are the same kind
+     * of raw-byte field). `ttlMs` defaults to DHT_DEFAULT_TTL_MS (48h).
+     * Same I/O and exclusivity notes as findRecordsByType(). */
+    async putContentAnnouncement(mcid, endpoint, ttlMs = DHT_DEFAULT_TTL_MS) {
+        const handle = this.#requireHandleNotServing("putContentAnnouncement");
+        if (mcid.length !== 34) {
+            throw new Error(`macula-ts: content_announcement mcid must be exactly 34 bytes, got ${mcid.length}`);
+        }
+        const json = await native.dhtPutContentAnnouncement(handle, this.#identity.handleForFfi(), mcid, endpoint, ttlMs);
+        return JSON.parse(json);
+    }
+}
+function requireKey32(key) {
+    if (key.length !== 32) {
+        throw new Error(`macula-ts: DHT key must be exactly 32 bytes, got ${key.length}`);
     }
 }
 //# sourceMappingURL=session.js.map

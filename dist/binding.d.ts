@@ -17,4 +17,9 @@ export declare const native: {
     pendingCallPayloadJson(pendingHandle: Handle): string;
     pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void>;
     pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void>;
+    dhtFindRecordsByType(sessionHandle: Handle, identityHandle: Handle, recordType: number): Promise<string>;
+    dhtFindRecords(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string>;
+    dhtFindRecord(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string | null>;
+    dhtPutProcedureAdvertisement(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, servingStation32: Uint8Array, ttlMs: number): Promise<string>;
+    dhtPutContentAnnouncement(sessionHandle: Handle, identityHandle: Handle, mcid34: Uint8Array, endpoint: string, ttlMs: number): Promise<string>;
 };
