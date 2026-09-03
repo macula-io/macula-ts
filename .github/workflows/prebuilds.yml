@@ -14,6 +14,7 @@ on:
       - "cabi/**"
       - "addon/**"
       - "binding.gyp"
+      - "package.json"
       - ".github/workflows/prebuilds.yml"
   workflow_dispatch:
 
@@ -95,7 +96,12 @@ jobs:
 
   commit-prebuilds:
     needs: build
-    if: github.event_name != 'pull_request'
+    # Commit whichever platforms succeeded even if one matrix leg failed
+    # (build's overall conclusion is failure when any leg fails, since
+    # fail-fast is off) -- a blocked platform shouldn't hold back the
+    # ones that built cleanly. !cancelled() still skips this on a
+    # cancelled run.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
