@@ -37,6 +37,36 @@ const addon = require("node-gyp-build")(repoRoot) as {
   sessionRemoteAddr(handle: Handle): string;
   sessionStationNodeId(handle: Handle): Uint8Array;
   sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void>;
+  // Unary RPC. All six are real network I/O (see addon/binding.cc's
+  // own comments on each worker) except pendingCallProcedure/
+  // pendingCallPayloadJson, which only read fields already sitting in
+  // a pendingCall handle -- no wire activity, so those two stay
+  // synchronous like identityNodeId/sessionRemoteAddr above.
+  sessionCall(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    procedure: string,
+    realm: Uint8Array | undefined,
+    payloadJson: string,
+    timeoutMs: number,
+  ): Promise<string>;
+  sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
+  sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
+  // Resolves with a pendingCall Handle once a matching CALL arrives, or
+  // `null` if nothing did within timeoutMs (or a foreign CALL got
+  // auto-refused on our behalf -- see cabi/serve.go's own doc) -- the
+  // caller's cue to just call this again.
+  serveWaitForCall(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    procedure: string,
+    timeoutMs: number,
+  ): Promise<Handle | null>;
+  pendingCallProcedure(pendingHandle: Handle): string;
+  pendingCallPayloadJson(pendingHandle: Handle): string;
+  pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void>;
+  pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void>;
 };
 
 // The addon always returns BigInt (see addon/binding.cc's comment on
@@ -75,5 +105,42 @@ export const native = {
   },
   sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void> {
     return addon.sessionClose(handle, identityHandle, reason);
+  },
+  sessionCall(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    procedure: string,
+    realm: Uint8Array | undefined,
+    payloadJson: string,
+    timeoutMs: number,
+  ): Promise<string> {
+    return addon.sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
+  },
+  sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void> {
+    return addon.sessionAdvertise(sessionHandle, identityHandle, realm, procedure);
+  },
+  sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void> {
+    return addon.sessionUnadvertise(sessionHandle, identityHandle, realm, procedure);
+  },
+  serveWaitForCall(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    procedure: string,
+    timeoutMs: number,
+  ): Promise<Handle | null> {
+    return addon.serveWaitForCall(sessionHandle, identityHandle, realm, procedure, timeoutMs);
+  },
+  pendingCallProcedure(pendingHandle: Handle): string {
+    return addon.pendingCallProcedure(pendingHandle);
+  },
+  pendingCallPayloadJson(pendingHandle: Handle): string {
+    return addon.pendingCallPayloadJson(pendingHandle);
+  },
+  pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void> {
+    return addon.pendingCallReplyResult(pendingHandle, resultJson);
+  },
+  pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void> {
+    return addon.pendingCallReplyError(pendingHandle, detail);
   },
 };

@@ -20,10 +20,18 @@
 // returns a zero/negative sentinel; the caller must free it with
 // macula_free_string. On success `*err_out` is left untouched.
 //
-// Scope so far: identity generation/accessors, plus transport +
-// handshake (Session connect/close). No RPC/pubsub/DHT/content/
-// streaming/UCAN yet -- those are separate, later work (see README.md's
-// status section).
+// Scope so far: identity generation/accessors, transport + handshake
+// (Session connect/close), and unary RPC (both roles: Session.Call as
+// caller, Session.Advertise + Session.ServeOneCall as provider -- see
+// rpc.go and serve.go). No pubsub/DHT/content/streaming/UCAN yet --
+// those are separate, later work (see README.md's status section).
+//
+// RPC payloads cross this boundary as JSON text, not a bespoke
+// kind/value accessor scheme (contrast macula-php's cabi, which has no
+// JSON on the PHP side and so uses one) -- converted to/from
+// macula-go's cbor.Value by wirevalue.go, ported from macula-cli's
+// internal/wirevalue package (already proven against the same no-bool,
+// bytes-as-hex-string rules this boundary needs).
 package main
 
 /*
@@ -44,8 +52,9 @@ import (
 )
 
 var (
-	errInvalidIdentityHandle = errors.New("macula-ts/cabi: invalid identity handle")
-	errInvalidSessionHandle  = errors.New("macula-ts/cabi: invalid session handle")
+	errInvalidIdentityHandle    = errors.New("macula-ts/cabi: invalid identity handle")
+	errInvalidSessionHandle     = errors.New("macula-ts/cabi: invalid session handle")
+	errInvalidPendingCallHandle = errors.New("macula-ts/cabi: invalid pending-call handle")
 )
 
 func setErr(errOut **C.char, err error) {
@@ -101,6 +110,31 @@ func sessionFromHandle(h C.uintptr_t) (s *connection.Session, ok bool) {
 // bytes32FromC reads a fixed 32-byte C buffer into a Go []byte.
 func bytes32FromC(src *C.uchar) []byte {
 	return append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(src)), 32)...)
+}
+
+// realm32OrZero is bytes32FromC's nil-tolerant counterpart for realm
+// fields specifically: rpc.go and serve.go's exports all take realm32
+// as an optional 32-byte buffer, with a nil pointer meaning "use the
+// all-zero realm" -- the same default macula-go's own quickstart
+// example (examples/quickstart/main.go) and this project's live tests
+// use, not invented here.
+func realm32OrZero(src *C.uchar) []byte {
+	if src == nil {
+		return make([]byte, 32)
+	}
+	return bytes32FromC(src)
+}
+
+// pendingCallFromHandle is identityFromHandle's counterpart for
+// *pendingCall (see serve.go) -- same guard, same reason.
+func pendingCallFromHandle(h C.uintptr_t) (pc *pendingCall, ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	pc, ok = cgo.Handle(h).Value().(*pendingCall)
+	return
 }
 
 //export macula_free_string

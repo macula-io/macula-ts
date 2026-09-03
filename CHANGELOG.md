@@ -2,6 +2,103 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-09-03
+
+Unary RPC, both roles: `Session.call()` (caller) and `Session.serve()`
+(provider), live-verified against the real production fleet. Builds
+directly on 0.3.0's transport/handshake layer with no changes to that
+layer's shape.
+
+### Added
+
+- `cabi/wirevalue.go`: `jsonToCbor`/`cborToJSON` -- JSON<->`cbor.Value`
+  bridge for RPC payloads, ported from
+  [macula-cli](https://github.com/macula-io/macula-cli)'s
+  `internal/wirevalue` package rather than reinvented (same no-bool,
+  bytes-as-"0x"-hex-string rules).
+- `cabi/rpc.go`: `macula_session_call` -- caller role, wraps
+  `connection.Session.Call`. Returns a JSON envelope
+  (`{ok:true,payload}` or `{ok:false,bolt4:{code,name,retryable,detail}}`)
+  distinguishing "never got a wire-level answer" (a Go `error`, surfaced
+  via `errOut`) from "got a real BOLT#4 ERROR frame" (`frame.CallResponse
+  .IsError`, not a Go error at all).
+- `cabi/serve.go`: `macula_session_advertise`/`_unadvertise`
+  (`connection.Session.Advertise`/`Unadvertise`) and a three-call split of
+  `connection.Session.ServeOneCall` -- `macula_serve_wait_for_call`
+  (blocks for the next matching CALL, `lookup` filters by realm+procedure
+  so a mismatched CALL is answered `unknown_next_peer` by macula-go
+  itself rather than by us), `macula_pending_call_procedure`/
+  `_payload_json` (local reads), `macula_pending_call_reply_result`/
+  `_error` (resume the blocked goroutine, wait for the actual reply
+  frame to send, then free the pending-call handle). Same three-call
+  split [macula-php](https://github.com/macula-io/macula-php)'s
+  `cabi/serve.go` already proved for the identical "can't hand a Go
+  closure across this boundary" problem. `pendingCallFromHandle` mirrors
+  `identityFromHandle`/`sessionFromHandle`'s `recover()`-guarded lookup
+  for the new handle type.
+- `addon/binding.cc`: `SessionCallWorker`, `SessionAdvertiseWorker`,
+  `ServeWaitForCallWorker`, `PendingCallReplyWorker` -- all
+  `Napi::AsyncWorker`-backed (real network I/O each). `PendingCallProcedure`/
+  `PendingCallPayloadJson` stay synchronous (local reads only, same
+  reasoning as `SessionRemoteAddr`/`SessionStationNodeId`).
+- `src/rpc.ts`: `JsonValue` (the wire's own restrictions encoded as a
+  TypeScript type -- no `boolean` in the union, so passing one is a
+  compile error), `Bolt4ErrorInfo`, `MaculaCallError`.
+- `src/session.ts`: `Session.call(procedure, payload, opts?)` and
+  `Session.serve(procedure, handler)`. `Session` now retains the
+  connecting `Identity` privately so `call()`/`serve()` don't force
+  every caller to re-pass it (macula-go's own `connection.Session` has
+  no such field -- every Go-side signing call takes `identity.KeyPair`
+  explicitly; this is a convenience this wrapper adds). `close()`'s
+  existing explicit-`identity`-parameter contract is unchanged. Only one
+  `serve()` registration is allowed per `Session`, and `call()`/`serve()`
+  refuse to run concurrently on the same `Session` (both throw
+  immediately) -- matches macula-go's own documented "mixing roles on
+  one control stream races" limitation on `Call`/`ServeOneCall`.
+- `src/rpc.live.test.ts` (opt-in via `MACULA_TS_LIVE`): a provider's
+  `serve()` answering a caller's `call()` with the real round-tripped
+  payload over two real `Session`s; calling an unadvertised procedure
+  coming back a real `unknown_next_peer`; a throwing handler coming back
+  a real `unknown_error`.
+- `package.json`'s `test:live` script now runs both live suites
+  (`session.live.test.ts` and `rpc.live.test.ts`).
+
+### Verified
+
+- All three `rpc.live.test.ts` scenarios passed against
+  `station-de-frankfurt.macula.io:4433` (also re-run together with
+  `session.live.test.ts` via `npm run test:live`, 6/6 passing).
+- Deliberately probed, not just the happy path (all against the real
+  station except the garbage-handle cases, which don't need one): a
+  garbage/never-issued pending-call handle passed to every
+  `pending_call_*` export throws a clean error instead of crashing the
+  process; a garbage session handle passed to `sessionCall`/
+  `sessionAdvertise` likewise; a JS boolean payload (forced past
+  `JsonValue`'s type check with `as any`) is rejected before ever
+  reaching the wire; a second concurrent `serve()` on one `Session`
+  throws; `call()` while `serve()` is active on the same `Session`
+  throws; a `stop()`ped `serve()` procedure is genuinely unadvertised
+  (a follow-up `call()` comes back `unknown_next_peer`, not still
+  answered); `call()`/`serve()` after `close()` throw "used after
+  close()" instead of touching a freed handle.
+- Zero-install-script property re-verified after this change: `npm
+  run build:go` -> `npm install` -> `npm run build:prebuilds` -> `npx
+  tsc` from a fully clean tree (`node_modules`/`build`/`dist`/
+  `prebuilds`/`cabi/build` all removed first), then a real packed
+  tarball installed into a fresh directory with a verbose install log
+  showing only the two declared runtime dependencies fetched -- no
+  `node-gyp`/compiler invocation at all.
+
+### Known gaps (deferred, not forgotten)
+
+- Only `linux-x64` prebuild coverage.
+- Realm is threaded through the FFI layer (`cabi/rpc.go`/`serve.go` both
+  accept an optional 32-byte realm) but not yet exposed on the public
+  `Session.call`/`serve` TypeScript API -- both currently always use the
+  all-zero realm.
+- Pubsub, DHT, content transfer, streaming RPC, UCAN, direct-dial,
+  `Pinned`/`Insecure` trust modes.
+
 ## [0.3.0] - 2026-09-03
 
 Transport + handshake: `Session.connect`/`close`, live-verified against the

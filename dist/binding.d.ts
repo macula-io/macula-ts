@@ -9,4 +9,12 @@ export declare const native: {
     sessionRemoteAddr(handle: Handle): string;
     sessionStationNodeId(handle: Handle): Uint8Array;
     sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void>;
+    sessionCall(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number): Promise<string>;
+    sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
+    sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
+    serveWaitForCall(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, timeoutMs: number): Promise<Handle | null>;
+    pendingCallProcedure(pendingHandle: Handle): string;
+    pendingCallPayloadJson(pendingHandle: Handle): string;
+    pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void>;
+    pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void>;
 };

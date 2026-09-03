@@ -2,9 +2,10 @@
 
 **Status: early, not feature-complete.** FFI binding over
 [macula-go](https://github.com/macula-io/macula-go) via a Go C-shared
-library. Identity generation and a real transport + CONNECT/HELLO
-handshake against the production fleet both work end-to-end today. RPC,
-pubsub, DHT, content transfer, streaming, and UCAN don't exist yet.
+library. Identity generation, a real transport + CONNECT/HELLO handshake,
+and unary RPC (both roles — caller and provider) against the production
+fleet all work end-to-end today. Pubsub, DHT, content transfer, streaming
+RPC, and UCAN don't exist yet.
 
 ## Why FFI over macula-go, not a native TypeScript reimplementation
 
@@ -71,11 +72,28 @@ zero-dependency runtime loader) and re-exports its typed functions;
 public TypeScript API, never touching the addon directly.
 
 **Memory ownership**, copied from macula-php's `cabi/` rather than
-reinvented: every opaque Go value (currently: an identity keypair) crosses
-the boundary as a `uintptr_t` from `runtime/cgo.Handle`. Hold it, pass it
-back for every operation on that value, and free it exactly once
-(`Identity#dispose()` on the TS side). Fixed-length fields (a 32-byte
+reinvented: every opaque Go value (an identity keypair, a session, or —
+new this slice — an inbound "pending call" awaiting a `serve()` handler's
+reply) crosses the boundary as a `uintptr_t` from `runtime/cgo.Handle`.
+Hold it, pass it back for every operation on that value, and free it
+exactly once (`Identity#dispose()` on the TS side; a pending-call handle
+is freed automatically by whichever of `macula_pending_call_reply_result`/
+`_error` answers it — see `cabi/serve.go`). Fixed-length fields (a 32-byte
 NodeID or seed) are written directly into a caller-supplied output buffer.
+
+**RPC payloads cross this boundary as JSON text**, not another handle —
+`cabi/wirevalue.go` converts to/from macula-go's `cbor.Value`, ported from
+[macula-cli](https://github.com/macula-io/macula-cli)'s
+`internal/wirevalue` package (already proven against the same no-bool,
+bytes-as-hex-string rules) rather than reinvented. `Session.call()`'s
+provider-side counterpart, `Session.serve()`, cannot hand a Go closure
+across the FFI boundary the way `ServeOneCall` itself expects (Go's own
+`connection.CallHandler` type) — since the actual answer has to come from
+arbitrary, possibly-async TypeScript — so `cabi/serve.go` splits that one
+blocking Go call into three cgo exports instead (wait-for-call, read the
+pending call's procedure/payload, reply), the same split
+[macula-php](https://github.com/macula-io/macula-php)'s `cabi/serve.go`
+already proved for the identical problem.
 
 A real bug was found and fixed while building this skeleton: `cgo.Handle`'s
 `.Value()` and `.Delete()` **panic** — not return an error — on a handle
@@ -114,21 +132,59 @@ directly.
   idempotent (safe to call twice); 5 consecutive real connect/close cycles
   against the production station ran clean with no leak, crash, or hang.
 
+- `session.call(procedure, payload, opts?)` — caller role: sends a signed
+  CALL and waits for the matching RESULT or ERROR via macula-go's
+  `connection.Session.Call`. `payload`/the return value are `JsonValue`
+  (string/number/null/array/object — **no boolean**, since macula's wire
+  CBOR has no bool type at all; encode `true`/`false` as `1`/`0`
+  yourself). A real BOLT#4 ERROR frame (e.g. `unknown_next_peer` for a
+  procedure nobody has advertised) rejects with a `MaculaCallError`
+  carrying the numeric `code`, `bolt4Name`, `retryable`, and `detail` —
+  not a generic string error.
+- `session.serve(procedure, handler)` — provider role: advertises
+  `procedure` (`connection.Session.Advertise`) and answers inbound CALLs
+  against it forever (`connection.Session.ServeOneCall`, looped), invoking
+  `handler(payload)` for each one — `handler` may be sync or async.
+  Resolves with an async `stop()` function that unadvertises the procedure
+  and waits for the current poll tick to finish. Only one `serve()`
+  registration is allowed per `Session` at a time, and `call()`/`serve()`
+  refuse to run concurrently on the same `Session` — both read frames off
+  one shared control stream, and mixing roles on it races (matches
+  macula-go's own documented limitation on `ServeOneCall`/`Call`); open a
+  second `Session` for the other role instead.
+- **Live-verified against the real production fleet**: a provider's
+  `serve()` answering a caller's `call()` on the same procedure with the
+  real round-tripped payload (two real `Session`s, two real identities); a
+  `call()` to a procedure nobody has advertised coming back as a real,
+  structured `unknown_next_peer` (not a hang); a provider `handler` that
+  throws coming back as a real, structured `unknown_error` with the
+  thrown message as `detail`. Also probed directly (not just the happy
+  path): a JS boolean payload is rejected before ever reaching the wire;
+  a second concurrent `serve()` and a `call()` while `serve()` is active
+  both throw immediately; a `stop()`ped procedure is genuinely
+  unadvertised (a follow-up `call()` to it comes back `unknown_next_peer`,
+  not still answered); every new Go-side handle (a "pending call") is
+  resolved through the same `recover()`-guarded lookup as identity/session
+  handles — a garbage or already-answered handle throws a clean JS error
+  instead of crashing the process.
+
 ## What's explicitly not yet implemented
 
-RPC (`call`/`serve`), pubsub (`publish`/`watch`), DHT
-(`find_record`/`put_record`), content transfer, streaming RPC, UCAN,
-direct-dial, and `Pinned`/`Insecure` trust modes (`WebPKI` only so far).
-Each of these is a separate, later slice of work built on top of a working
-`Session`.
+Pubsub (`publish`/`watch`), DHT (`find_record`/`put_record`), content
+transfer, streaming RPC, UCAN, direct-dial, per-realm `call`/`serve` (the
+all-zero realm is used throughout — the FFI layer already threads a realm
+parameter through, just not yet exposed on the public TS API), and
+`Pinned`/`Insecure` trust modes (`WebPKI` only so far). Each of these is a
+separate, later slice of work built on top of a working `Session`.
 
 ## Live tests
 
-`src/session.live.test.ts` hits the real production fleet and is **not**
-part of default `npm test`/CI — opt in explicitly:
+`src/session.live.test.ts` and `src/rpc.live.test.ts` hit the real
+production fleet and are **not** part of default `npm test`/CI — opt in
+explicitly:
 
 ```bash
-npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts
+npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts
 ```
 
 Matches macula-rust's `#[ignore]` and macula-dotnet's

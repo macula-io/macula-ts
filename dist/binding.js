@@ -51,5 +51,29 @@ export const native = {
     sessionClose(handle, identityHandle, reason) {
         return addon.sessionClose(handle, identityHandle, reason);
     },
+    sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs) {
+        return addon.sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
+    },
+    sessionAdvertise(sessionHandle, identityHandle, realm, procedure) {
+        return addon.sessionAdvertise(sessionHandle, identityHandle, realm, procedure);
+    },
+    sessionUnadvertise(sessionHandle, identityHandle, realm, procedure) {
+        return addon.sessionUnadvertise(sessionHandle, identityHandle, realm, procedure);
+    },
+    serveWaitForCall(sessionHandle, identityHandle, realm, procedure, timeoutMs) {
+        return addon.serveWaitForCall(sessionHandle, identityHandle, realm, procedure, timeoutMs);
+    },
+    pendingCallProcedure(pendingHandle) {
+        return addon.pendingCallProcedure(pendingHandle);
+    },
+    pendingCallPayloadJson(pendingHandle) {
+        return addon.pendingCallPayloadJson(pendingHandle);
+    },
+    pendingCallReplyResult(pendingHandle, resultJson) {
+        return addon.pendingCallReplyResult(pendingHandle, resultJson);
+    },
+    pendingCallReplyError(pendingHandle, detail) {
+        return addon.pendingCallReplyError(pendingHandle, detail);
+    },
 };
 //# sourceMappingURL=binding.js.map

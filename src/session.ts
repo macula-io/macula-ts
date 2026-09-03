@@ -5,17 +5,51 @@
 // sign/verify of the handshake; this file does not reimplement any of
 // that, it exposes it.
 //
-// Scope of this slice: connect + close only. No RPC (call/serve), no
-// pubsub, no DHT, no content transfer, no streaming, no UCAN -- those
-// build on top of a working Session and are separate work.
+// Scope of this slice: connect/close plus unary RPC, both roles (call
+// as caller, serve as provider -- see rpc.ts for the shared payload/
+// error shapes). No pubsub, no DHT, no content transfer, no streaming,
+// no UCAN -- those build on top of a working Session and are separate
+// work.
 import { native, type Handle } from "./binding.js";
-import type { Identity } from "./identity.js";
+import { Identity } from "./identity.js";
+import { DEFAULT_CALL_TIMEOUT_MS, MaculaCallError, SERVE_POLL_MS, type CallEnvelope, type JsonValue } from "./rpc.js";
+
+/** Options for Session.call(). */
+export interface CallOptions {
+  /** How long to wait for a RESULT/ERROR before giving up, in
+   * milliseconds. Also becomes the wire's own `deadline_ms` (now +
+   * this) -- see rpc.ts's DEFAULT_CALL_TIMEOUT_MS for why both share
+   * one number. */
+  deadlineMs?: number;
+}
+
+/** One Session.serve() registration -- tracked so a second concurrent
+ * serve() on the same Session fails fast instead of racing (see
+ * serve()'s own doc for why mixing two server loops, or a server loop
+ * and call(), on one Session is unsafe at the protocol level, not just
+ * an API nicety). */
+interface ActiveServe {
+  procedure: string;
+  stop: () => Promise<void>;
+}
 
 export class Session {
   #handle: Handle | null;
+  // Retained since connect() purely so call()/serve() (added this
+  // slice) don't force every caller to re-pass the identity they just
+  // used to open the session -- connection.Session itself has no such
+  // field (every Go-side signing call takes identity.KeyPair
+  // explicitly, see connection.go), so this is a convenience this
+  // wrapper adds, not something mirrored from macula-go. close()
+  // deliberately still takes identity as an explicit parameter (see
+  // its own doc below) -- that contract predates this field and is
+  // unchanged, per this repo's own "extend, don't replace" rule.
+  #identity: Identity;
+  #activeServe: ActiveServe | null = null;
 
-  private constructor(handle: Handle) {
+  private constructor(handle: Handle, identity: Identity) {
     this.#handle = handle;
+    this.#identity = identity;
   }
 
   /** Dials host:port and completes the full CONNECT/HELLO handshake
@@ -33,7 +67,7 @@ export class Session {
    * Session -- close() needs it again to sign GOODBYE. */
   static async connect(host: string, port: number, identity: Identity): Promise<Session> {
     const handle = await native.sessionConnect(host, port, identity.handleForFfi());
-    return new Session(handle);
+    return new Session(handle, identity);
   }
 
   #requireHandle(): Handle {
@@ -68,5 +102,122 @@ export class Session {
     const handle = this.#handle;
     this.#handle = null;
     await native.sessionClose(handle, identity.handleForFfi(), reason);
+  }
+
+  /** Caller role: sends a signed CALL for `procedure` and waits for the
+   * matching RESULT or ERROR (macula-go's connection.Session.Call).
+   * `payload` is JSON, converted to a cbor.Value on the Go side
+   * (cabi/wirevalue.go) -- see rpc.ts's JsonValue for the wire's own
+   * restrictions (no booleans, bytes as hex strings).
+   *
+   * Resolves with the RESULT's payload on success. Rejects with a
+   * MaculaCallError (rpc.ts) when a real BOLT#4 ERROR frame came back
+   * instead -- e.g. `unknown_next_peer` for a procedure nobody has
+   * advertised -- carrying its code/name/retryable triple rather than
+   * a generic message; rejects with a plain Error for everything that
+   * isn't a wire-level answer at all (a local timeout, a dead session,
+   * a payload the wire can't represent).
+   *
+   * Real network I/O -- a signed frame out and a wait for the reply,
+   * up to opts.deadlineMs -- so this runs off the main thread on the
+   * native side, like connect()/close(). Do not call this
+   * concurrently with an active serve() on the SAME Session: both read
+   * frames off the one shared control stream, and macula-go's own
+   * ServeOneCall/Call docs both warn that mixing roles on one
+   * connection races (an unrelated frame arriving first is discarded,
+   * not queued) -- open a second Session for the other role instead,
+   * exactly what this SDK's own live test does. */
+  async call(procedure: string, payload: JsonValue, opts: CallOptions = {}): Promise<JsonValue> {
+    const handle = this.#requireHandle();
+    if (this.#activeServe !== null) {
+      throw new Error(
+        `macula-ts: Session.call() while serve("${this.#activeServe.procedure}") is active on the same Session ` +
+          `races on the shared control stream -- open a second Session for the other role.`,
+      );
+    }
+    const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
+    const payloadJson = JSON.stringify(payload ?? null);
+    const envelopeJson = await native.sessionCall(handle, this.#identity.handleForFfi(), procedure, undefined, payloadJson, timeoutMs);
+    const envelope = JSON.parse(envelopeJson) as CallEnvelope;
+    if (envelope.ok) return envelope.payload;
+    throw new MaculaCallError(envelope.bolt4);
+  }
+
+  /** Provider role: advertises `procedure` (macula-go's
+   * connection.Session.Advertise) and answers inbound CALLs against it
+   * forever, invoking `handler` for each one (payload in, reply or
+   * thrown error out -- `handler` may be async), until the returned
+   * stop function is called. A thrown/rejected `handler` becomes a
+   * BOLT#4 UnknownError reply carrying the thrown value's message as
+   * detail (matching macula-go's connection/serve.go, which maps every
+   * handler error to that one code); a `handler` that panics on the Go
+   * side instead (not reachable from here -- there is no Go code
+   * between this and the JS handler) would map to
+   * TemporaryRelayFailure, per that same file.
+   *
+   * Only one serve() registration is allowed per Session at a time --
+   * see call()'s own doc on why mixing roles (or two server loops) on
+   * one connection is unsafe, not just inadvisable; open a second
+   * Session for a second procedure instead of trying to serve two
+   * procedures off one.
+   *
+   * The returned stop function is async: it unadvertises the
+   * procedure (a real network write) and waits for the current poll
+   * tick to finish (up to rpc.ts's SERVE_POLL_MS) before resolving --
+   * there is no way to interrupt a Go-side wait already in flight, the
+   * same bounded-latency shape macula-go's own ServeForever has
+   * internally. */
+  async serve(procedure: string, handler: (payload: JsonValue) => JsonValue | Promise<JsonValue>): Promise<() => Promise<void>> {
+    if (this.#activeServe !== null) {
+      throw new Error(
+        `macula-ts: Session is already serving "${this.#activeServe.procedure}" -- macula-go's ServeOneCall reads ` +
+          `one frame at a time off the shared control stream, so a second concurrent serve() (or a serve() ` +
+          `alongside call()) on the same Session races; open a second Session instead.`,
+      );
+    }
+    const handle = this.#requireHandle();
+    const identityHandle = this.#identity.handleForFfi();
+
+    await native.sessionAdvertise(handle, identityHandle, undefined, procedure);
+
+    let stopped = false;
+    const loopDone = (async () => {
+      while (!stopped) {
+        let pendingHandle: Handle | null;
+        try {
+          pendingHandle = await native.serveWaitForCall(handle, identityHandle, undefined, procedure, SERVE_POLL_MS);
+        } catch (err) {
+          if (!stopped) {
+            console.error(`macula-ts: session.serve("${procedure}") poll failed, stopping this server loop:`, err);
+          }
+          return;
+        }
+        if (pendingHandle === null) continue; // nothing arrived this tick -- poll again
+
+        const payload = JSON.parse(native.pendingCallPayloadJson(pendingHandle)) as JsonValue;
+        try {
+          const reply = await handler(payload);
+          await native.pendingCallReplyResult(pendingHandle, JSON.stringify(reply ?? null));
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          try {
+            await native.pendingCallReplyError(pendingHandle, detail);
+          } catch (replyErr) {
+            console.error(`macula-ts: session.serve("${procedure}") failed to send a reply:`, replyErr);
+          }
+        }
+      }
+    })();
+
+    const stop = async (): Promise<void> => {
+      stopped = true;
+      await loopDone;
+      this.#activeServe = null;
+      if (this.#handle !== null) {
+        await native.sessionUnadvertise(handle, identityHandle, undefined, procedure);
+      }
+    };
+    this.#activeServe = { procedure, stop };
+    return stop;
   }
 }
