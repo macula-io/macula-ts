@@ -3,13 +3,32 @@ import { Identity } from "./identity.js";
 import type { PublishOptions, PubsubEvent, SubscribeOptions } from "./pubsub.js";
 import { type JsonValue } from "./rpc.js";
 import { Ucan } from "./ucan.js";
-/** Options for Session.call(). */
+/** Options for Session.call()/callWithUcan(). */
 export interface CallOptions {
     /** How long to wait for a RESULT/ERROR before giving up, in
      * milliseconds. Also becomes the wire's own `deadline_ms` (now +
      * this) -- see rpc.ts's DEFAULT_CALL_TIMEOUT_MS for why both share
      * one number. */
     deadlineMs?: number;
+    /** The realm this CALL is scoped to, as a 64-character lowercase (or
+     * uppercase, case-insensitive) hex string -- 32 bytes, the same
+     * hex-string convention DhtRecord's own key/version/signature fields
+     * already use (dht.ts), not native.*'s raw-byte Uint8Array (this
+     * class converts internally -- see realmBytesFromHex below). Omitted
+     * means the all-zero realm, the same default every mesh operation in
+     * this SDK used exclusively before this option existed, and what
+     * macula-go's own realm32OrZero (cabi/main.go) falls back to when no
+     * realm pointer is given.
+     *
+     * Must match whatever realm the target procedure is actually served
+     * under, or this CALL comes back `unknown_next_peer` even for a
+     * procedure genuinely advertised elsewhere -- realm is an exact-match
+     * routing key, not a hierarchy or a default-realm fallback. This
+     * class's own `serve()` always advertises under the all-zero realm
+     * (a separate, later gap -- see README.md's "What's explicitly not
+     * yet implemented"); calling with a non-zero realm only reaches a
+     * provider serving under that same realm through some other means. */
+    realm?: string;
 }
 export declare class Session {
     #private;
@@ -174,8 +193,10 @@ export declare class Session {
      *
      * `realm` should be the SAME realm `procedure` is (or will be) served
      * under via `serve()` -- defaults to the all-zero realm, matching
-     * `call()`/`serve()`'s own current default (see their own docs' known
-     * gap: realm isn't yet a public parameter on either). This method
+     * `call()`'s own default (see CallOptions.realm's own doc: `call()`/
+     * `callWithUcan()`/`publish()`/`subscribe()` now all take an optional
+     * realm; `serve()`/`advertise` remain all-zero-realm-only for this
+     * slice, unchanged). This method
      * builds the qualified URI itself (dht.DiscoveryURI) rather than
      * taking a pre-qualified string, since NewProcedureAdvertisement's own
      * doc is explicit that "the advertiser and the resolver must derive
@@ -231,6 +252,12 @@ export declare class Session {
      * on the SAME Session a subscribe() of its own is active on -- exactly
      * what a subscriber publishing to (and receiving) its own topic needs.
      *
+     * `opts.realm` (see CallOptions.realm's own doc for the hex-string
+     * format and exact-match semantics) scopes which realm this EVENT is
+     * published under -- omitted means the all-zero realm, this SDK's
+     * sole default before this option existed. A subscribe() only
+     * receives this event if its own realm matches exactly.
+     *
      * Real network I/O (one signed frame write) -- runs off the main
      * thread on the native side, like every other network-touching method
      * here. */
@@ -263,6 +290,12 @@ export declare class Session {
      *
      * Real network I/O (the initial SUBSCRIBE send, and stop()'s
      * UNSUBSCRIBE) -- both run off the main thread on the native side.
+     *
+     * `opts.realm` (see CallOptions.realm's own doc for the hex-string
+     * format and exact-match semantics) scopes which realm this SUBSCRIBE
+     * listens on -- omitted means the all-zero realm, this SDK's sole
+     * default before this option existed. Only an EVENT published under
+     * the SAME realm is ever delivered to `handler`.
      *
      * If the underlying connection dies (or any other transport error
      * ends the background reader) rather than the returned stop() being

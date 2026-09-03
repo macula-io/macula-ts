@@ -196,7 +196,16 @@ before/after evidence.
   yourself). A real BOLT#4 ERROR frame (e.g. `unknown_next_peer` for a
   procedure nobody has advertised) rejects with a `MaculaCallError`
   carrying the numeric `code`, `bolt4Name`, `retryable`, and `detail` —
-  not a generic string error.
+  not a generic string error. `opts.realm` (a 64-character hex string —
+  32 bytes, the same hex convention `DhtRecord`'s `key`/`version`/
+  `signature` fields already use) scopes this CALL to a realm other than
+  the all-zero default; `callWithUcan()`/`publish()`/`subscribe()` take
+  the identical option. `cabi/rpc.go`, `cabi/pubsub.go`, and
+  `addon/binding.cc` were, on inspection, already fully wired for an
+  optional realm all the way through the FFI boundary — `Session`'s own
+  public methods were the only place still hardcoding the all-zero
+  realm; this class converts the public hex string to the native layer's
+  existing raw-byte convention internally.
 - `session.serve(procedure, handler)` — provider role: advertises
   `procedure` (`connection.Session.Advertise`) and answers inbound CALLs
   against it forever (`connection.Session.ServeOneCall`, looped), invoking
@@ -222,7 +231,15 @@ before/after evidence.
   not still answered); every new Go-side handle (a "pending call") is
   resolved through the same `recover()`-guarded lookup as identity/session
   handles — a garbage or already-answered handle throws a clean JS error
-  instead of crashing the process.
+  instead of crashing the process. `opts.realm` proven to change real wire
+  behavior, not just accepted and ignored: the SAME procedure name (via
+  `call()` and separately via `callWithUcan()`), advertised once under the
+  default realm, answers a `call()` under that same default realm and
+  comes back a genuine `unknown_next_peer` under a different, randomly
+  generated 32-byte realm — on the same two live `Session`s, ruling out
+  "the provider stopped answering" as an alternative explanation. A
+  malformed realm (wrong length, non-hex characters) is rejected
+  synchronously before ever touching the network.
 
 - DHT record client operations — `session.findRecordsByType(recordType)`,
   `session.findRecords(key)`, `session.findRecord(key)` (macula-go's
@@ -281,7 +298,7 @@ before/after evidence.
 
 - Pubsub — `session.publish(topic, payload, opts?)` (macula-go's
   `connection.Session.Publish`, fire-and-forget, no ack on the wire) and
-  `session.subscribe(topic, handler)` (macula-go's
+  `session.subscribe(topic, handler, opts?)` (macula-go's
   `connection.Session.RunSubscriber`, driving a background reader
   goroutine on the Go side — NOT reimplemented on top of the lower-level
   `RecvEvent`, see `cabi/pubsub.go`'s own doc for why). `subscribe()`
@@ -297,7 +314,9 @@ before/after evidence.
   `call()`/`serve()` are mutually exclusive; `publish()` itself is NOT
   subject to that guard — it only ever writes, so it can run safely on
   the same `Session` a `subscribe()` of its own is active on (exactly
-  what receiving your own publish needs).
+  what receiving your own publish needs). Both take an `opts.realm` (the
+  same 64-character hex convention as `CallOptions.realm`) scoping which
+  realm the PUBLISH/SUBSCRIBE is on — omitted means the all-zero realm.
 - **Live-verified against the real production fleet**: a `subscribe()`
   receiving that SAME `Session`'s own `publish()` with the exact payload,
   publisher pubkey, and a positive `seq` intact; `stop()` genuinely
@@ -307,7 +326,13 @@ before/after evidence.
   matching `call()`'s own exclusivity behavior. Also re-run against the
   actual packaged, installed tarball (not just the dev build) — a real
   publish/subscribe round trip using only the published package, no
-  source tree present.
+  source tree present. `opts.realm` proven to change real wire behavior
+  with two simultaneous live subscriptions to the SAME topic on separate
+  `Session`s — one on the default realm, one on a different, randomly
+  generated 32-byte realm: a `publish()` under the non-default realm is
+  delivered ONLY to the subscriber on that realm, and a subsequent
+  `publish()` under the default realm is delivered ONLY to the
+  default-realm subscriber, each confirmed not to leak to the other.
 - A real bug was found and fixed while building this: a still-active
   `subscribe()`'s background reader goroutine holds a live
   `Napi::ThreadSafeFunction`, which — deliberately, unlike every other
@@ -417,7 +442,11 @@ before/after evidence.
   the same with a raw token string instead of a `Ucan` object; a call to
   a procedure nobody has advertised still coming back a real, structured
   `unknown_next_peer` (a UCAN token doesn't change ordinary CALL error
-  behavior). **Honest limitation**: this SDK has no served-side UCAN
+  behavior); `opts.realm` changing wire behavior for `callWithUcan()`
+  exactly like it does for plain `call()` — the same procedure reachable
+  under the default realm and `unknown_next_peer` under a different real
+  realm, token attached throughout. **Honest limitation**: this SDK has
+  no served-side UCAN
   policy gate (see above), so the live test proves attach-and-call works,
   not that a provider actually *enforces* the token — there is no gated
   procedure on the live fleet this SDK can stand up to prove that side
@@ -443,11 +472,10 @@ before/after evidence.
 
 Streaming RPC, direct-dial, provider-side UCAN policy gating
 (`ucan.Policy`/`ServeOneCallGated` — this SDK can mint/attach a token but
-not enforce one on a served procedure), per-realm
-`call`/`serve`/`publish`/`subscribe` (the all-zero realm is used
-throughout for those four specifically — DHT's `putProcedureAdvertisement`
-DOES take an optional realm, since it has to match whatever realm the
-procedure is actually served under), a generic "put any DHT record type
+not enforce one on a served procedure), per-realm `serve`/`advertise`
+(these two still only ever use the all-zero realm — `call`/`callWithUcan`/
+`publish`/`subscribe`, and DHT's `putProcedureAdvertisement`, all DO now
+take an optional realm), a generic "put any DHT record type
 with an arbitrary payload" function (see above for why), a
 `station_endpoint` record builder (macula-go has none either — stations
 publish those themselves, not clients), and `Pinned`/`Insecure` trust

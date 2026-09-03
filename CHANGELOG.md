@@ -2,6 +2,77 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0]
+
+### Added
+
+- `realm?: string` on `Session.call`/`callWithUcan`/`publish`/`subscribe`
+  — a 64-character lowercase (or uppercase) hex string, 32 bytes, the
+  same hex convention `DhtRecord`'s `key`/`version`/`signature` fields
+  already use, rather than `putProcedureAdvertisement`'s pre-existing
+  raw-byte `Uint8Array` convention for its own `opts.realm`. Omitted
+  means the all-zero realm, the sole default every one of these methods
+  used exclusively before this option existed. Realm is an exact-match
+  routing key: a `call()`/`callWithUcan()` under a realm the target
+  procedure isn't advertised under comes back a genuine
+  `unknown_next_peer`, and a `subscribe()` only ever receives a
+  `publish()` made under the identical realm.
+  On inspection (not assumed from the task description that opened this
+  work), `cabi/rpc.go`'s `macula_session_call`/
+  `macula_session_call_with_ucan`, `cabi/pubsub.go`'s
+  `macula_session_publish`/`macula_session_subscribe_start`, and
+  `addon/binding.cc`'s `ReadOptionalRealm` plus the four matching
+  `AsyncWorker`s were already fully wired for an optional 32-byte realm
+  all the way to `src/binding.ts`'s `native.*` layer — `Session`'s own
+  public methods were the only place still hardcoding `undefined`. No
+  changes were needed to `cabi/rpc.go`, `cabi/pubsub.go`, or
+  `addon/binding.cc`; `session.ts`/`rpc.ts`/`pubsub.ts` convert the new
+  public hex-string option to that already-working raw-byte convention
+  internally (`realmBytesFromHex`, `session.ts`), which also means the
+  addon did not need to be rebuilt for this change (the committed
+  `prebuilds/linux-x64` binary is byte-identical before and after).
+  `serve()`/`advertise` deliberately still only use the all-zero realm —
+  out of scope for this slice, unchanged; see README.md's "What's
+  explicitly not yet implemented". DHT's `findRecord`/`findRecords`/
+  `findRecordsByType`/`putRecord` were deliberately left untouched too —
+  those always use the DHT's own reserved all-zero realm internally, a
+  protocol-level constant, not a general-purpose parameter.
+- **Live-verified against the real production fleet, proving realm
+  actually changes wire behavior rather than being accepted and
+  ignored**: the SAME procedure name, advertised once (necessarily under
+  the default realm, since `serve()` has no realm option), answers a
+  `call()` and a `callWithUcan()` under that default realm and comes
+  back a genuine, structured `unknown_next_peer` under a different, real
+  32-byte realm (`crypto.randomBytes(32)`, not a placeholder) — on the
+  same two live `Session`s throughout, then confirmed reachable under
+  the default realm once more, ruling out "the provider stopped
+  answering" as an alternative explanation for the negative result.
+  Pubsub proven with two simultaneous live subscriptions to the SAME
+  topic on separate `Session`s, one on the default realm and one on a
+  different real realm: a `publish()` under the non-default realm
+  reaches only its own subscriber, and a subsequent `publish()` under
+  the default realm reaches only the default-realm subscriber — each
+  direction confirmed not to leak into the other. A malformed realm
+  (wrong length, non-hex characters) is rejected synchronously by
+  `realmBytesFromHex` before any of these four methods ever encodes,
+  signs, or sends a frame. New live tests in `src/rpc.live.test.ts`,
+  `src/ucan.live.test.ts`, and `src/pubsub.live.test.ts` (all gated by
+  `MACULA_TS_LIVE`, unchanged from every other live test file's own
+  convention).
+- `scripts/verify-zero-install.sh` — the zero-install-script
+  re-verification this project's own contribution discipline requires
+  before every change, as a runnable script instead of a one-off shell
+  transcript: wipes every generated artifact, rebuilds Go + the addon +
+  every prebuild, runs the offline suite and `tsc`, packs a real
+  tarball, installs it into a fresh empty directory with a verbose
+  install log, and asserts that log carries no compiler/`node-gyp`
+  signal — then loads the installed package and calls a real native
+  export (`Identity.generate()`) to confirm it actually works, not just
+  that the log looked clean. Re-run for this change specifically: PASSED
+  (3 packages added to the fresh install — this package plus its two
+  declared runtime dependencies — no `node-gyp rebuild` lifecycle
+  script, no compiler/linker output).
+
 ## [0.10.0]
 
 ### Added

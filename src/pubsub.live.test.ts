@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { describe, it, expect } from "vitest";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
@@ -115,4 +116,103 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", ()
     },
     30000,
   );
+
+  it(
+    "publish()/subscribe()'s realm option actually changes wire behavior: a subscriber on realm A never sees an " +
+      "event published under a different real realm B, and a subscriber on B never sees one published under A " +
+      "(the default) -- proven with two live subscriptions on the same topic at once, not just a single-realm probe",
+    async () => {
+      const publisherId = Identity.generate();
+      const defaultSubId = Identity.generate();
+      const otherSubId = Identity.generate();
+      let publisherSession: Session | undefined;
+      let defaultSubSession: Session | undefined;
+      let otherSubSession: Session | undefined;
+      let stopDefaultSub: (() => Promise<void>) | undefined;
+      let stopOtherSub: (() => Promise<void>) | undefined;
+
+      try {
+        [publisherSession, defaultSubSession, otherSubSession] = await Promise.all([
+          Session.connect(STATION_HOST, STATION_PORT, publisherId),
+          Session.connect(STATION_HOST, STATION_PORT, defaultSubId),
+          Session.connect(STATION_HOST, STATION_PORT, otherSubId),
+        ]);
+
+        const topic = uniqueTopic("realm_isolation");
+        // A real, random, non-zero 32-byte realm -- not a stand-in
+        // value, the same shape every real realm on the mesh takes.
+        const otherRealm = randomBytes(32).toString("hex");
+
+        const defaultDelivered: PubsubEvent[] = [];
+        const otherDelivered: PubsubEvent[] = [];
+        const firstOnOther = nextEvent(10_000);
+        const firstOnDefault = nextEvent(10_000);
+
+        // Two subscriptions to the SAME topic string, on two separate
+        // Sessions (one Session allows only one active subscribe() at a
+        // time), differing ONLY in realm -- one left at the default
+        // (all-zero), one pinned to otherRealm.
+        stopDefaultSub = await defaultSubSession.subscribe(topic, (evt) => {
+          defaultDelivered.push(evt);
+          firstOnDefault.onEvent(evt);
+        });
+        stopOtherSub = await otherSubSession.subscribe(topic, (evt) => {
+          otherDelivered.push(evt);
+          firstOnOther.onEvent(evt);
+        }, { realm: otherRealm });
+
+        // Publish under otherRealm: only the otherRealm subscriber
+        // should ever see this.
+        await publisherSession.publish(topic, { marker: "otherRealm-event" }, { realm: otherRealm });
+        const otherEvt = await firstOnOther.promise;
+        expect(otherEvt.payload).toEqual({ marker: "otherRealm-event" });
+
+        // Give the default-realm subscriber every chance to have wrongly
+        // received it too -- long enough to exceed real network latency
+        // plus the Go-side reader's own poll interval (matches the
+        // roundtrip test's own 4s margin above).
+        await new Promise((r) => setTimeout(r, 4000));
+        expect(defaultDelivered.length).toBe(0);
+        expect(otherDelivered.length).toBe(1);
+
+        // Now publish under the DEFAULT realm (no realm option): only
+        // the default-realm subscriber should see THIS one -- ruling
+        // out "the otherRealm subscriber just receives everything" as
+        // an alternative explanation for the isolation observed above.
+        await publisherSession.publish(topic, { marker: "defaultRealm-event" });
+        const defaultEvt = await firstOnDefault.promise;
+        expect(defaultEvt.payload).toEqual({ marker: "defaultRealm-event" });
+
+        await new Promise((r) => setTimeout(r, 4000));
+        expect(defaultDelivered.length).toBe(1);
+        expect(otherDelivered.length).toBe(1); // unchanged -- still just the one otherRealm event
+      } finally {
+        if (stopDefaultSub) await stopDefaultSub();
+        if (stopOtherSub) await stopOtherSub();
+        if (publisherSession) await publisherSession.close(publisherId, "pubsub.live.test.ts done (realm isolation, publisher)");
+        if (defaultSubSession) await defaultSubSession.close(defaultSubId, "pubsub.live.test.ts done (realm isolation, default sub)");
+        if (otherSubSession) await otherSubSession.close(otherSubId, "pubsub.live.test.ts done (realm isolation, other sub)");
+        publisherId.dispose();
+        defaultSubId.dispose();
+        otherSubId.dispose();
+      }
+    },
+    40000,
+  );
+
+  it("publish()/subscribe() reject a malformed realm before ever touching the network", async () => {
+    const id = Identity.generate();
+    let session: Session | undefined;
+    try {
+      session = await Session.connect(STATION_HOST, STATION_PORT, id);
+      const topic = uniqueTopic("malformed_realm_never_sent");
+
+      await expect(session.publish(topic, null, { realm: "not-hex" })).rejects.toThrow(/64 hex characters/);
+      await expect(session.publish(topic, null, { realm: "ab" })).rejects.toThrow(/64 hex characters/);
+      await expect(session.subscribe(topic, () => {}, { realm: "zz".repeat(32) })).rejects.toThrow(/64 hex characters/);
+    } finally {
+      if (session) await session.close(id, "pubsub.live.test.ts done (malformed realm)");
+      id.dispose();
+    }
+  }, 20000);
 });

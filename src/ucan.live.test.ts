@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { describe, it, expect } from "vitest";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
@@ -136,5 +137,48 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session.callWithUcan (live station
       }
     },
     20000,
+  );
+
+  it(
+    "callWithUcan()'s realm option changes wire behavior exactly like call()'s does: reaches the procedure under " +
+      "the realm it's advertised in, comes back unknown_next_peer under a different real realm",
+    async () => {
+      const providerId = Identity.generate();
+      const callerId = Identity.generate();
+      let providerSession: Session | undefined;
+      let callerSession: Session | undefined;
+      let stopServing: (() => Promise<void>) | undefined;
+
+      try {
+        [providerSession, callerSession] = await Promise.all([
+          Session.connect(STATION_HOST, STATION_PORT, providerId),
+          Session.connect(STATION_HOST, STATION_PORT, callerId),
+        ]);
+
+        const procedure = uniqueProcedure("realm_scoped_ucan");
+        stopServing = await providerSession.serve(procedure, () => "reached under the default realm");
+        const ucan = Ucan.mint(callerId, providerId.nodeId);
+
+        const defaultRealmResult = await callerSession.callWithUcan(procedure, null, ucan, { deadlineMs: 15000 });
+        expect(defaultRealmResult).toBe("reached under the default realm");
+
+        const otherRealm = randomBytes(32).toString("hex");
+        let thrown: unknown;
+        try {
+          await callerSession.callWithUcan(procedure, null, ucan, { deadlineMs: 15000, realm: otherRealm });
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown).toBeInstanceOf(MaculaCallError);
+        expect((thrown as MaculaCallError).bolt4Name).toBe("unknown_next_peer");
+      } finally {
+        if (stopServing) await stopServing();
+        if (callerSession) await callerSession.close(callerId, "ucan.live.test.ts done (realm isolation)");
+        if (providerSession) await providerSession.close(providerId, "ucan.live.test.ts done (realm isolation)");
+        providerId.dispose();
+        callerId.dispose();
+      }
+    },
+    45000,
   );
 });

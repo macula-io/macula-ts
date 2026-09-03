@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { describe, it, expect } from "vitest";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
@@ -145,4 +146,85 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
       callerId.dispose();
     }
   }, 35000);
+
+  it(
+    "call()'s realm option actually changes wire behavior: the SAME procedure name is reachable under the realm " +
+      "it's advertised in (the default, all-zero realm here -- serve() doesn't take a realm option yet) and comes " +
+      "back unknown_next_peer under a different, real 32-byte realm -- not just a client-side no-op",
+    async () => {
+      const providerId = Identity.generate();
+      const callerId = Identity.generate();
+      let providerSession: Session | undefined;
+      let callerSession: Session | undefined;
+      let stopServing: (() => Promise<void>) | undefined;
+
+      try {
+        [providerSession, callerSession] = await Promise.all([
+          Session.connect(STATION_HOST, STATION_PORT, providerId),
+          Session.connect(STATION_HOST, STATION_PORT, callerId),
+        ]);
+
+        const procedure = uniqueProcedure("realm_scoped");
+        // serve()/advertise still only use the all-zero realm this
+        // slice (session.ts's own doc) -- this procedure is therefore
+        // reachable under realm:undefined (the default) and nowhere
+        // else.
+        stopServing = await providerSession.serve(procedure, () => "reached under the default realm");
+
+        // Same realm (the default, implicit) as the provider -- reaches
+        // it, proving the happy path still works with the new option
+        // simply left unset.
+        const defaultRealmResult = await callerSession.call(procedure, null, { deadlineMs: 15000 });
+        expect(defaultRealmResult).toBe("reached under the default realm");
+
+        // A real, random, non-zero 32-byte realm -- the SAME procedure
+        // name, the SAME two live Sessions, only the realm differs.
+        // This is the actual proof realm reaches the wire: a purely
+        // decorative parameter would leave this call succeeding too.
+        const otherRealm = randomBytes(32).toString("hex");
+        let thrown: unknown;
+        try {
+          await callerSession.call(procedure, null, { deadlineMs: 15000, realm: otherRealm });
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown).toBeInstanceOf(MaculaCallError);
+        expect((thrown as MaculaCallError).bolt4Name).toBe("unknown_next_peer");
+
+        // And once more under the default realm, on the SAME two
+        // Sessions, ruling out "the provider stopped answering" as an
+        // alternative explanation for the unknown_next_peer above.
+        const defaultRealmAgain = await callerSession.call(procedure, null, { deadlineMs: 15000 });
+        expect(defaultRealmAgain).toBe("reached under the default realm");
+      } finally {
+        if (stopServing) await stopServing();
+        if (callerSession) await callerSession.close(callerId, "rpc.live.test.ts done (realm isolation)");
+        if (providerSession) await providerSession.close(providerId, "rpc.live.test.ts done (realm isolation)");
+        providerId.dispose();
+        callerId.dispose();
+      }
+    },
+    45000,
+  );
+
+  it("call()/callWithUcan() reject a malformed realm before ever touching the network", async () => {
+    const callerId = Identity.generate();
+    let callerSession: Session | undefined;
+    try {
+      callerSession = await Session.connect(STATION_HOST, STATION_PORT, callerId);
+      const procedure = uniqueProcedure("malformed_realm_never_called");
+
+      // Too short, and not hex at all -- both must be rejected
+      // synchronously (before this SDK ever encodes/signs/sends a
+      // frame), not surfaced as some generic wire-level failure.
+      await expect(callerSession.call(procedure, null, { realm: "not-hex", deadlineMs: 5000 })).rejects.toThrow(/64 hex characters/);
+      await expect(callerSession.call(procedure, null, { realm: "ab", deadlineMs: 5000 })).rejects.toThrow(/64 hex characters/);
+      await expect(callerSession.callWithUcan(procedure, null, "irrelevant.token.here", { realm: "zz".repeat(32), deadlineMs: 5000 })).rejects.toThrow(
+        /64 hex characters/,
+      );
+    } finally {
+      if (callerSession) await callerSession.close(callerId, "rpc.live.test.ts done (malformed realm)");
+      callerId.dispose();
+    }
+  }, 20000);
 });

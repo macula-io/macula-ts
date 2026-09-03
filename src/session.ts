@@ -18,13 +18,55 @@ import type { PublishOptions, PubsubEvent, SubscribeOptions } from "./pubsub.js"
 import { DEFAULT_CALL_TIMEOUT_MS, MaculaCallError, SERVE_POLL_MS, type CallEnvelope, type JsonValue } from "./rpc.js";
 import { Ucan } from "./ucan.js";
 
-/** Options for Session.call(). */
+/** Options for Session.call()/callWithUcan(). */
 export interface CallOptions {
   /** How long to wait for a RESULT/ERROR before giving up, in
    * milliseconds. Also becomes the wire's own `deadline_ms` (now +
    * this) -- see rpc.ts's DEFAULT_CALL_TIMEOUT_MS for why both share
    * one number. */
   deadlineMs?: number;
+  /** The realm this CALL is scoped to, as a 64-character lowercase (or
+   * uppercase, case-insensitive) hex string -- 32 bytes, the same
+   * hex-string convention DhtRecord's own key/version/signature fields
+   * already use (dht.ts), not native.*'s raw-byte Uint8Array (this
+   * class converts internally -- see realmBytesFromHex below). Omitted
+   * means the all-zero realm, the same default every mesh operation in
+   * this SDK used exclusively before this option existed, and what
+   * macula-go's own realm32OrZero (cabi/main.go) falls back to when no
+   * realm pointer is given.
+   *
+   * Must match whatever realm the target procedure is actually served
+   * under, or this CALL comes back `unknown_next_peer` even for a
+   * procedure genuinely advertised elsewhere -- realm is an exact-match
+   * routing key, not a hierarchy or a default-realm fallback. This
+   * class's own `serve()` always advertises under the all-zero realm
+   * (a separate, later gap -- see README.md's "What's explicitly not
+   * yet implemented"); calling with a non-zero realm only reaches a
+   * provider serving under that same realm through some other means. */
+  realm?: string;
+}
+
+const REALM_HEX_PATTERN = /^[0-9a-fA-F]{64}$/;
+
+/** Decodes CallOptions.realm/PublishOptions.realm/SubscribeOptions.realm's
+ * public hex-string convention into the 32-byte Uint8Array native.*
+ * already accepts for its own `realm` parameter on sessionCall/
+ * sessionCallWithUcan/sessionPublish/sessionSubscribeStart -- cabi/rpc.go,
+ * cabi/pubsub.go, and addon/binding.cc were, on inspection, already fully
+ * wired for an optional realm all the way through (ReadOptionalRealm in
+ * binding.cc, realm32OrZero in cabi/main.go); this class's own methods
+ * were the only place still hardcoding `undefined`. Kept as a hex string
+ * at the PUBLIC surface specifically to match DhtRecord's existing
+ * convention, while reusing that already-working raw-byte plumbing
+ * beneath it unchanged, rather than re-threading the FFI boundary itself
+ * as a second, redundant string convention alongside it.
+ * `undefined` in, `undefined` out -- the all-zero-realm default. */
+function realmBytesFromHex(realm: string | undefined): Uint8Array | undefined {
+  if (realm === undefined) return undefined;
+  if (!REALM_HEX_PATTERN.test(realm)) {
+    throw new Error(`macula-ts: realm must be exactly 64 hex characters (32 bytes), got ${JSON.stringify(realm)}`);
+  }
+  return new Uint8Array(Buffer.from(realm, "hex"));
 }
 
 /** One Session.serve() registration -- tracked so a second concurrent
@@ -249,8 +291,9 @@ export class Session {
     const handle = this.#requireHandleNotServing("call");
     const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
     const payloadJson = JSON.stringify(payload ?? null);
+    const realm = realmBytesFromHex(opts.realm);
     const envelopeJson = await this.#enqueue(() =>
-      native.sessionCall(handle, this.#identity.handleForFfi(), procedure, undefined, payloadJson, timeoutMs),
+      native.sessionCall(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs),
     );
     const envelope = JSON.parse(envelopeJson) as CallEnvelope;
     if (envelope.ok) return envelope.payload;
@@ -289,13 +332,14 @@ export class Session {
     const handle = this.#requireHandleNotServing("callWithUcan");
     const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
     const payloadJson = JSON.stringify(payload ?? null);
+    const realm = realmBytesFromHex(opts.realm);
     const token = typeof ucanToken === "string" ? ucanToken : ucanToken.token;
     const envelopeJson = await this.#enqueue(() =>
       native.sessionCallWithUcan(
         handle,
         this.#identity.handleForFfi(),
         procedure,
-        undefined,
+        realm,
         payloadJson,
         timeoutMs,
         token,
@@ -469,8 +513,10 @@ export class Session {
    *
    * `realm` should be the SAME realm `procedure` is (or will be) served
    * under via `serve()` -- defaults to the all-zero realm, matching
-   * `call()`/`serve()`'s own current default (see their own docs' known
-   * gap: realm isn't yet a public parameter on either). This method
+   * `call()`'s own default (see CallOptions.realm's own doc: `call()`/
+   * `callWithUcan()`/`publish()`/`subscribe()` now all take an optional
+   * realm; `serve()`/`advertise` remain all-zero-realm-only for this
+   * slice, unchanged). This method
    * builds the qualified URI itself (dht.DiscoveryURI) rather than
    * taking a pre-qualified string, since NewProcedureAdvertisement's own
    * doc is explicit that "the advertiser and the resolver must derive
@@ -553,13 +599,20 @@ export class Session {
    * on the SAME Session a subscribe() of its own is active on -- exactly
    * what a subscriber publishing to (and receiving) its own topic needs.
    *
+   * `opts.realm` (see CallOptions.realm's own doc for the hex-string
+   * format and exact-match semantics) scopes which realm this EVENT is
+   * published under -- omitted means the all-zero realm, this SDK's
+   * sole default before this option existed. A subscribe() only
+   * receives this event if its own realm matches exactly.
+   *
    * Real network I/O (one signed frame write) -- runs off the main
    * thread on the native side, like every other network-touching method
    * here. */
   async publish(topic: string, payload: JsonValue, opts: PublishOptions = {}): Promise<void> {
     const handle = this.#requireHandle();
     const payloadJson = JSON.stringify(payload ?? null);
-    await native.sessionPublish(handle, this.#identity.handleForFfi(), undefined, topic, payloadJson, opts.ttlMs ?? 0);
+    const realm = realmBytesFromHex(opts.realm);
+    await native.sessionPublish(handle, this.#identity.handleForFfi(), realm, topic, payloadJson, opts.ttlMs ?? 0);
   }
 
   /** Pubsub: sends a signed SUBSCRIBE for `topic`, then delivers every
@@ -591,6 +644,12 @@ export class Session {
    * Real network I/O (the initial SUBSCRIBE send, and stop()'s
    * UNSUBSCRIBE) -- both run off the main thread on the native side.
    *
+   * `opts.realm` (see CallOptions.realm's own doc for the hex-string
+   * format and exact-match semantics) scopes which realm this SUBSCRIBE
+   * listens on -- omitted means the all-zero realm, this SDK's sole
+   * default before this option existed. Only an EVENT published under
+   * the SAME realm is ever delivered to `handler`.
+   *
    * If the underlying connection dies (or any other transport error
    * ends the background reader) rather than the returned stop() being
    * called, this subscription tears itself down automatically -- the
@@ -616,6 +675,7 @@ export class Session {
     }
     const handle = this.#requireHandle();
     const identityHandle = this.#identity.handleForFfi();
+    const realm = realmBytesFromHex(opts.realm);
 
     // Marked BEFORE the subscribe-start await below, not after -- same
     // race-window fix as serve()'s own placeholder above, and for the
@@ -664,7 +724,7 @@ export class Session {
 
     try {
       subscriptionHandle = await this.#enqueue(() =>
-        native.sessionSubscribeStart(handle, identityHandle, undefined, topic, (msg) => {
+        native.sessionSubscribeStart(handle, identityHandle, realm, topic, (msg) => {
           if (msg.kind === "closed") {
             onClosed(new Error(msg.error ?? "subscription closed"));
             return;
