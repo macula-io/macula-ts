@@ -95,6 +95,35 @@ const addon = require("node-gyp-build")(repoRoot) as {
     endpoint: string,
     ttlMs: number,
   ): Promise<string>;
+  // Pubsub (cabi/pubsub.go). sessionPublish is real network I/O (one
+  // signed frame write), same worker shape as sessionAdvertise.
+  // sessionSubscribeStart/_Stop are this addon's first request/response
+  // pair that ALSO carries a third, ongoing channel: onEvent is called
+  // by the addon (via a Napi::ThreadSafeFunction wired to the Go-side
+  // background reader goroutine, see addon/binding.cc) once per
+  // delivered EVENT, for as long as the subscription stays open --
+  // asynchronously, on its own schedule, not just once when the
+  // returned Promise resolves. sessionSubscribeStart's Promise resolves
+  // once the initial SUBSCRIBE has been sent and the reader goroutine
+  // started; sessionSubscribeStop's Promise resolves only once that
+  // goroutine has actually exited (UNSUBSCRIBE sent, no further onEvent
+  // call possible) -- not merely once a stop was requested.
+  sessionPublish(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    topic: string,
+    payloadJson: string,
+    ttlMs: number,
+  ): Promise<void>;
+  sessionSubscribeStart(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    topic: string,
+    onEvent: (evt: { topic: string; publisher: Uint8Array; seq: number; payloadJson: string }) => void,
+  ): Promise<bigint>;
+  sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
 };
 
 // The addon always returns BigInt (see addon/binding.cc's comment on
@@ -198,5 +227,27 @@ export const native = {
     ttlMs: number,
   ): Promise<string> {
     return addon.dhtPutContentAnnouncement(sessionHandle, identityHandle, mcid34, endpoint, ttlMs);
+  },
+  sessionPublish(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    topic: string,
+    payloadJson: string,
+    ttlMs: number,
+  ): Promise<void> {
+    return addon.sessionPublish(sessionHandle, identityHandle, realm, topic, payloadJson, ttlMs);
+  },
+  sessionSubscribeStart(
+    sessionHandle: Handle,
+    identityHandle: Handle,
+    realm: Uint8Array | undefined,
+    topic: string,
+    onEvent: (evt: { topic: string; publisher: Uint8Array; seq: number; payloadJson: string }) => void,
+  ): Promise<bigint> {
+    return addon.sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent);
+  },
+  sessionSubscribeStop(subscriptionHandle: Handle): Promise<void> {
+    return addon.sessionSubscribeStop(subscriptionHandle);
   },
 };

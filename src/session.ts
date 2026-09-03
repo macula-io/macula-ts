@@ -13,6 +13,7 @@
 import { native, type Handle } from "./binding.js";
 import { DHT_DEFAULT_TTL_MS, DhtRecordType, type DhtRecord } from "./dht.js";
 import { Identity } from "./identity.js";
+import type { PublishOptions, PubsubEvent } from "./pubsub.js";
 import { DEFAULT_CALL_TIMEOUT_MS, MaculaCallError, SERVE_POLL_MS, type CallEnvelope, type JsonValue } from "./rpc.js";
 
 /** Options for Session.call(). */
@@ -34,6 +35,19 @@ interface ActiveServe {
   stop: () => Promise<void>;
 }
 
+/** One Session.subscribe() registration -- tracked the same way
+ * ActiveServe is, and for the identical reason: subscribe()'s
+ * background reader goroutine reads frames off this Session's shared
+ * control stream on its own schedule, exactly like serve()'s poll loop
+ * does, so a second concurrent subscribe() (or a subscribe() alongside
+ * serve()/call()/a DHT method) on the same Session races the same way
+ * mixing serve() and call() does -- see #requireHandleNotServing's own
+ * doc, which this shares. */
+interface ActiveSubscription {
+  topic: string;
+  stop: () => Promise<void>;
+}
+
 export class Session {
   #handle: Handle | null;
   // Retained since connect() purely so call()/serve() (added this
@@ -47,6 +61,7 @@ export class Session {
   // unchanged, per this repo's own "extend, don't replace" rule.
   #identity: Identity;
   #activeServe: ActiveServe | null = null;
+  #activeSubscription: ActiveSubscription | null = null;
 
   private constructor(handle: Handle, identity: Identity) {
     this.#handle = handle;
@@ -83,14 +98,29 @@ export class Session {
    * putRecord) all end up on this Session's same shared control stream
    * too -- macula-go's dht.FindRecord et al. are themselves just a
    * connection.Session.Call under the hood (see cabi/dht.go), so mixing
-   * one of these with an active serve() on this Session races exactly
-   * the way call() itself would. */
+   * one of these with an active serve() OR subscribe() on this Session
+   * races exactly the way call() itself would: serve()'s poll loop and
+   * subscribe()'s background reader both read frames off this same
+   * stream on their own schedule, same as call()'s own blocking read
+   * does. publish() is deliberately NOT guarded by this: it only ever
+   * WRITES a fire-and-forget frame (connection.Session.Publish), never
+   * reads, so it does not race a concurrent reader the way call()/
+   * serve()/subscribe()/the DHT methods do -- and the live pubsub round
+   * trip this SDK's own test performs (subscribe(), then publish() on
+   * the SAME Session while that subscription is active) depends on
+   * publish() staying unguarded here. */
   #requireHandleNotServing(caller: string): Handle {
     const handle = this.#requireHandle();
     if (this.#activeServe !== null) {
       throw new Error(
         `macula-ts: Session.${caller}() while serve("${this.#activeServe.procedure}") is active on the same ` +
           `Session races on the shared control stream -- open a second Session for the other role.`,
+      );
+    }
+    if (this.#activeSubscription !== null) {
+      throw new Error(
+        `macula-ts: Session.${caller}() while subscribe("${this.#activeSubscription.topic}") is active on the ` +
+          `same Session races on the shared control stream -- open a second Session for the other role.`,
       );
     }
     return handle;
@@ -115,9 +145,26 @@ export class Session {
    * dispose() convention. `identity` must be the same (non-disposed)
    * identity used to open this session; Close needs it to sign
    * GOODBYE. Like connect(), this is real network I/O (a drain sleep
-   * plus a write) and runs off the main thread on the native side. */
+   * plus a write) and runs off the main thread on the native side.
+   *
+   * Stops an active subscribe() FIRST, if there is one, sending its
+   * UNSUBSCRIBE over the still-open connection before that connection
+   * goes away -- unlike every other resource this SDK hands out (an
+   * Identity, an unstopped serve() loop), an unstopped subscription
+   * left dangling here does not just leak memory: its background reader
+   * goroutine holds a live Napi::ThreadSafeFunction, which deliberately
+   * keeps Node's event loop alive on its own (see subscribe()'s own doc
+   * -- a program that does nothing but subscribe() and wait needs
+   * exactly this to stay alive for events to arrive at all). Verified
+   * live: closing a Session out from under an active subscription
+   * without this hung the process forever, not merely leaked a handle
+   * -- close() closing it first is what makes "forgot to call the
+   * returned stop()" fail safe instead of fail hung. */
   async close(identity: Identity, reason = ""): Promise<void> {
     if (this.#handle === null) return;
+    if (this.#activeSubscription !== null) {
+      await this.#activeSubscription.stop();
+    }
     const handle = this.#handle;
     this.#handle = null;
     await native.sessionClose(handle, identity.handleForFfi(), reason);
@@ -186,6 +233,12 @@ export class Session {
         `macula-ts: Session is already serving "${this.#activeServe.procedure}" -- macula-go's ServeOneCall reads ` +
           `one frame at a time off the shared control stream, so a second concurrent serve() (or a serve() ` +
           `alongside call()) on the same Session races; open a second Session instead.`,
+      );
+    }
+    if (this.#activeSubscription !== null) {
+      throw new Error(
+        `macula-ts: Session.serve() while subscribe("${this.#activeSubscription.topic}") is active on the same ` +
+          `Session races on the shared control stream -- open a second Session for the other role.`,
       );
     }
     const handle = this.#requireHandle();
@@ -347,6 +400,98 @@ export class Session {
     }
     const json = await native.dhtPutContentAnnouncement(handle, this.#identity.handleForFfi(), mcid, endpoint, ttlMs);
     return JSON.parse(json) as DhtRecord;
+  }
+
+  /** Pubsub: sends a signed PUBLISH for `topic` (macula-go's
+   * connection.Session.Publish, which also attaches the end-to-end
+   * publisher_sig a relayed EVENT needs to survive beyond one hop --
+   * see that method's own doc, not reimplemented here). `payload`
+   * follows the same JsonValue rules as call()'s payload (no boolean,
+   * embedded bytes as "0x"-prefixed hex). Fire-and-forget: Publish's
+   * own doc is explicit that no reply is expected on the wire, so the
+   * returned Promise resolving only means this Session's own frame was
+   * encoded, signed, and sent -- never that any subscriber received it
+   * (macula-go's own live test for this, TestLivePubSubRoundTrip,
+   * observes a subscriber's own publish arriving back at it rather than
+   * asserting it as a hard guarantee, for the same reason).
+   *
+   * Deliberately NOT guarded by the same-Session exclusivity rule
+   * call()/serve()/subscribe()/the DHT methods share (see
+   * #requireHandleNotServing's own doc) -- publish() only ever writes,
+   * never reads off the shared control stream, so it does not race a
+   * concurrent serve()/subscribe() the way those do, and can run safely
+   * on the SAME Session a subscribe() of its own is active on -- exactly
+   * what a subscriber publishing to (and receiving) its own topic needs.
+   *
+   * Real network I/O (one signed frame write) -- runs off the main
+   * thread on the native side, like every other network-touching method
+   * here. */
+  async publish(topic: string, payload: JsonValue, opts: PublishOptions = {}): Promise<void> {
+    const handle = this.#requireHandle();
+    const payloadJson = JSON.stringify(payload ?? null);
+    await native.sessionPublish(handle, this.#identity.handleForFfi(), undefined, topic, payloadJson, opts.ttlMs ?? 0);
+  }
+
+  /** Pubsub: sends a signed SUBSCRIBE for `topic`, then delivers every
+   * inbound EVENT for it to `handler` -- macula-go's own
+   * connection.Session.RunSubscriber (connection/subscriber.go) drives
+   * the actual read loop on the Go side, in a background goroutine, NOT
+   * reimplemented on top of a hand-rolled poll here (see cabi/pubsub.go's
+   * own doc for why RunSubscriber specifically, over the lower-level
+   * RecvEvent). Delivery is Go-driven, not JS-driven: unlike serve()'s
+   * poll loop, nothing on this side calls into the native layer
+   * repeatedly to ask "did anything arrive yet" -- the addon calls INTO
+   * this handler asynchronously, via a Napi::ThreadSafeFunction wired to
+   * that background goroutine, whenever an EVENT actually shows up.
+   *
+   * Only one subscribe() (and no active serve()) is allowed per Session
+   * at a time -- same reasoning as serve()'s own one-at-a-time rule
+   * (#requireHandleNotServing's own doc): the background reader and any
+   * other read off this Session's shared control stream would race.
+   * Open a second Session for a second topic (or to serve/call
+   * concurrently) instead.
+   *
+   * Resolves with an async stop() function once the initial SUBSCRIBE
+   * has been sent and the background reader has started. stop() sends
+   * the matching UNSUBSCRIBE and does not resolve until the Go-side
+   * reader goroutine has genuinely exited -- calling it and awaiting the
+   * result is the actual guarantee that no further `handler` call can
+   * happen afterward, not just that one was requested.
+   *
+   * Real network I/O (the initial SUBSCRIBE send, and stop()'s
+   * UNSUBSCRIBE) -- both run off the main thread on the native side. */
+  async subscribe(topic: string, handler: (evt: PubsubEvent) => void): Promise<() => Promise<void>> {
+    if (this.#activeServe !== null) {
+      throw new Error(
+        `macula-ts: Session.subscribe() while serve("${this.#activeServe.procedure}") is active on the same ` +
+          `Session races on the shared control stream -- open a second Session for the other role.`,
+      );
+    }
+    if (this.#activeSubscription !== null) {
+      throw new Error(
+        `macula-ts: Session is already subscribed to "${this.#activeSubscription.topic}" -- macula-go's ` +
+          `RunSubscriber reads one frame at a time off the shared control stream, so a second concurrent ` +
+          `subscribe() on the same Session races; open a second Session instead.`,
+      );
+    }
+    const handle = this.#requireHandle();
+    const identityHandle = this.#identity.handleForFfi();
+
+    const subscriptionHandle = await native.sessionSubscribeStart(handle, identityHandle, undefined, topic, (evt) => {
+      handler({ payload: JSON.parse(evt.payloadJson) as JsonValue, publisher: evt.publisher, seq: evt.seq });
+    });
+
+    const stop = async (): Promise<void> => {
+      // Cleared only AFTER the native call resolves, not before -- that
+      // call is what blocks until the Go-side reader goroutine has
+      // actually exited (see native.sessionSubscribeStop's own doc), so
+      // clearing this any earlier would let a concurrent call()/serve()/
+      // another subscribe() start racing the still-shutting-down reader.
+      await native.sessionSubscribeStop(subscriptionHandle);
+      this.#activeSubscription = null;
+    };
+    this.#activeSubscription = { topic, stop };
+    return stop;
   }
 }
 

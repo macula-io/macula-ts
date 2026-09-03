@@ -22,4 +22,12 @@ export declare const native: {
     dhtFindRecord(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string | null>;
     dhtPutProcedureAdvertisement(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, servingStation32: Uint8Array, ttlMs: number): Promise<string>;
     dhtPutContentAnnouncement(sessionHandle: Handle, identityHandle: Handle, mcid34: Uint8Array, endpoint: string, ttlMs: number): Promise<string>;
+    sessionPublish(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, topic: string, payloadJson: string, ttlMs: number): Promise<void>;
+    sessionSubscribeStart(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, topic: string, onEvent: (evt: {
+        topic: string;
+        publisher: Uint8Array;
+        seq: number;
+        payloadJson: string;
+    }) => void): Promise<bigint>;
+    sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
 };

@@ -1,5 +1,6 @@
 import { DhtRecordType, type DhtRecord } from "./dht.js";
 import { Identity } from "./identity.js";
+import type { PublishOptions, PubsubEvent } from "./pubsub.js";
 import { type JsonValue } from "./rpc.js";
 /** Options for Session.call(). */
 export interface CallOptions {
@@ -39,7 +40,21 @@ export declare class Session {
      * dispose() convention. `identity` must be the same (non-disposed)
      * identity used to open this session; Close needs it to sign
      * GOODBYE. Like connect(), this is real network I/O (a drain sleep
-     * plus a write) and runs off the main thread on the native side. */
+     * plus a write) and runs off the main thread on the native side.
+     *
+     * Stops an active subscribe() FIRST, if there is one, sending its
+     * UNSUBSCRIBE over the still-open connection before that connection
+     * goes away -- unlike every other resource this SDK hands out (an
+     * Identity, an unstopped serve() loop), an unstopped subscription
+     * left dangling here does not just leak memory: its background reader
+     * goroutine holds a live Napi::ThreadSafeFunction, which deliberately
+     * keeps Node's event loop alive on its own (see subscribe()'s own doc
+     * -- a program that does nothing but subscribe() and wait needs
+     * exactly this to stay alive for events to arrive at all). Verified
+     * live: closing a Session out from under an active subscription
+     * without this hung the process forever, not merely leaked a handle
+     * -- close() closing it first is what makes "forgot to call the
+     * returned stop()" fail safe instead of fail hung. */
     close(identity: Identity, reason?: string): Promise<void>;
     /** Caller role: sends a signed CALL for `procedure` and waits for the
      * matching RESULT or ERROR (macula-go's connection.Session.Call).
@@ -165,4 +180,58 @@ export declare class Session {
      * of raw-byte field). `ttlMs` defaults to DHT_DEFAULT_TTL_MS (48h).
      * Same I/O and exclusivity notes as findRecordsByType(). */
     putContentAnnouncement(mcid: Uint8Array, endpoint: string, ttlMs?: number): Promise<DhtRecord>;
+    /** Pubsub: sends a signed PUBLISH for `topic` (macula-go's
+     * connection.Session.Publish, which also attaches the end-to-end
+     * publisher_sig a relayed EVENT needs to survive beyond one hop --
+     * see that method's own doc, not reimplemented here). `payload`
+     * follows the same JsonValue rules as call()'s payload (no boolean,
+     * embedded bytes as "0x"-prefixed hex). Fire-and-forget: Publish's
+     * own doc is explicit that no reply is expected on the wire, so the
+     * returned Promise resolving only means this Session's own frame was
+     * encoded, signed, and sent -- never that any subscriber received it
+     * (macula-go's own live test for this, TestLivePubSubRoundTrip,
+     * observes a subscriber's own publish arriving back at it rather than
+     * asserting it as a hard guarantee, for the same reason).
+     *
+     * Deliberately NOT guarded by the same-Session exclusivity rule
+     * call()/serve()/subscribe()/the DHT methods share (see
+     * #requireHandleNotServing's own doc) -- publish() only ever writes,
+     * never reads off the shared control stream, so it does not race a
+     * concurrent serve()/subscribe() the way those do, and can run safely
+     * on the SAME Session a subscribe() of its own is active on -- exactly
+     * what a subscriber publishing to (and receiving) its own topic needs.
+     *
+     * Real network I/O (one signed frame write) -- runs off the main
+     * thread on the native side, like every other network-touching method
+     * here. */
+    publish(topic: string, payload: JsonValue, opts?: PublishOptions): Promise<void>;
+    /** Pubsub: sends a signed SUBSCRIBE for `topic`, then delivers every
+     * inbound EVENT for it to `handler` -- macula-go's own
+     * connection.Session.RunSubscriber (connection/subscriber.go) drives
+     * the actual read loop on the Go side, in a background goroutine, NOT
+     * reimplemented on top of a hand-rolled poll here (see cabi/pubsub.go's
+     * own doc for why RunSubscriber specifically, over the lower-level
+     * RecvEvent). Delivery is Go-driven, not JS-driven: unlike serve()'s
+     * poll loop, nothing on this side calls into the native layer
+     * repeatedly to ask "did anything arrive yet" -- the addon calls INTO
+     * this handler asynchronously, via a Napi::ThreadSafeFunction wired to
+     * that background goroutine, whenever an EVENT actually shows up.
+     *
+     * Only one subscribe() (and no active serve()) is allowed per Session
+     * at a time -- same reasoning as serve()'s own one-at-a-time rule
+     * (#requireHandleNotServing's own doc): the background reader and any
+     * other read off this Session's shared control stream would race.
+     * Open a second Session for a second topic (or to serve/call
+     * concurrently) instead.
+     *
+     * Resolves with an async stop() function once the initial SUBSCRIBE
+     * has been sent and the background reader has started. stop() sends
+     * the matching UNSUBSCRIBE and does not resolve until the Go-side
+     * reader goroutine has genuinely exited -- calling it and awaiting the
+     * result is the actual guarantee that no further `handler` call can
+     * happen afterward, not just that one was requested.
+     *
+     * Real network I/O (the initial SUBSCRIBE send, and stop()'s
+     * UNSUBSCRIBE) -- both run off the main thread on the native side. */
+    subscribe(topic: string, handler: (evt: PubsubEvent) => void): Promise<() => Promise<void>>;
 }

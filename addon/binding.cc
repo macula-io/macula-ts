@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 
 #include "libmacula.h"
 
@@ -1047,6 +1048,311 @@ Napi::Value DhtPutContentAnnouncement(const Napi::CallbackInfo& info) {
   return deferred.Promise();
 }
 
+// ---------------------------------------------------------------------
+// Pubsub (cabi/pubsub.go): publish (fire-and-forget, same worker shape
+// as SessionAdvertiseWorker above) and a subscribe/stop pair -- the
+// first place in this addon where Go calls back INTO JS on its own
+// schedule rather than only ever answering a JS-initiated request (see
+// cabi/pubsub.go's own doc for why: events arrive whenever a publisher
+// publishes, not in response to anything this session did).
+// ---------------------------------------------------------------------
+
+class SessionPublishWorker : public Napi::AsyncWorker {
+ public:
+  SessionPublishWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                        uintptr_t identityHandle, bool hasRealm, uint8_t realm[32], std::string topic,
+                        std::string payloadJson, int64_t ttlMs)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        hasRealm_(hasRealm),
+        topic_(std::move(topic)),
+        payloadJson_(std::move(payloadJson)),
+        ttlMs_(ttlMs) {
+    if (hasRealm_) std::memcpy(realm_, realm, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    macula_session_publish(sessionHandle_, identityHandle_, hasRealm_ ? realm_ : nullptr,
+                            const_cast<char*>(topic_.c_str()), const_cast<char*>(payloadJson_.c_str()), ttlMs_,
+                            &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+    }
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    deferred_.Resolve(Env().Undefined());
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  bool hasRealm_;
+  uint8_t realm_[32] = {0};
+  std::string topic_;
+  std::string payloadJson_;
+  int64_t ttlMs_;
+};
+
+Napi::Value SessionPublish(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 6 || !info[3].IsString() || !info[4].IsString() || !info[5].IsNumber()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, realm: Uint8Array|undefined, topic: "
+                               "string, payloadJson: string, ttlMs: number)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  uint8_t realmBuf[32];
+  unsigned char* realmPtr = ReadOptionalRealm(env, info[2], realmBuf, &ok);
+  if (!ok) return env.Undefined();
+  std::string topic = info[3].As<Napi::String>().Utf8Value();
+  std::string payloadJson = info[4].As<Napi::String>().Utf8Value();
+  int64_t ttlMs = info[5].As<Napi::Number>().Int64Value();
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new SessionPublishWorker(env, deferred, sessionHandle, identityHandle, realmPtr != nullptr, realmBuf,
+                                           std::move(topic), std::move(payloadJson), ttlMs);
+  worker->Queue();
+  return deferred.Promise();
+}
+
+// SubscriptionContext bridges one Go-side subscription (keyed by its own
+// Go subscriptionHandle in g_subscriptions below) to one JS handler
+// function, via a ThreadSafeFunction the Go-side background reader
+// goroutine calls into from its own OS thread -- the cross-thread call
+// TSFN exists for. Owns the TSFN for exactly this subscription's
+// lifetime: created just before macula_session_subscribe_start is
+// invoked, released only once macula_session_subscribe_stop confirms
+// the Go-side goroutine has actually exited (SessionSubscribeStopWorker)
+// -- releasing any earlier would risk OnMaculaEvent firing into a TSFN
+// that's already gone.
+struct SubscriptionContext {
+  Napi::ThreadSafeFunction tsfn;
+};
+
+// g_subscriptions maps a Go subscriptionHandle to the SubscriptionContext
+// created for it, so SessionSubscribeStop (given only the handle JS
+// holds) can find the TSFN to release. Only ever touched from Node's
+// main thread (SessionSubscribeStartWorker::OnOK inserts,
+// SessionSubscribeStop's setup function erases before queuing its own
+// worker) -- never from the background goroutine's OS thread, which
+// only ever reaches OnMaculaEvent below -- so this needs no locking.
+std::unordered_map<uintptr_t, SubscriptionContext*> g_subscriptions;
+
+// EventCallbackData is heap-allocated per delivered event and freed by
+// the TSFN's own JS-thread callback below -- the node-addon-api
+// convention for NonBlockingCall's per-call data argument.
+struct EventCallbackData {
+  std::string topic;
+  uint8_t publisher[32];
+  uint64_t seq;
+  std::string payloadJson;
+};
+
+// OnMaculaEvent is the raw C function cabi/pubsub.go's
+// callEventCallback trampoline calls, from the background reader
+// goroutine's own OS thread -- extern "C" linkage so it matches
+// macula_event_callback's typedef exactly (see libmacula.h, generated
+// from that file's cgo preamble). Must never touch a Napi::Env or V8
+// handle directly (unsafe off the main thread, see every AsyncWorker
+// above for the same rule) -- it only copies the event's data and hands
+// it to NonBlockingCall, which is the one thing a foreign thread may
+// safely do with a ThreadSafeFunction. The actual JS call happens in the
+// lambda below, on the main thread, once libuv gets to it.
+extern "C" void OnMaculaEvent(void* user_data, const char* topic, const unsigned char* publisher32,
+                               unsigned long long seq, const char* payload_json) {
+  auto* ctx = static_cast<SubscriptionContext*>(user_data);
+  auto* data = new EventCallbackData();
+  data->topic.assign(topic);
+  std::memcpy(data->publisher, publisher32, 32);
+  data->seq = static_cast<uint64_t>(seq);
+  data->payloadJson.assign(payload_json);
+
+  napi_status status = ctx->tsfn.NonBlockingCall(
+      data, [](Napi::Env env, Napi::Function jsCallback, EventCallbackData* d) {
+        Napi::Object evt = Napi::Object::New(env);
+        evt.Set("topic", Napi::String::New(env, d->topic));
+        evt.Set("publisher", Napi::Buffer<uint8_t>::Copy(env, d->publisher, 32));
+        evt.Set("seq", Napi::Number::New(env, static_cast<double>(d->seq)));
+        evt.Set("payloadJson", Napi::String::New(env, d->payloadJson));
+        jsCallback.Call({evt});
+        delete d;
+      });
+  if (status != napi_ok) {
+    // The subscription is mid-teardown (TSFN already released/closing)
+    // or its queue is full -- either way this one event is dropped, not
+    // fatal; NonBlockingCall did not take ownership of data on a
+    // non-ok status, so this side must free it.
+    delete data;
+  }
+}
+
+class SessionSubscribeStartWorker : public Napi::AsyncWorker {
+ public:
+  SessionSubscribeStartWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
+                               uintptr_t identityHandle, bool hasRealm, uint8_t realm[32], std::string topic,
+                               SubscriptionContext* ctx)
+      : Napi::AsyncWorker(env),
+        deferred_(deferred),
+        sessionHandle_(sessionHandle),
+        identityHandle_(identityHandle),
+        hasRealm_(hasRealm),
+        topic_(std::move(topic)),
+        ctx_(ctx) {
+    if (hasRealm_) std::memcpy(realm_, realm, 32);
+  }
+
+  void Execute() override {
+    char* errOut = nullptr;
+    uintptr_t handle = macula_session_subscribe_start(sessionHandle_, identityHandle_, hasRealm_ ? realm_ : nullptr,
+                                                        const_cast<char*>(topic_.c_str()), OnMaculaEvent,
+                                                        static_cast<void*>(ctx_), &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+      return;
+    }
+    subscriptionHandle_ = handle;
+  }
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    g_subscriptions[subscriptionHandle_] = ctx_;
+    deferred_.Resolve(Napi::BigInt::New(Env(), static_cast<uint64_t>(subscriptionHandle_)));
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    // Startup itself failed (a garbage handle, most likely) -- this
+    // subscription never started on the Go side and never will, so its
+    // TSFN would otherwise leak: nothing ever reaches
+    // SessionSubscribeStop for a subscribe() call that itself threw.
+    ctx_->tsfn.Release();
+    delete ctx_;
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t sessionHandle_;
+  uintptr_t identityHandle_;
+  bool hasRealm_;
+  uint8_t realm_[32] = {0};
+  std::string topic_;
+  SubscriptionContext* ctx_;
+  uintptr_t subscriptionHandle_ = 0;
+};
+
+Napi::Value SessionSubscribeStart(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  if (info.Length() < 5 || !info[3].IsString() || !info[4].IsFunction()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, realm: Uint8Array|undefined, topic: "
+                               "string, onEvent: Function)")
+        .ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  bool ok = false;
+  uintptr_t sessionHandle = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Undefined();
+  uintptr_t identityHandle = ToHandle(env, info[1], &ok);
+  if (!ok) return env.Undefined();
+  uint8_t realmBuf[32];
+  unsigned char* realmPtr = ReadOptionalRealm(env, info[2], realmBuf, &ok);
+  if (!ok) return env.Undefined();
+  std::string topic = info[3].As<Napi::String>().Utf8Value();
+
+  auto* ctx = new SubscriptionContext();
+  ctx->tsfn = Napi::ThreadSafeFunction::New(env, info[4].As<Napi::Function>(), "macula_event_callback",
+                                             0 /* unlimited queue */, 1 /* one initial thread reference */);
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new SessionSubscribeStartWorker(env, deferred, sessionHandle, identityHandle, realmPtr != nullptr,
+                                                  realmBuf, std::move(topic), ctx);
+  worker->Queue();
+  return deferred.Promise();
+}
+
+class SessionSubscribeStopWorker : public Napi::AsyncWorker {
+ public:
+  SessionSubscribeStopWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t subscriptionHandle,
+                              SubscriptionContext* ctx)
+      : Napi::AsyncWorker(env), deferred_(deferred), subscriptionHandle_(subscriptionHandle), ctx_(ctx) {}
+
+  void Execute() override {
+    char* errOut = nullptr;
+    macula_session_subscribe_stop(subscriptionHandle_, &errOut);
+    if (errOut != nullptr) {
+      std::string msg(errOut);
+      macula_free_string(errOut);
+      SetError(msg);
+    }
+  }
+
+  // macula_session_subscribe_stop (Execute, above) only returns once the
+  // Go-side background goroutine has actually exited -- see its own doc
+  // -- so no further OnMaculaEvent call for ctx_ can be in flight past
+  // this point; only now is it safe to release the TSFN and free ctx_.
+  // Both OnOK and OnError reach this same state (stopped, one way or
+  // another) so both release identically.
+
+  void OnOK() override {
+    Napi::HandleScope scope(Env());
+    ctx_->tsfn.Release();
+    delete ctx_;
+    deferred_.Resolve(Env().Undefined());
+  }
+
+  void OnError(const Napi::Error& e) override {
+    Napi::HandleScope scope(Env());
+    ctx_->tsfn.Release();
+    delete ctx_;
+    deferred_.Reject(e.Value());
+  }
+
+ private:
+  Napi::Promise::Deferred deferred_;
+  uintptr_t subscriptionHandle_;
+  SubscriptionContext* ctx_;
+};
+
+Napi::Value SessionSubscribeStop(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  bool ok = false;
+  uintptr_t subscriptionHandle = ToHandle(env, info.Length() > 0 ? info[0] : env.Undefined(), &ok);
+  if (!ok) return env.Undefined();
+
+  auto it = g_subscriptions.find(subscriptionHandle);
+  if (it == g_subscriptions.end()) {
+    Napi::Error::New(env, "macula-ts: unknown or already-stopped subscription handle").ThrowAsJavaScriptException();
+    return env.Undefined();
+  }
+  SubscriptionContext* ctx = it->second;
+  g_subscriptions.erase(it);
+
+  auto deferred = Napi::Promise::Deferred::New(env);
+  auto* worker = new SessionSubscribeStopWorker(env, deferred, subscriptionHandle, ctx);
+  worker->Queue();
+  return deferred.Promise();
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("identityGenerate", Napi::Function::New(env, IdentityGenerate));
   exports.Set("identityFromSeedBytes", Napi::Function::New(env, IdentityFromSeedBytes));
@@ -1070,6 +1376,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("dhtFindRecord", Napi::Function::New(env, DhtFindRecord));
   exports.Set("dhtPutProcedureAdvertisement", Napi::Function::New(env, DhtPutProcedureAdvertisement));
   exports.Set("dhtPutContentAnnouncement", Napi::Function::New(env, DhtPutContentAnnouncement));
+  exports.Set("sessionPublish", Napi::Function::New(env, SessionPublish));
+  exports.Set("sessionSubscribeStart", Napi::Function::New(env, SessionSubscribeStart));
+  exports.Set("sessionSubscribeStop", Napi::Function::New(env, SessionSubscribeStop));
   return exports;
 }
 

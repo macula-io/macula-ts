@@ -90,5 +90,14 @@ export const native = {
     dhtPutContentAnnouncement(sessionHandle, identityHandle, mcid34, endpoint, ttlMs) {
         return addon.dhtPutContentAnnouncement(sessionHandle, identityHandle, mcid34, endpoint, ttlMs);
     },
+    sessionPublish(sessionHandle, identityHandle, realm, topic, payloadJson, ttlMs) {
+        return addon.sessionPublish(sessionHandle, identityHandle, realm, topic, payloadJson, ttlMs);
+    },
+    sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent) {
+        return addon.sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent);
+    },
+    sessionSubscribeStop(subscriptionHandle) {
+        return addon.sessionSubscribeStop(subscriptionHandle);
+    },
 };
 //# sourceMappingURL=binding.js.map

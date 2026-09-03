@@ -2,6 +2,139 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2026-09-03
+
+Pubsub: `Session.publish()`/`Session.subscribe()`, live-verified against
+the real production fleet -- both against a dev build and, separately,
+against the actual packaged, installed npm tarball. Builds directly on
+0.5.0's RPC/DHT layer; the same `connection.Session` `Session.connect()`
+already hands back.
+
+### Added
+
+- `cabi/pubsub.go`: `macula_session_publish` -- `connection.Session.Publish`,
+  same fire-and-forget worker shape as `macula_session_advertise`. `seq`
+  is minted by a process-wide monotonic counter (this SDK's `publish()`
+  has no `seq` parameter of its own yet), the same shape macula-go's own
+  unexported `factSeq()` telemetry counter uses. `macula_session_subscribe_start`/
+  `_stop` -- a whole running background reader loop, not a single
+  request/response: `_start` sends SUBSCRIBE then starts a goroutine
+  running macula-go's own `Session.RunSubscriber` (deliberately not
+  reimplemented on top of the lower-level `RecvEvent`, which treats ANY
+  non-EVENT frame on this shared control stream as fatal --
+  `RunSubscriber` already gets right, from its own prior live debugging,
+  that one must be skipped instead); `_stop` cancels it and BLOCKS until
+  the goroutine has actually exited (UNSUBSCRIBE sent, no further
+  delivery possible), not merely until a stop was requested. Delivery
+  itself crosses the FFI boundary through a C function pointer
+  (`macula_event_callback`) the addon supplies, called from the reader
+  goroutine's own OS thread via a `callEventCallback` C trampoline (cgo
+  cannot invoke a C function pointer value directly) -- this is the
+  first place in this SDK where Go calls back into the addon on its own
+  schedule rather than only ever answering a JS-initiated request.
+- `addon/binding.cc`: `SessionPublishWorker` (same shape as
+  `SessionAdvertiseWorker`); `SubscriptionContext` (owns one
+  `Napi::ThreadSafeFunction` per subscription), `OnMaculaEvent` (the
+  `extern "C"` function the Go-side trampoline calls, doing nothing but
+  `NonBlockingCall` -- never touches a `Napi::Env`/V8 handle off the
+  main thread, same rule every `AsyncWorker` here already follows),
+  `SessionSubscribeStartWorker`/`SessionSubscribeStopWorker`. A
+  `g_subscriptions` map (Go subscription handle -> `SubscriptionContext*`,
+  main-thread-only, no locking needed) lets `SessionSubscribeStop` find
+  the TSFN to release, since JS only ever holds the Go-side handle.
+- `src/pubsub.ts`: `PublishOptions`, `PubsubEvent` -- the same
+  `rpc.ts`/`dht.ts` shape split (Session, in `session.ts`, is the actual
+  FFI entry point).
+- `src/session.ts`: `Session.publish(topic, payload, opts?)` and
+  `Session.subscribe(topic, handler)`. `publish()` is deliberately NOT
+  subject to the same-Session exclusivity guard `call()`/`serve()`/the
+  DHT methods share (`#requireHandleNotServing`) -- it only ever writes,
+  never reads off the shared control stream, so (unlike those) it can
+  run safely on the SAME Session a `subscribe()` of its own is active
+  on, which the live round-trip test below depends on. `subscribe()` DOES
+  share that guard (extended to also block on an active subscription,
+  and vice versa for `serve()`) -- its background reader reads frames
+  off the same stream on its own schedule, exactly like `serve()`'s poll
+  loop does, so mixing either with `call()`/the DHT methods/each other
+  races the same way. Only one `subscribe()` per `Session` at a time
+  (matching `serve()`'s own one-at-a-time rule) -- open a second
+  `Session` for a second topic.
+- `src/pubsub.live.test.ts` (opt-in via `MACULA_TS_LIVE`): a `subscribe()`
+  receiving the SAME Session's own `publish()`, payload/publisher/seq all
+  checked; `stop()` verified to actually halt delivery (publish again
+  immediately after `stop()` resolves, confirm nothing further arrives,
+  not just that nothing happened to arrive yet); `subscribe()` while
+  `serve()` is active (and `serve()`/`call()` while `subscribe()` is
+  active) all throwing immediately.
+- `package.json`'s `test:live` script now runs all four live suites.
+
+### Fixed
+
+- A real bug found through the exact kind of probing this stage's own
+  task called for, not by inspection: a still-active `subscribe()`'s
+  background reader goroutine holds a live `Napi::ThreadSafeFunction`,
+  which -- deliberately, so that a program doing nothing but
+  `subscribe()` and waiting stays alive for events to arrive at all --
+  keeps Node's event loop alive on its own, unlike every other handle
+  this SDK hands out. That same property meant closing a `Session` out
+  from under an active subscription (without calling its own `stop()`
+  first) hung the process forever instead of merely leaking a handle --
+  confirmed live: a script that `subscribe()`d then `close()`d never
+  exited on its own even after 20s, while the identical script with no
+  `subscribe()` at all exited instantly. Fixed by having `Session.close()`
+  stop an active subscription first (sending its UNSUBSCRIBE over the
+  still-open connection before that connection goes away), so forgetting
+  the returned `stop()` fails safe instead of fails hung. Verified this
+  did NOT break the legitimate case the live TSFN ref exists for: a
+  separate probe script that only `subscribe()`s and does nothing else
+  was confirmed to stay alive (not exit early) for as long as it was
+  given to run.
+
+### Verified
+
+- Both `pubsub.live.test.ts` scenarios passed against
+  `station-de-frankfurt.macula.io:4433`, individually and as part of the
+  full `npm run test:live` (11/11 passing across all four live suites).
+- Separately re-verified against the actual packaged, installed npm
+  tarball (not the dev build): a real `npm pack` tarball installed into
+  a fresh directory with no source tree present, then a standalone
+  script using only the installed `@macula-io/ts` package performed a
+  real `subscribe()`/`publish()` round trip against the live station and
+  got back the exact payload sent.
+- Deliberately probed, not just the happy path: a garbage/never-issued
+  session handle passed to `sessionPublish`/`sessionSubscribeStart`
+  throws a clean error instead of crashing the process; a
+  garbage/never-issued subscription handle passed to
+  `sessionSubscribeStop` throws cleanly; calling the same `stop()`
+  function twice throws cleanly on the second call instead of
+  double-freeing or hanging; `subscribe()` after `close()` throws "used
+  after close()" instead of touching a freed handle; closing a Session
+  with an active, never-stopped subscription no longer hangs the process
+  (see "Fixed" above) and was confirmed to still close and exit cleanly.
+- Zero-install-script property re-verified after this change, from a
+  fully clean tree (`node_modules`/`build`/`dist`/`prebuilds`/
+  `cabi/build` all removed first): `build:go` -> `install` -> `typecheck`
+  -> `test` -> `tsc` -> `build:prebuilds`, then a real packed tarball
+  installed into a fresh directory with a verbose install log showing
+  only the two declared runtime dependencies fetched -- no
+  `node-gyp`/compiler invocation at all -- and (see above) a real live
+  pubsub round trip performed from that installed package alone.
+
+### Known gaps (deferred, not forgotten)
+
+- Only `linux-x64` prebuild coverage.
+- `publish()`/`subscribe()` default to the all-zero realm only, matching
+  `call()`/`serve()`'s own existing gap -- realm isn't yet a public
+  parameter on any of the four.
+- Only one `subscribe()` (and no active `serve()`) per `Session` at a
+  time -- no multiplexing several topics' worth of EVENT delivery
+  through one background reader; open a second `Session` per additional
+  topic for now.
+- `publish()` has no exposed `seq`/ordering/dedup semantics -- `seq` is
+  minted internally by a process-wide counter, not caller-controlled.
+- Content transfer, streaming RPC, UCAN, direct-dial, `Pinned`/`Insecure`
+  trust modes.
+
 ## [0.5.0] - 2026-09-03
 
 DHT record client operations, live-verified against the real production

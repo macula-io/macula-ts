@@ -3,9 +3,10 @@
 **Status: early, not feature-complete.** FFI binding over
 [macula-go](https://github.com/macula-io/macula-go) via a Go C-shared
 library. Identity generation, a real transport + CONNECT/HELLO handshake,
-unary RPC (both roles — caller and provider), and DHT record lookups/
-publication against the production fleet all work end-to-end today.
-Pubsub, content transfer, streaming RPC, and UCAN don't exist yet.
+unary RPC (both roles — caller and provider), DHT record lookups/
+publication, and pubsub (publish/subscribe, both directions) against the
+production fleet all work end-to-end today. Content transfer, streaming
+RPC, and UCAN don't exist yet.
 
 ## Why FFI over macula-go, not a native TypeScript reimplementation
 
@@ -223,27 +224,77 @@ directly.
   `realm`, rather than trusting every caller to hex-encode and
   concatenate it correctly by hand.
 
+- Pubsub — `session.publish(topic, payload, opts?)` (macula-go's
+  `connection.Session.Publish`, fire-and-forget, no ack on the wire) and
+  `session.subscribe(topic, handler)` (macula-go's
+  `connection.Session.RunSubscriber`, driving a background reader
+  goroutine on the Go side — NOT reimplemented on top of the lower-level
+  `RecvEvent`, see `cabi/pubsub.go`'s own doc for why). `subscribe()`
+  resolves with an async `stop()` that sends the matching UNSUBSCRIBE
+  and does not resolve until that goroutine has genuinely exited — the
+  actual guarantee behind "no further event after this", not just "a
+  stop was requested". This is the first place in this SDK where the Go
+  side calls back INTO JS asynchronously, on its own schedule, rather
+  than only ever answering a JS-initiated request — via a
+  `Napi::ThreadSafeFunction` wired to that goroutine (`addon/binding.cc`).
+  Only one `subscribe()` (and no active `serve()`) is allowed per
+  `Session` at a time, for the identical shared-control-stream reason
+  `call()`/`serve()` are mutually exclusive; `publish()` itself is NOT
+  subject to that guard — it only ever writes, so it can run safely on
+  the same `Session` a `subscribe()` of its own is active on (exactly
+  what receiving your own publish needs).
+- **Live-verified against the real production fleet**: a `subscribe()`
+  receiving that SAME `Session`'s own `publish()` with the exact payload,
+  publisher pubkey, and a positive `seq` intact; `stop()` genuinely
+  halting delivery, confirmed by publishing again immediately after
+  `stop()` resolves and observing nothing further arrive; `subscribe()`
+  while `serve()` is active (and vice versa) both throwing immediately,
+  matching `call()`'s own exclusivity behavior. Also re-run against the
+  actual packaged, installed tarball (not just the dev build) — a real
+  publish/subscribe round trip using only the published package, no
+  source tree present.
+- A real bug was found and fixed while building this: a still-active
+  `subscribe()`'s background reader goroutine holds a live
+  `Napi::ThreadSafeFunction`, which — deliberately, unlike every other
+  handle this SDK hands out — keeps Node's event loop alive on its own,
+  since a program that does nothing but `subscribe()` and wait has
+  nothing else to keep it running while events arrive. That same
+  property meant closing a `Session` out from under an active
+  subscription, without calling its `stop()` first, hung the process
+  forever instead of merely leaking a handle — confirmed live (a script
+  that `subscribe()`d then `close()`d never exited on its own, even
+  after 20s; the identical script with no `subscribe()` at all exited
+  instantly). Fixed by having `close()` stop an active subscription
+  first, so forgetting the returned `stop()` fails safe instead of fails
+  hung; a legitimate "just `subscribe()` and wait" program was
+  separately confirmed to still stay alive as long as needed (the fix
+  does not unref the `ThreadSafeFunction` itself, which would have
+  broken that).
+
 ## What's explicitly not yet implemented
 
-Pubsub (`publish`/`watch`), content transfer, streaming RPC, UCAN,
-direct-dial, per-realm `call`/`serve` (the all-zero realm is used
-throughout for those two specifically — DHT's `putProcedureAdvertisement`
+Content transfer, streaming RPC, UCAN, direct-dial, per-realm
+`call`/`serve`/`publish`/`subscribe` (the all-zero realm is used
+throughout for those four specifically — DHT's `putProcedureAdvertisement`
 DOES take an optional realm, since it has to match whatever realm the
 procedure is actually served under), a generic "put any DHT record type
 with an arbitrary payload" function (see above for why), a
 `station_endpoint` record builder (macula-go has none either — stations
 publish those themselves, not clients), and `Pinned`/`Insecure` trust
-modes (`WebPKI` only so far). Each of these is a separate, later slice of
-work built on top of a working `Session`.
+modes (`WebPKI` only so far). Multiple concurrent `subscribe()` topics on
+one `Session` also isn't supported yet — one `subscribe()` (like one
+`serve()`) per `Session` at a time; open a second `Session` for a second
+topic. Each of these is a separate, later slice of work built on top of a
+working `Session`.
 
 ## Live tests
 
-`src/session.live.test.ts`, `src/rpc.live.test.ts`, and
-`src/dht.live.test.ts` hit the real production fleet and are **not** part
-of default `npm test`/CI — opt in explicitly:
+`src/session.live.test.ts`, `src/rpc.live.test.ts`, `src/dht.live.test.ts`,
+and `src/pubsub.live.test.ts` hit the real production fleet and are
+**not** part of default `npm test`/CI — opt in explicitly:
 
 ```bash
-npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts
+npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts
 ```
 
 Matches macula-rust's `#[ignore]` and macula-dotnet's
