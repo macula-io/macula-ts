@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.1] - 2026-09-04
+
+Republish of 0.13.0 with no source changes. The published 0.13.0 package
+carried a stray `"install": "node-gyp rebuild"` script in its
+`package.json` — exactly the native-compile-at-install regression this
+package's whole packaging architecture exists to avoid, confirmed live
+by a fresh `npm install` of the real published package. This script
+never existed in git history at any commit (checked: `git log -p --
+package.json` across the full history shows it was never added), and
+the working tree matches the last commit touching `package.json`
+exactly with no diff — so this was an uncommitted, never-tracked local
+edit that happened to be present on disk at the moment 0.13.0 was
+published (`npm publish` packs whatever's on disk, not the git-committed
+state), not a defect introduced by any commit.
+
+The real fix is process, not code: this version was published via
+`release.yml`'s CI pipeline (a tag push, npm OIDC Trusted Publishing)
+rather than a manual local `npm publish` — CI always builds from a
+clean `git checkout`, so it cannot pick up an uncommitted local edit the
+way a manual publish from a developer's own working directory just did.
+0.13.0 was deprecated on npm pointing at this version.
+
 ## [0.13.0] - 2026-09-04
 
 First release published to npm. In addition to the package-metadata

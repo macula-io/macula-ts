@@ -1,6 +1,6 @@
 {
   "name": "@macula-io/ts",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "TypeScript SDK for the Macula mesh (FFI over macula-go)",
   "license": "Apache-2.0",
   "keywords": ["macula", "mesh", "quic", "rpc", "pubsub", "ffi", "wire-protocol", "typescript", "p2p"],
