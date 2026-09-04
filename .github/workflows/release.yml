@@ -100,6 +100,15 @@ jobs:
       # trust it: actually run the real prepublish sequence here, in this
       # same CI environment, and verify its result before ever reaching
       # the real `npm publish` call below.
+      # IMPORTANT: after verifying clean, do NOT `git checkout` package.json
+      # back to the committed state -- 0.13.3's own version of this step did
+      # exactly that, which restores scripts.prepublishOnly too, so the
+      # actual `npm publish` call below still re-runs build:prebuilds a
+      # SECOND time via its own internal hook, unverified, undoing this
+      # entire check. Instead, delete prepublishOnly here so npm publish
+      # has nothing left to re-trigger -- the verified-clean state (already
+      # built dist/prebuilds, already stripped scripts.install) IS what
+      # gets packed, not a fresh unchecked rebuild.
       - name: Force clean state, then PROVE the prepublish sequence produces no install script
         run: |
           git checkout -- package.json package-lock.json
@@ -107,10 +116,14 @@ jobs:
           npm run build:prebuilds
           npx tsc
           if node -p "require('./package.json').scripts.install !== undefined" | grep -q true; then
-            echo "::error::package.json has a scripts.install key after running the real prepublish sequence (build:prebuilds && tsc) -- refusing to publish. This is exactly what happened in 0.13.0/0.13.1; do not proceed without a real fix."
+            echo "::error::package.json has a scripts.install key after running the real prepublish sequence (build:prebuilds && tsc) -- refusing to publish. This is exactly what happened in 0.13.0/0.13.1/0.13.2/0.13.3; do not proceed without a real fix."
             exit 1
           fi
-          git checkout -- package.json package-lock.json
+          npm pkg delete scripts.prepublishOnly
+          if node -p "require('./package.json').scripts.install !== undefined || require('./package.json').scripts.prepublishOnly !== undefined" | grep -q true; then
+            echo "::error::package.json still has scripts.install or scripts.prepublishOnly right before npm publish -- refusing to publish"
+            exit 1
+          fi
 
       # Auto-detects GitHub Actions' OIDC token when id-token: write is
       # granted and this package has a Trusted Publisher configured on

@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.4] - 2026-09-04
+
+0.13.3's own fix had a real bug, found by re-reading its own script
+line by line after 0.13.3 STILL published with the stray `"install":
+"node-gyp rebuild"` key: the verification step ran the real prepublish
+sequence and correctly confirmed it was clean -- but then immediately
+`git checkout`'d package.json back to the git-committed state, which
+still has `scripts.prepublishOnly` wired to `npm run build:prebuilds &&
+tsc`. So the actual `npm publish` call right after still re-ran
+`build:prebuilds` (and therefore `prebuildify`) a second time, via its
+own internal lifecycle hook, completely unverified -- the check had
+proven nothing about what actually got published.
+
+Fixed properly this time: after verifying clean, `scripts.prepublishOnly`
+is deleted (not the package.json reset to a state that still has it) --
+so `npm publish` has no lifecycle hook left to re-trigger a second,
+unchecked build. What gets packed is exactly the already-built,
+already-verified-clean state, not a fresh rebuild. A final assertion
+right before the actual `npm publish` call confirms both
+`scripts.install` and `scripts.prepublishOnly` are absent.
+
+0.13.0 through 0.13.3 were all published broken and deprecated on npm
+pointing at this version. If you're reading this changelog entry from
+inside a FIFTH broken release: stop, this needs a different approach
+entirely (e.g. publishing from a directory with no `binding.gyp` at
+all, or filing this as an npm bug) rather than another patch attempt.
+
 ## [0.13.3] - 2026-09-04
 
 0.13.2's fix didn't work either -- it reset package.json/package-lock.json
