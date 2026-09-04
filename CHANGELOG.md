@@ -2,27 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.13.1] - 2026-09-04
+## [0.13.2] - 2026-09-04
 
-Republish of 0.13.0 with no source changes. The published 0.13.0 package
-carried a stray `"install": "node-gyp rebuild"` script in its
-`package.json` — exactly the native-compile-at-install regression this
-package's whole packaging architecture exists to avoid, confirmed live
-by a fresh `npm install` of the real published package. This script
-never existed in git history at any commit (checked: `git log -p --
-package.json` across the full history shows it was never added), and
-the working tree matches the last commit touching `package.json`
-exactly with no diff — so this was an uncommitted, never-tracked local
-edit that happened to be present on disk at the moment 0.13.0 was
-published (`npm publish` packs whatever's on disk, not the git-committed
-state), not a defect introduced by any commit.
+Both 0.13.0 (manual `npm publish`) and 0.13.1 (published via `release.yml`'s
+CI pipeline) shipped a stray `"install": "node-gyp rebuild"` in the
+*published* `package.json` -- exactly the native-compile-at-install
+regression this package's whole packaging architecture exists to avoid.
+0.13.1's own changelog entry blamed an uncommitted local edit and claimed
+publishing via CI would fix it; that diagnosis was wrong, disproven by
+0.13.1 itself shipping the same defect straight out of a clean CI
+checkout. The real trigger: this repo's `binding.gyp` presence makes a
+plain `npm install` (run in `release.yml`, deliberately, to also verify
+the ordinary dev-install path builds the addon) take npm's own implicit
+"no explicit install script -> run node-gyp rebuild" default -- and
+something in that path leaves state that a *later* `npm publish` in the
+same working directory then picks up and embeds, even though git only
+ever has the clean version (confirmed: no commit in this repo's history
+ever added this key, and a `npm pack` run in a fresh checkout with no
+prior `npm install` never reproduces it). The exact internal npm
+mechanism connecting the two isn't fully pinned down.
 
-The real fix is process, not code: this version was published via
-`release.yml`'s CI pipeline (a tag push, npm OIDC Trusted Publishing)
-rather than a manual local `npm publish` — CI always builds from a
-clean `git checkout`, so it cannot pick up an uncommitted local edit the
-way a manual publish from a developer's own working directory just did.
-0.13.0 was deprecated on npm pointing at this version.
+Rather than continue chasing that mechanism, `release.yml` now forces
+the working tree back to the exact git-committed state for
+`package.json`/`package-lock.json` immediately before packing/publishing,
+and hard-fails the job if `scripts.install` is somehow still present
+after that reset -- so this class of bug cannot reach a published
+package again regardless of what any earlier build/test step does to
+the working directory. Both 0.13.0 and 0.13.1 were deprecated on npm
+pointing at this version.
 
 ## [0.13.0] - 2026-09-04
 

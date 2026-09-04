@@ -80,6 +80,33 @@ jobs:
       - run: npm install -g npm@11
       - run: npm --version
 
+      # 0.13.0 and 0.13.1 both published with a stray, npm-injected
+      # "install": "node-gyp rebuild" in the PUBLISHED package.json, even
+      # though that key is genuinely absent from every commit in this
+      # repo's history and from a `npm pack` run in a fresh checkout with
+      # no prior `npm install` in the same directory -- confirmed both
+      # ways. The earlier `npm install` step above (needed so this job
+      # also verifies the plain-install dev experience, see its own
+      # comment) has binding.gyp present and apparently leaves some
+      # on-disk state (exact mechanism not fully pinned down -- something
+      # npm's own install machinery writes when it takes the implicit
+      # binding.gyp-triggers-node-gyp-rebuild path) that a LATER `npm
+      # publish` in the same working directory then picks up and embeds,
+      # even though git itself only ever has the clean version. Since we
+      # cannot be certain we've found every way this can happen, don't
+      # try to out-guess npm's internals -- force the working tree back
+      # to exactly the clean, committed state right before packing/
+      # publishing, so whatever `npm publish` sees can only ever be what
+      # this commit actually says, never a side effect of any step above.
+      - name: Force a clean, git-committed state before publishing
+        run: |
+          git checkout -- package.json package-lock.json
+          git clean -fdx -e node_modules -e prebuilds -e dist -e build
+          if node -p "require('./package.json').scripts.install !== undefined" | grep -q true; then
+            echo "::error::package.json still has a scripts.install key after resetting to the committed state -- do not publish"
+            exit 1
+          fi
+
       # Auto-detects GitHub Actions' OIDC token when id-token: write is
       # granted and this package has a Trusted Publisher configured on
       # npmjs.com (Settings -> Trusted Publisher, repo macula-io/macula-ts,
