@@ -2,7 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] - 2026-09-04
+## [0.13.0] - 2026-09-04
+
+First release published to npm. In addition to the package-metadata
+work that makes that possible (`keywords`, `exports`, `sideEffects`
+added to `package.json` for correct resolution by bundlers and
+tree-shaking), this release also includes:
 
 ### Added
 

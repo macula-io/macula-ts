@@ -1,0 +1,92 @@
+name: Release to npm
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # npm OIDC Trusted Publishing -- no NPM_TOKEN secret needed or stored
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate version matches package.json
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$PKG_VERSION" != "${{ steps.version.outputs.VERSION }}" ]; then
+            echo "::error::Tag version (${{ steps.version.outputs.VERSION }}) doesn't match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
+
+      # Must run before `npm install`, same ordering requirement ci.yml
+      # already establishes: binding.gyp's mere presence makes npm
+      # implicitly run `node-gyp rebuild`, which links against
+      # cabi/build/libmacula.a -- that has to exist first. Dev/CI concern
+      # only, doesn't affect consumers (binding.gyp isn't published).
+      - name: Build the Go c-archive (cabi/)
+        run: npm run build:go
+
+      - run: npm install
+      - run: npm run typecheck
+      - run: npm test
+      - run: npx tsc
+
+      # The 5-platform prebuild matrix (linux-x64/arm64, darwin-x64/arm64,
+      # win32-x64) is built on real per-platform runners by prebuilds.yml
+      # and committed back to main -- this job runs on ubuntu-latest only,
+      # so it can't rebuild all of them itself. It can and must confirm
+      # what's already committed is genuinely current and complete before
+      # publishing it, same check ci.yml already runs on every push.
+      - name: Confirm the committed prebuild is not stale
+        run: |
+          npm run build:prebuilds
+          if ! git diff --exit-code -- prebuilds/; then
+            echo "::error::committed prebuilds/ does not match a fresh build -- run 'npm run build:prebuilds' and commit the result before tagging a release"
+            exit 1
+          fi
+
+      - name: Confirm all 5 platforms are present before publishing
+        run: |
+          for plat in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            if [ ! -d "prebuilds/$plat" ]; then
+              echo "::error::prebuilds/$plat is missing -- refusing to publish an incomplete platform matrix"
+              exit 1
+            fi
+          done
+
+      # Trusted Publishing (OIDC) needs npm CLI >=11.5.0. Copied from
+      # macula-mcp's own release.yml, which hit this directly: an older
+      # bundled npm on a GitHub-hosted runner doesn't know how to do the
+      # OIDC-for-auth exchange, and silently falls through to an
+      # unauthenticated publish request that comes back 404 instead of a
+      # clear auth error.
+      - run: npm install -g npm@11
+      - run: npm --version
+
+      # Auto-detects GitHub Actions' OIDC token when id-token: write is
+      # granted and this package has a Trusted Publisher configured on
+      # npmjs.com (Settings -> Trusted Publisher, repo macula-io/macula-ts,
+      # workflow release.yml) -- no login step, no stored secret. This
+      # CANNOT be configured until the package exists on npm at all
+      # (npm requires the package to already be there before a Trusted
+      # Publisher can be attached to it), so this workflow will not fire
+      # anything useful until AFTER the one-time manual first publish --
+      # see the release prep notes for that step.
+      - run: npm publish --access public --provenance

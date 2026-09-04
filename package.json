@@ -1,9 +1,11 @@
 {
   "name": "@macula-io/ts",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "TypeScript SDK for the Macula mesh (FFI over macula-go)",
   "license": "Apache-2.0",
+  "keywords": ["macula", "mesh", "quic", "rpc", "pubsub", "ffi", "wire-protocol", "typescript", "p2p"],
   "type": "module",
+  "sideEffects": false,
   "homepage": "https://github.com/macula-io/macula-ts#readme",
   "repository": {
     "type": "git",
@@ -18,6 +20,12 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "files": [
     "dist",
     "prebuilds"
