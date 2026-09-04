@@ -1,9 +1,19 @@
 {
   "name": "@macula-io/ts",
-  "version": "0.13.2",
+  "version": "0.13.3",
   "description": "TypeScript SDK for the Macula mesh (FFI over macula-go)",
   "license": "Apache-2.0",
-  "keywords": ["macula", "mesh", "quic", "rpc", "pubsub", "ffi", "wire-protocol", "typescript", "p2p"],
+  "keywords": [
+    "macula",
+    "mesh",
+    "quic",
+    "rpc",
+    "pubsub",
+    "ffi",
+    "wire-protocol",
+    "typescript",
+    "p2p"
+  ],
   "type": "module",
   "sideEffects": false,
   "homepage": "https://github.com/macula-io/macula-ts#readme",
@@ -33,7 +43,7 @@
   "scripts": {
     "build:go": "go env -w CGO_ENABLED=1 && cd cabi && go mod tidy && go build -trimpath -buildvcs=false -buildmode=c-archive -o build/libmacula.a .",
     "build:addon:dev": "npm run build:go && node-gyp rebuild",
-    "build:prebuilds": "npm run build:go && prebuildify --napi --strip",
+    "build:prebuilds": "npm run build:go && prebuildify --napi --strip && npm pkg delete scripts.install",
     "build": "npm run build:addon:dev && tsc",
     "test": "vitest run",
     "test:live": "MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts src/directdial.live.test.ts",

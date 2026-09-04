@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.3] - 2026-09-04
+
+0.13.2's fix didn't work either -- it reset package.json/package-lock.json
+to the clean git state *before* `npm publish` ran, but `npm publish`
+itself invokes the `prepublishOnly` lifecycle script internally, after
+any pre-publish check a workflow can add around it, and `prepublishOnly`
+runs `build:prebuilds`, whose `prebuildify --napi --strip` call is what
+actually writes the stray `"install": "node-gyp rebuild"` key -- visible
+directly in 0.13.2's own CI log (`prepublishOnly -> build:prebuilds ->
+prebuildify` executing between the earlier clean-state check and the
+real upload). Confirmed by inspecting the log, not guessed.
+
+Fixed at the actual source this time: `build:prebuilds` now runs `npm
+pkg delete scripts.install` immediately after `prebuildify --napi
+--strip`, unconditionally (a no-op if the key isn't present). This
+could not be verified locally -- the injection has never reproduced on
+a local machine, only in CI (npm 11.19.1 there vs 11.14.1 locally; the
+precise trigger inside prebuildify is still not fully understood) -- so
+`release.yml` no longer just trusts the fix: it now actually runs the
+real prepublish sequence (`build:prebuilds && tsc`) as its own explicit
+step, in the same CI environment a real publish would use, and hard-
+fails the job if `scripts.install` is present afterward, before ever
+reaching `npm publish`. 0.13.0, 0.13.1, and 0.13.2 were all deprecated
+on npm pointing at this version.
+
 ## [0.13.2] - 2026-09-04
 
 Both 0.13.0 (manual `npm publish`) and 0.13.1 (published via `release.yml`'s
