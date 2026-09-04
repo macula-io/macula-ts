@@ -1,16 +1,46 @@
 # macula-ts
 
-**Status: early, not feature-complete.** FFI binding over
-[macula-go](https://github.com/macula-io/macula-go) via a Go C-shared
-library. Identity generation, a real transport + CONNECT/HELLO handshake,
-unary RPC (both roles — caller and provider), DHT record lookups/
-publication, pubsub (publish/subscribe, both directions), content
-transfer, UCAN minting/inspection + UCAN-gated calling, and direct-dial
-(resolve + one-hop dial, both roles — caller and provider) against the
-production fleet all work end-to-end today. Streaming RPC, streaming/
-content direct-dial, cert-chain-authorized direct-dial, and UCAN policy
-gating on the *provider* side (this SDK can attach a token to a call, but
-cannot yet enforce one on a served procedure) don't exist yet.
+[![CI](https://img.shields.io/github/actions/workflow/status/macula-io/macula-ts/ci.yml?branch=main&label=CI)](https://github.com/macula-io/macula-ts/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#license)
+[![Node](https://img.shields.io/badge/node-24.18%2B-339933?logo=node.js)](https://nodejs.org)
+[![zero install scripts](https://img.shields.io/badge/install--scripts-zero-success.svg)](#packaging-genuinely-zero-install-time-scripts)
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub%20Sponsors-support-ea4aaa.svg?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/rgfaber)
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/macula-ts-full-dark.svg">
+    <img src="assets/macula-ts-full-light.svg" alt="Macula" width="320">
+  </picture>
+</p>
+
+<p align="center">
+  <strong>TypeScript SDK for the Macula mesh, via FFI over macula-go</strong>
+</p>
+
+---
+
+> **Status, 2026-09-04:** identity generation, a real transport +
+> CONNECT/HELLO handshake, unary RPC (both roles — caller and provider),
+> DHT record lookups/publication, pubsub (publish/subscribe, both
+> directions), content transfer, UCAN minting/inspection + UCAN-gated
+> calling, and direct-dial (resolve + one-hop dial, both roles) are all
+> **live-verified against the real production fleet**
+> (`station-de-frankfurt.macula.io`) — see [Status](#status) for the
+> full, dated picture, including two real concurrency bugs found by
+> adversarial review and fixed. Streaming RPC, streaming/content
+> direct-dial, cert-chain-authorized direct-dial, and UCAN policy gating
+> on the *provider* side don't exist yet. Ships via a vendored-tarball
+> packaging stopgap pending a real npm publish — see
+> [Packaging](#packaging-genuinely-zero-install-time-scripts).
+
+## What is this?
+
+A TypeScript SDK for the Macula mesh protocol — real QUIC-based mesh
+connectivity from Node.js: identity, sessions, unary RPC, pub/sub,
+content transfer, UCAN capability tokens, and direct-dial, all reaching
+the real production fleet today. Built as an FFI binding over
+[macula-go](https://github.com/macula-io/macula-go) rather than a native
+reimplementation — see below for why.
 
 ## Why FFI over macula-go, not a native TypeScript reimplementation
 
@@ -51,11 +81,14 @@ convention).
 
 | Repo | Approach |
 |---|---|
-| [macula-go](https://github.com/macula-io/macula-go) | Reference implementation |
+| [macula](https://github.com/macula-io/macula) | The reference SDK (Erlang/OTP) |
+| [macula-go](https://github.com/macula-io/macula-go) | Go port — same protocol |
 | [macula-rust](https://github.com/macula-io/macula-rust) | Native reimplementation (quinn, pure Rust) |
 | [macula-dotnet](https://github.com/macula-io/macula-dotnet) | Native reimplementation (System.Net.Quic / msquic) |
 | [macula-php](https://github.com/macula-io/macula-php) | FFI binding over macula-go (this package's structural precedent) |
 | **macula-ts** | FFI binding over macula-go |
+| [macula-station](https://github.com/macula-io/macula-station) | The station: DHT, SWIM, routing, peering |
+| [macula-realm](https://github.com/macula-io/macula-realm) | Managed-realm identity + certificate authority |
 
 ## Architecture
 
@@ -562,20 +595,20 @@ one `Session` also isn't supported yet — one `subscribe()` (like one
 topic. Each of these is a separate, later slice of work built on top of a
 working `Session`.
 
-## Live tests
+## Testing
+
+```bash
+npx vitest run    # default suite, no network
+npm run test:live # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts src/directdial.live.test.ts
+```
 
 `src/session.live.test.ts`, `src/rpc.live.test.ts`, `src/dht.live.test.ts`,
 `src/pubsub.live.test.ts`, `src/content.live.test.ts`,
 `src/ucan.live.test.ts`, and `src/directdial.live.test.ts` hit the real
 production fleet and are **not** part of default `npm test`/CI — opt in
-explicitly:
-
-```bash
-npm run test:live   # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts src/directdial.live.test.ts
-```
-
-Matches macula-rust's `#[ignore]` and macula-dotnet's
-`[Trait("Category","Live")]` convention: real-network tests are written and
+explicitly, gated behind `MACULA_TS_LIVE`. Same convention as macula-go's
+`live` build tag, macula-rust's `#[ignore]`, and macula-dotnet's
+`[Trait("Category","Live")]`: real-network tests are written and
 runnable, just excluded from the default/CI run so a station outage doesn't
 make ordinary CI flaky. `.github/workflows/ci.yml` exposes this as a
 manually-triggered (`workflow_dispatch`) job, never run automatically on
@@ -680,6 +713,60 @@ Requires Go >=1.27 (for `cabi/`), a C++ toolchain (for `addon/`), and Node
 macula-mcp landed on for `node:sqlite`; earlier Node lines don't ship it).
 None of this is required to *consume* the published package — only to
 work on macula-ts itself.
+
+## Status
+
+**Live-verified, 2026-09-03 — walking skeleton through the core protocol
+surface:** identity generation (puzzle-hardened, asserted on the returned
+NodeID, not mocked), a real transport + CONNECT/HELLO handshake, unary RPC
+in both caller and provider roles (with BOLT#4 error mapping), DHT record
+lookups and publication, pubsub (publish/subscribe, self-delivery
+confirmed), content transfer (byte-exact round trip, chunked automatically
+above 256 KiB), and UCAN minting/inspection/attach-and-call — each against
+`station-de-frankfurt.macula.io`, not a mock, with the specific bugs found
+along the way documented in [What's implemented](#whats-implemented) above
+(a real `cgo.Handle` panic-on-invalid-handle bug, a DHT-record encoding bug
+that would have silently written raw pubkey/MCID fields as CBOR text
+instead of bytes, a `%!w(<nil>)`-rendering error-wrapping bug). The
+packaging problem this SDK exists partly to solve was hit and actually
+fixed in the same stretch: an early version depended on
+[koffi](https://koffi.dev), which turned out to have the exact
+native-install-script problem this SDK was meant to avoid — replaced with
+a purpose-built `node-addon-api` addon packaged via `prebuildify` +
+`node-gyp-build`, verified genuinely zero-install-script from a real
+packed tarball, not assumed.
+
+**Live-verified, 2026-09-04 — signing, realm, direct-dial, and two real
+concurrency bugs found and fixed:** `Identity.sign()` (a generic Ed25519
+primitive, independently verified against Node's own `crypto.verify`, not
+this SDK's own code), per-call `realm` support on `call`/`callWithUcan`/
+`publish`/`subscribe` (proven to change real wire behavior — the identical
+procedure name reachable under one realm and a genuine `unknown_next_peer`
+under another, on the same live Sessions), and direct-dial in both caller
+and provider roles (`resolveDirect`/`callDirect`/`callDirectWithUcan`/
+`advertiseDirect`, each self-verified against the real fleet using only
+code this SDK controls). An adversarial review of the whole protocol
+surface then found two severe, live-measured bugs — not style nitpicks —
+before this was considered done: **concurrent operations on one `Session`
+could permanently corrupt its control stream** (`Promise.all` of 4
+concurrent `call()`s left every later read on that Session failing
+forever, not just that batch) and **a subscription whose connection died
+left the process hanging forever with no way to notice**, since its
+`ThreadSafeFunction` deliberately keeps Node's event loop alive. Both are
+fixed (see [Concurrency safety](#concurrency-safety-fixed-after-an-adversarial-review-found-real-bugs)
+above) and re-verified against the same reproductions, live.
+
+**2026-09-04 — cross-platform packaging:** `.github/workflows/prebuilds.yml`
+now builds `linux-x64`, `linux-arm64`, `darwin-arm64`, `darwin-x64`, and
+`win32-x64` on real per-OS GitHub-hosted runners (not cross-compiled —
+`cabi/`'s `CGO_ENABLED=1` archive needs a matching native C toolchain per
+target) and commits the results back to `main`. Getting the "committed
+prebuild isn't stale" CI check to actually hold, and getting the Windows
+build to link at all, surfaced three more real bugs along the way — see
+[Packaging](#packaging-genuinely-zero-install-time-scripts) above for the
+specifics (Go's `-buildvcs=auto` self-defeating a staleness check by
+stamping its own commit hash into the binary; `cmd.exe`'s POSIX-inline-env
+incompatibility; a GitHub-side macOS runner retirement mid-build).
 
 ## License
 

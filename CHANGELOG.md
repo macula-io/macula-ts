@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - 2026-09-04
+
+### Added
+
+- `assets/macula-ts-full-{dark,light}.svg` — this repo's first logo,
+  mirroring the shared mesh-icon template every sibling SDK (macula-go,
+  macula-rust, macula-dotnet, macula-php) already uses verbatim, with a
+  TypeScript badge (brand-blue `#3178C6` circle, white "TS") in the
+  mascot-badge slot.
+- `examples/` — six real, runnable scripts against the live production
+  fleet (quickstart, call, publish/subscribe, content, direct-dial,
+  UCAN), matching macula-php's numbered-examples convention. All six
+  live-verified in this same pass, not just typechecked.
+- README restructured to match every sibling's opening convention: badge
+  row (CI, License, Node version, "zero install scripts", GitHub
+  Sponsors), centered logo, tagline, dated status blockquote, a `## What
+  is this?` section, and a deeper narrative `## Status` section with
+  dated entries citing the specific bugs found along the way (mirroring
+  macula-go's `## Status` section shape). The `Sibling SDKs` table now
+  also links `macula-io/macula` (the Erlang reference), `macula-station`,
+  and `macula-realm`, not just the four language ports. `## Live tests`
+  merged into one `## Testing` section covering both suites.
+
 ## [0.12.0]
 
 ### Added
