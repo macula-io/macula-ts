@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2026-09-05
+
+### Added
+
+- `Pool`: a resilient multi-station client, ported from the Erlang
+  reference (`macula/src/client/macula_client.erl`). Holds live
+  connections to every configured seed concurrently (not
+  dial-one-then-fallback-on-failure), each independently monitored and
+  respawned with backoff on disconnect, every tracked subscription
+  automatically re-established on reconnect. `publish()`/`call()`
+  fan out over live "control" links under one caller-supplied
+  identity; `subscribe()` opens one dedicated subscribe-only session
+  per seed under either an auto-minted or caller-supplied identity.
+  Deliberately keys inbound-event dedup on `(realm, publisher, seq,
+  topic)` rather than the Erlang reference's `(realm, publisher, seq)`
+  -- the missing `topic` was the root cause of a real production bug
+  fixed the same day on the station side (an SDK's own auto-published
+  facts colliding in seq-number space with an application's business
+  publishes on a different topic).
+- Live control links are periodically health-checked (default every
+  10s, tunable via `PoolOptions.healthCheckIntervalMs`): `publish()` is
+  fire-and-forget and can locally "succeed" against a connection the
+  station has already closed, so a publish-only caller could otherwise
+  never discover a dead link. The check calls a procedure name
+  guaranteed never to be advertised and distinguishes a real BOLT#4
+  answer (alive) from no wire-level answer at all (dead, reconnect).
+- `NoHealthyStationError`, `Seed`, `PoolOptions`, `PoolStatus` exported
+  alongside `Pool`.
+
+### Known limitations (documented in `Pool`'s own source)
+
+- `PoolOptions.replicationFactor` is clamped to 1: replicating a
+  publish to N links today would mint N distinct sequence numbers
+  (`Session.publish()` has no caller-supplied-seq parameter), so
+  subscribers could not deduplicate the redundant copies.
+- The stale-session close fired on reconnect is fire-and-forget, not
+  awaited -- it has the full backoff delay to land before a new
+  connect attempt reuses the same identity, narrowing but not fully
+  eliminating a race against the station's own per-identity dedupe.
+
 ## [0.13.5] - 2026-09-04
 
 0.13.4 proved (via its own CI log) that deleting `scripts.prepublishOnly`

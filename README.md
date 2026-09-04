@@ -235,6 +235,16 @@ fixed) is in [CHANGELOG.md](CHANGELOG.md).
   is why `keepAdvertisedDirect()` is a standalone function rather than a
   `Session` method.
 
+- **Pool** — `Pool.connect(seeds, controlIdentity, opts)` holds live
+  connections to every configured seed concurrently (not
+  dial-one-then-fallback-on-failure), each independently monitored and
+  respawned with backoff on disconnect; `publish()`/`call()` fan out
+  over live links, `subscribe()` re-establishes automatically on
+  reconnect. Ports `macula/src/client/macula_client.erl`'s pool design;
+  see `pool.ts`'s own module doc for why it's a set of role-scoped
+  `Session`s per seed rather than one, given the single-reader
+  constraint below.
+
 Every item above is live-verified against the real production fleet
 (`station-de-frankfurt.macula.io`), including negative/error paths and,
 where applicable, the actual packaged npm tarball rather than only the
@@ -257,21 +267,23 @@ arbitrary payload" function (see above for why), a `station_endpoint`
 record builder (macula-go has none either — stations publish those
 themselves, not clients), and `Pinned`/`Insecure` trust modes (`WebPKI`
 only so far). Multiple concurrent `subscribe()` topics on one `Session`
-also isn't supported yet — one `subscribe()` (like one `serve()`) per
-`Session` at a time; open a second `Session` for a second topic. Each of
-these is a separate, later slice of work built on top of a working
-`Session`.
+still isn't supported at the `Session` level itself — one `subscribe()`
+(like one `serve()`) per `Session` at a time; open a second `Session`
+for a second topic (`Pool`, above, does exactly this internally to give
+each tracked topic its own session). Each of these is a separate, later
+slice of work built on top of a working `Session`.
 
 ## Testing
 
 ```bash
 npx vitest run    # default suite, no network
-npm run test:live # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts src/directdial.live.test.ts
+npm run test:live # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts src/directdial.live.test.ts src/pool.live.test.ts
 ```
 
 `src/session.live.test.ts`, `src/rpc.live.test.ts`, `src/dht.live.test.ts`,
 `src/pubsub.live.test.ts`, `src/content.live.test.ts`,
-`src/ucan.live.test.ts`, and `src/directdial.live.test.ts` hit the real
+`src/ucan.live.test.ts`, `src/directdial.live.test.ts`, and
+`src/pool.live.test.ts` hit the real
 production fleet and are **not** part of default `npm test`/CI — opt in
 explicitly, gated behind `MACULA_TS_LIVE`. Same convention as macula-go's
 `live` build tag, macula-rust's `#[ignore]`, and macula-dotnet's
