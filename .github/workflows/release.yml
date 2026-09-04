@@ -125,6 +125,21 @@ jobs:
             exit 1
           fi
 
+      # 0.13.4 confirmed (via this run's own log) that deleting
+      # scripts.prepublishOnly above genuinely works -- npm publish's log
+      # showed no "prepublishOnly" line at all, prepublishOnly definitely
+      # did not run a second time -- and the published package STILL had
+      # the stray install key regardless. So package.json's scripts.* is
+      # not the actual trigger; deleting prepublishOnly was necessary but
+      # not sufficient. The one remaining variable never eliminated in any
+      # of the five prior attempts: binding.gyp's mere PRESENCE in the
+      # directory `npm publish` runs from. It isn't needed for anything
+      # past this point (dist/ and prebuilds/ are already built), and
+      # "files" already excludes it from what gets packed either way --
+      # remove it outright before the real publish call.
+      - name: Remove binding.gyp -- nothing past this point needs it, and its presence is the one variable never yet eliminated
+        run: rm -f binding.gyp
+
       # Auto-detects GitHub Actions' OIDC token when id-token: write is
       # granted and this package has a Trusted Publisher configured on
       # npmjs.com (Settings -> Trusted Publisher, repo macula-io/macula-ts,

@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.5] - 2026-09-04
+
+0.13.4 proved (via its own CI log) that deleting `scripts.prepublishOnly`
+before publishing genuinely works -- `npm publish`'s log showed no
+`prepublishOnly` line at all, confirmed it did not run a second time --
+and the published package still had the stray `"install": "node-gyp
+rebuild"` key regardless. So package.json's `scripts.*` content was
+never the actual trigger on its own; removing `prepublishOnly` was
+necessary but not sufficient. The one variable never eliminated in any
+of five prior attempts (0.13.0-0.13.4): `binding.gyp`'s mere *presence*
+in the directory `npm publish` runs from, regardless of what any script
+does or doesn't do with it.
+
+`release.yml` now removes `binding.gyp` outright, immediately before
+the real `npm publish` call -- it isn't needed for anything past that
+point (`dist/` and `prebuilds/` are already built), and `"files"`
+already excludes it from what gets packed either way. If this doesn't
+work either, the fix needs to be structural (publish from a separate
+staging directory containing only the files that actually need to
+ship, assembled fresh, never checked out alongside `binding.gyp`/`cabi/`/
+`addon/` at all) rather than another in-place patch -- see this
+session's own notes if you're picking this up after a sixth failure.
+
 ## [0.13.4] - 2026-09-04
 
 0.13.3's own fix had a real bug, found by re-reading its own script
