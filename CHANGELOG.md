@@ -43,6 +43,23 @@ All notable changes to this project will be documented in this file.
 - A topic link closed by `Pool.close()`/`unsubscribe()` no longer logs a
   misleading "... dropped ... reconnecting" line for a subscription that
   was closing on purpose.
+- `cabi/go.mod`: `github.com/macula-io/macula-go` `v0.5.0` -> `v0.6.2`,
+  carrying two real fixes from the Go SDK this addon is built on:
+  `Session.Close`'s GOODBYE send had no write deadline anywhere in the
+  connection package, so a peer withholding flow-control credit could
+  block it forever -- reachable from every consumer, not just `Pool`,
+  and specifically from `Pool`'s own cleanup path, where `Session.close()`
+  hanging means `run()` never returns and `Pool.close()` (which waits on
+  it) hangs too. And, more severely: CBOR frame decode's `count`
+  (map/list entry count) was read straight off the wire and passed
+  directly as a slice/map capacity hint with no bound -- a 9-byte
+  malformed frame claiming `2^64-1` entries panics the whole process
+  (`makeslice: cap out of range`) before any per-entry bounds check or
+  signature verification runs, pre-auth. Also fixes a pre-auth O(n^2)
+  CBOR map-key-dedup decode cost. All three verified fixed upstream
+  (`macula-go`'s own CHANGELOG/commits) before taking the bump; rebuilt
+  and re-verified against this repo's full test suite (typecheck, build,
+  non-live suite, and the live suite against the real fleet) afterward.
 
 Found via an adversarial (Fable) review of `Pool` (added earlier the same
 day) requested after the dependency refresh below, not the refresh itself.
