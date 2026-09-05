@@ -1,6 +1,6 @@
 {
   "name": "@macula-io/ts",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "TypeScript SDK for the Macula mesh (FFI over macula-go)",
   "license": "Apache-2.0",
   "keywords": [
@@ -55,11 +55,11 @@
     "node-gyp-build": "^4.8.4"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^24.13.3",
     "node-gyp": "^13.0.2",
     "prebuildify": "^6.0.1",
-    "typescript": "^5.4.0",
-    "vitest": "^3.2.7"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
   },
   "engines": {
     "node": ">=24.18.1"

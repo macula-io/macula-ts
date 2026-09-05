@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.1] - 2026-09-05
+
+### Changed
+
+- Dependency refresh: `typescript` `^5.4.0` -> `^7.0.2` (native Go
+  compiler; stable `6.0` was never released), `vitest` `^3.2.7` ->
+  `^5.0.0` (transitively `vite` `7` -> `8`, rolldown/oxc), `@types/node`
+  `^24.0.0` -> `^24.13.3` (kept on the `24` line to match `engines`/CI's
+  actual Node 24 runtime -- `@types/node`'s major tracks the Node
+  version it describes, not library semver, and `src/` only imports
+  `node:crypto`/`node:module`/`node:path`/`node:url`, nothing 25/26-only).
+  `node-addon-api`, `node-gyp-build`, `node-gyp`, `prebuildify` were
+  already at latest.
+- `tsconfig.json` (root and `examples/`): added `"types": ["node"]`.
+  TypeScript 7 changed `types`' default from "everything under
+  `node_modules/@types`" to `[]`, which silently dropped every ambient
+  Node global (`Buffer`, `console`, `setTimeout`/`setInterval` and
+  friends, `node:module`/`node:url`/`node:path`, `ImportMeta.url`) and
+  broke `tsc --noEmit` in both configs (~35 errors in `src/`, 24 in
+  `examples/`) with no other source changes needed once fixed.
+- Rebuilt and committed `dist/` (this repo commits compiled output
+  pending a real `prepublishOnly`-driven publish pipeline -- see
+  `.gitignore`). This picks up `dist/pool.js`/`dist/pool.d.ts`, missing
+  since `0.14.0`'s `dist/` was committed without a `npm run build` after
+  `src/index.ts` started exporting `Pool` -- a git-checkout install of
+  this repo (as opposed to `npm install` from the registry, where
+  `release.yml` rebuilds `dist/` fresh before every publish) would have
+  been missing `Pool` entirely.
+
 ## [0.14.0] - 2026-09-05
 
 ### Added
