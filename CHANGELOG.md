@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 ## [0.14.1] - 2026-09-05
 
+### Fixed
+
+- `Pool.publish()`/`Pool.call()` no longer treat a purely local argument
+  error (a malformed `realm`, thrown by `session.call()`/`session.publish()`
+  before any wire I/O) as evidence a control link is dead. Verified live:
+  one bad-realm call was taking a pool from 1 healthy link to 0, recovering
+  ~4s later -- with more than one seed configured, `call()`'s own
+  fallback-to-next-link loop would have re-thrown the same doomed call at
+  every live link in turn, tearing down all of them over one caller-side
+  bug. `realm`/payload validation now runs before any link is touched.
+- `Pool.call()`'s remaining ambiguous case -- an error that never got a
+  wire-level answer at all, which is exactly what a `deadlineMs` timeout
+  against an otherwise-healthy-but-slow provider looks like -- no longer
+  assumes the link itself is dead. It now runs one liveness probe (the
+  same mechanism `#armHealthCheck` already used, extracted into
+  `#probeLiveness` and shared by both) and only schedules a reconnect if
+  that probe *also* gets no wire-level answer.
+- A stale `unsubscribe()` closure (called a second time -- this SDK's own
+  convention elsewhere, `Session.subscribe()`'s `stop()` and `Pool.close()`,
+  treats a repeat call as a safe no-op) could tear down a *different*,
+  newer subscription that had since reused the same `(realm, topic)` key,
+  silently killing its links with no error anywhere. `unsubscribe()` now
+  checks it still owns the tracked subscription before acting.
+- `#scheduleReconnect`'s fire-and-forget close of a stale session could
+  still be in flight when `close()`/`unsubscribe()` disposed that link's
+  identity afterward -- racing the identity handle being freed against
+  cabi's own validation of it before signing GOODBYE (`macula_session_close`
+  requires a still-valid identity). Verified live: identity-freed-first won
+  2 of 5 rounds against real network timing, silently leaking the Go-side
+  session with no GOODBYE ever sent. The pending close is now tracked per
+  link and awaited before its identity is disposed.
+- A throwing `Pool.subscribe()` handler is now caught and logged instead of
+  crossing back into the N-API callback uncaught -- Node only warns about
+  this today (`DEP0168`) but has announced it becomes a fatal,
+  unrecoverable crash once `--force-node-api-uncaught-exceptions-policy`'s
+  default flips.
+- A topic link closed by `Pool.close()`/`unsubscribe()` no longer logs a
+  misleading "... dropped ... reconnecting" line for a subscription that
+  was closing on purpose.
+
+Found via an adversarial (Fable) review of `Pool` (added earlier the same
+day) requested after the dependency refresh below, not the refresh itself.
+
 ### Changed
 
 - Dependency refresh: `typescript` `^5.4.0` -> `^7.0.2` (native Go

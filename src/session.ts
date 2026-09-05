@@ -62,7 +62,7 @@ const REALM_HEX_PATTERN = /^[0-9a-fA-F]{64}$/;
  * beneath it unchanged, rather than re-threading the FFI boundary itself
  * as a second, redundant string convention alongside it.
  * `undefined` in, `undefined` out -- the all-zero-realm default. */
-function realmBytesFromHex(realm: string | undefined): Uint8Array | undefined {
+export function realmBytesFromHex(realm: string | undefined): Uint8Array | undefined {
   if (realm === undefined) return undefined;
   if (!REALM_HEX_PATTERN.test(realm)) {
     throw new Error(`macula-ts: realm must be exactly 64 hex characters (32 bytes), got ${JSON.stringify(realm)}`);

@@ -105,6 +105,31 @@ describe("Pool", () => {
     }
   }, 20000);
 
+  it("a stale unsubscribe() does not tear down a newer subscription that reused the same (realm, topic)", async () => {
+    const id = Identity.generate();
+    const pool = await Pool.connect([DOOMED_SEED], id, {});
+    try {
+      const unsubFirst = await pool.subscribe(undefined, "reused.topic", () => {});
+      await unsubFirst();
+      const unsubSecond = await pool.subscribe(undefined, "reused.topic", () => {});
+      try {
+        // Found live 2026-09-05: calling the first subscription's own
+        // unsubscribe() a second time here (this SDK's own convention
+        // elsewhere -- Session.subscribe()'s stop(), Pool.close() -- is
+        // that a repeat call is a safe no-op) used to delete whatever was
+        // CURRENTLY registered under "reused.topic": the second, unrelated
+        // subscription, silently tearing down its links with no error
+        // anywhere. It must be a no-op instead.
+        await unsubFirst();
+        await expect(pool.subscribe(undefined, "reused.topic", () => {})).rejects.toThrow(/already subscribed/);
+      } finally {
+        await unsubSecond();
+      }
+    } finally {
+      await pool.close();
+    }
+  }, 20000);
+
   it("subscribe() refuses an identity that is already the pool's own control identity", async () => {
     const id = Identity.generate();
     const pool = await Pool.connect([DOOMED_SEED], id, {});

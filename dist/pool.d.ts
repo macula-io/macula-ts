@@ -72,7 +72,14 @@ export declare class Pool {
      * publish attempt fails is marked for respawn immediately -- this is
      * this v1's only liveness signal for the control role, since it
      * cannot also carry a liveness-only subscribe (see this module's own
-     * header doc). Throws NoHealthyStationError if zero links are live. */
+     * header doc). Throws NoHealthyStationError if zero links are live.
+     *
+     * `realm`/`payload` are validated before any link is touched. Found
+     * live 2026-09-05: a malformed realm or an unserializable payload
+     * throws inside session.publish() itself, well before any wire I/O --
+     * treating that throw as evidence of a dead connection (the pre-fix
+     * behavior) tore down a perfectly healthy link over a caller-side
+     * argument bug. */
     publish(realm: string | undefined, topic: string, payload: JsonValue, opts?: {
         ttlMs?: number;
     }): Promise<void>;
@@ -80,21 +87,31 @@ export declare class Pool {
      * until one succeeds or all have been tried. Throws
      * NoHealthyStationError if zero links are live.
      *
+     * `realm`/`payload` are validated before any link is touched, for the
+     * same reason as publish() -- a malformed realm is a caller bug, not
+     * evidence of a dead connection, and must never be attributed to one.
+     *
      * A `MaculaCallError` (a real BOLT#4 response -- e.g.
-     * unknown_next_peer, unauthorized) does NOT mark its link for
-     * respawn: the connection plainly worked, it answered. Found in
-     * review 2026-09-05: treating every thrown error as evidence of a
-     * dead connection meant a single genuinely-answered error (a
-     * procedure nobody serves, a bad realm, a gated call this identity
-     * isn't authorized for) tore down and reconnected EVERY live control
-     * link in turn as call() moved through them re-trying the same
-     * doomed call -- and for a non-idempotent provider handler, actually
-     * re-invoked it on each one. Only an error that never got a
-     * wire-level answer at all (the same distinction call()'s own doc on
-     * Session draws) is treated as a dead link. Each link's own `session`
-     * reference is re-checked before scheduling a reconnect, in case a
-     * concurrent operation already superseded it between this loop
-     * starting and this iteration running. */
+     * unknown_next_peer, unauthorized, a procedure nobody serves, a gated
+     * call this identity isn't authorized for) does NOT mark its link for
+     * respawn: the connection plainly worked, it answered. call() still
+     * falls through to the next link either way, matching the Erlang
+     * reference's own keep_or_next (macula_client.erl) -- a non-idempotent
+     * provider handler genuinely can be re-invoked on each live link this
+     * reaches; that is parity with the reference, not a bug this fixes.
+     *
+     * Any OTHER thrown error (never a wire-level answer at all) is
+     * ambiguous, not automatically a dead link: session.call()'s own
+     * deadlineMs elapsing looks identical to a genuinely severed
+     * connection, but means the far end is merely slow, not gone. Found
+     * live 2026-09-05: treating every such error as a dead link meant one
+     * slow provider response tore down and reconnected EVERY live control
+     * link in turn as call() moved through them re-trying the same call.
+     * #probeLiveness's own dedicated liveness call is the tiebreaker --
+     * only a link that ALSO fails to get a wire-level answer on that
+     * fresh probe is scheduled for reconnect. Each link's own `session`
+     * reference is re-checked both before probing and before scheduling a
+     * reconnect, in case a concurrent operation already superseded it. */
     call(realm: string | undefined, procedure: string, payload: JsonValue, opts?: {
         deadlineMs?: number;
     }): Promise<JsonValue>;

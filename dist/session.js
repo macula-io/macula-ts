@@ -28,7 +28,7 @@ const REALM_HEX_PATTERN = /^[0-9a-fA-F]{64}$/;
  * beneath it unchanged, rather than re-threading the FFI boundary itself
  * as a second, redundant string convention alongside it.
  * `undefined` in, `undefined` out -- the all-zero-realm default. */
-function realmBytesFromHex(realm) {
+export function realmBytesFromHex(realm) {
     if (realm === undefined)
         return undefined;
     if (!REALM_HEX_PATTERN.test(realm)) {

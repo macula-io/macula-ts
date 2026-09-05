@@ -71,7 +71,7 @@
 import { Identity } from "./identity.js";
 import type { PubsubEvent } from "./pubsub.js";
 import { MaculaCallError, type JsonValue } from "./rpc.js";
-import { Session } from "./session.js";
+import { realmBytesFromHex, Session } from "./session.js";
 
 /** One configured connection target. */
 export interface Seed {
@@ -152,6 +152,16 @@ interface RoleLink {
   healthCheckTimer: ReturnType<typeof setInterval> | undefined;
   closing: boolean;
   inFlight: Promise<void> | undefined;
+  /** Set by #scheduleReconnect while its own fire-and-forget close of a
+   * stale session is still in flight. Found live 2026-09-05: close()/
+   * unsubscribe() disposing this link's identity while that close is
+   * still on the wire raced the identity's own handle being freed
+   * against cabi's own validation of it (cabi/main.go's Close checks
+   * the identity handle before acting) -- whichever won, the station
+   * side either got no GOODBYE or the close was silently refused,
+   * leaking the Go-side session. close()/unsubscribe() must await this
+   * (in addition to inFlight) before disposing an identity. */
+  pendingClose: Promise<void> | undefined;
   /** Undefined for the control role. Set for a topic role -- what to
    * do once this role's session is (re)connected: subscribe it. Takes
    * the link itself (not just the session) so its own onClosed can
@@ -244,6 +254,7 @@ export class Pool {
       healthCheckTimer: undefined,
       closing: false,
       inFlight: undefined,
+      pendingClose: undefined,
       onConnected,
       closedDuringConnect: false,
     };
@@ -349,23 +360,36 @@ export class Pool {
     const timer = setInterval(() => {
       const session = link.session;
       if (!session) return;
-      const probe = `_pool.healthcheck.${Math.random().toString(36).slice(2)}`;
-      session.call(probe, null, { deadlineMs: this.#healthCheckIntervalMs }).then(
-        () => {
-          // A real provider somehow answering a random UUID-shaped
-          // procedure name is astronomically unlikely and not itself a
-          // problem either way -- the connection is clearly alive.
-        },
-        (err) => {
-          if (err instanceof MaculaCallError) return; // alive: a real wire answer came back
-          if (link.session !== session) return; // already superseded by a reconnect
-          console.error(`macula-ts pool: health check on ${link.seed.host}:${link.seed.port} failed:`, err);
-          this.#scheduleReconnect(link);
-        },
-      );
+      this.#probeLiveness(session).then((alive) => {
+        if (alive) return;
+        if (link.session !== session) return; // already superseded by a reconnect
+        console.error(`macula-ts pool: health check on ${link.seed.host}:${link.seed.port} failed`);
+        this.#scheduleReconnect(link);
+      });
     }, this.#healthCheckIntervalMs);
     timer.unref?.();
     link.healthCheckTimer = timer;
+  }
+
+  /** Calls a procedure name guaranteed never to be advertised and
+   * classifies the outcome: true if a real BOLT#4 answer came back
+   * (the connection is alive, whatever else provoked this probe), false
+   * if the call never got a wire-level answer at all (the connection is
+   * genuinely dead). Shared by #armHealthCheck's own timer and call()'s
+   * handling of an ambiguous failure (see call()'s own doc) -- a plain
+   * Error from session.call() means "no wire answer", but that is also
+   * exactly what a timed-out call against an otherwise-healthy but
+   * momentarily slow provider looks like. Found live 2026-09-05: without
+   * this second opinion, call() tore down every live control link in
+   * turn on nothing more than one slow provider response. */
+  async #probeLiveness(session: Session): Promise<boolean> {
+    const probe = `_pool.healthcheck.${Math.random().toString(36).slice(2)}`;
+    try {
+      await session.call(probe, null, { deadlineMs: this.#healthCheckIntervalMs });
+      return true; // a real provider somehow answering a random UUID-shaped name is astronomically unlikely either way
+    } catch (err) {
+      return err instanceof MaculaCallError; // alive iff a real wire answer came back
+    }
   }
 
   /** Marks `link` for backoff and schedules its next reconnect attempt.
@@ -407,7 +431,13 @@ export class Pool {
     const stale = link.session;
     link.status = "backoff";
     link.session = undefined;
-    if (stale) void stale.close(link.identity).catch(() => {});
+    if (stale) {
+      const closing = stale.close(link.identity).catch(() => {});
+      link.pendingClose = closing;
+      void closing.finally(() => {
+        if (link.pendingClose === closing) link.pendingClose = undefined;
+      });
+    }
     const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** link.reconnectAttempt);
     link.reconnectAttempt += 1;
     const timer = setTimeout(() => {
@@ -461,9 +491,18 @@ export class Pool {
    * publish attempt fails is marked for respawn immediately -- this is
    * this v1's only liveness signal for the control role, since it
    * cannot also carry a liveness-only subscribe (see this module's own
-   * header doc). Throws NoHealthyStationError if zero links are live. */
+   * header doc). Throws NoHealthyStationError if zero links are live.
+   *
+   * `realm`/`payload` are validated before any link is touched. Found
+   * live 2026-09-05: a malformed realm or an unserializable payload
+   * throws inside session.publish() itself, well before any wire I/O --
+   * treating that throw as evidence of a dead connection (the pre-fix
+   * behavior) tore down a perfectly healthy link over a caller-side
+   * argument bug. */
   async publish(realm: string | undefined, topic: string, payload: JsonValue, opts: { ttlMs?: number } = {}): Promise<void> {
     if (this.#closed) throw new Error("macula-ts pool: used after close()");
+    realmBytesFromHex(realm);
+    JSON.stringify(payload ?? null);
     const targets = this.#liveControlLinks().slice(0, this.#replicationFactor);
     if (targets.length === 0) throw new NoHealthyStationError();
     const results = await Promise.allSettled(
@@ -488,23 +527,35 @@ export class Pool {
    * until one succeeds or all have been tried. Throws
    * NoHealthyStationError if zero links are live.
    *
+   * `realm`/`payload` are validated before any link is touched, for the
+   * same reason as publish() -- a malformed realm is a caller bug, not
+   * evidence of a dead connection, and must never be attributed to one.
+   *
    * A `MaculaCallError` (a real BOLT#4 response -- e.g.
-   * unknown_next_peer, unauthorized) does NOT mark its link for
-   * respawn: the connection plainly worked, it answered. Found in
-   * review 2026-09-05: treating every thrown error as evidence of a
-   * dead connection meant a single genuinely-answered error (a
-   * procedure nobody serves, a bad realm, a gated call this identity
-   * isn't authorized for) tore down and reconnected EVERY live control
-   * link in turn as call() moved through them re-trying the same
-   * doomed call -- and for a non-idempotent provider handler, actually
-   * re-invoked it on each one. Only an error that never got a
-   * wire-level answer at all (the same distinction call()'s own doc on
-   * Session draws) is treated as a dead link. Each link's own `session`
-   * reference is re-checked before scheduling a reconnect, in case a
-   * concurrent operation already superseded it between this loop
-   * starting and this iteration running. */
+   * unknown_next_peer, unauthorized, a procedure nobody serves, a gated
+   * call this identity isn't authorized for) does NOT mark its link for
+   * respawn: the connection plainly worked, it answered. call() still
+   * falls through to the next link either way, matching the Erlang
+   * reference's own keep_or_next (macula_client.erl) -- a non-idempotent
+   * provider handler genuinely can be re-invoked on each live link this
+   * reaches; that is parity with the reference, not a bug this fixes.
+   *
+   * Any OTHER thrown error (never a wire-level answer at all) is
+   * ambiguous, not automatically a dead link: session.call()'s own
+   * deadlineMs elapsing looks identical to a genuinely severed
+   * connection, but means the far end is merely slow, not gone. Found
+   * live 2026-09-05: treating every such error as a dead link meant one
+   * slow provider response tore down and reconnected EVERY live control
+   * link in turn as call() moved through them re-trying the same call.
+   * #probeLiveness's own dedicated liveness call is the tiebreaker --
+   * only a link that ALSO fails to get a wire-level answer on that
+   * fresh probe is scheduled for reconnect. Each link's own `session`
+   * reference is re-checked both before probing and before scheduling a
+   * reconnect, in case a concurrent operation already superseded it. */
   async call(realm: string | undefined, procedure: string, payload: JsonValue, opts: { deadlineMs?: number } = {}): Promise<JsonValue> {
     if (this.#closed) throw new Error("macula-ts pool: used after close()");
+    realmBytesFromHex(realm);
+    JSON.stringify(payload ?? null);
     const targets = this.#liveControlLinks();
     if (targets.length === 0) throw new NoHealthyStationError();
     let lastErr: unknown;
@@ -515,7 +566,9 @@ export class Pool {
         return await session.call(procedure, payload, { realm, deadlineMs: opts.deadlineMs });
       } catch (err) {
         lastErr = err;
-        if (!(err instanceof MaculaCallError) && link.session === session) this.#scheduleReconnect(link);
+        if (!(err instanceof MaculaCallError) && link.session === session && !(await this.#probeLiveness(session))) {
+          if (link.session === session) this.#scheduleReconnect(link);
+        }
       }
     }
     throw lastErr;
@@ -544,11 +597,24 @@ export class Pool {
           const dkey = dedupKey(realm, evt.publisher, evt.seq, topic);
           if (this.#dedup.has(dkey)) return;
           this.#dedup.set(dkey, Date.now());
-          sub.handler(evt);
+          // A caller's handler throwing must not take down the native
+          // callback that invoked it -- found live 2026-09-05: an
+          // uncaught exception here crosses back into the N-API
+          // callback with no pending-exception handling on the addon
+          // side, which Node only warns about today (DEP0168) but is
+          // documented to become a fatal, unrecoverable crash under
+          // --force-node-api-uncaught-exceptions-policy once that
+          // policy's default flips.
+          try {
+            sub.handler(evt);
+          } catch (err) {
+            console.error(`macula-ts pool: subscription handler for ${topic} threw:`, err);
+          }
         },
         {
           realm,
           onClosed: (err) => {
+            if (link.closing) return; // already tearing down -- #scheduleReconnect would bail anyway, don't log a misleading "reconnecting"
             if (link.session === session) {
               console.error(`macula-ts pool: subscription to ${topic} on ${link.seed.host}:${link.seed.port} dropped (${err.message}) -- reconnecting`);
               this.#scheduleReconnect(link);
@@ -569,14 +635,22 @@ export class Pool {
     this.#subscriptions.set(key, sub);
     await Promise.all(sub.links.map((link) => this.#attach(link)));
     return async () => {
-      const tracked = this.#subscriptions.get(key);
-      if (!tracked) return;
+      // Guards against a stale unsubscribe() firing (possibly a second
+      // time, which this SDK's own convention elsewhere treats as safe)
+      // after a newer subscription has since taken this same (realm,
+      // topic) key -- found live 2026-09-05: without this check, an
+      // old unsubscribe() tore down a DIFFERENT, newer subscription's
+      // links and deleted it from #subscriptions, silently stopping its
+      // handler with no error anywhere.
+      if (this.#subscriptions.get(key) !== sub) return;
+      const tracked = sub;
       this.#subscriptions.delete(key);
       await Promise.all(
         tracked.links.map(async (link) => {
           link.closing = true;
           if (link.retryTimer) clearTimeout(link.retryTimer);
           if (link.inFlight) await link.inFlight.catch(() => {});
+          if (link.pendingClose) await link.pendingClose;
           if (link.session) await link.session.close(link.identity).catch(() => {});
         }),
       );
@@ -611,6 +685,7 @@ export class Pool {
         if (link.retryTimer) clearTimeout(link.retryTimer);
         if (link.healthCheckTimer) clearInterval(link.healthCheckTimer);
         if (link.inFlight) await link.inFlight.catch(() => {});
+        if (link.pendingClose) await link.pendingClose;
         if (link.session) await link.session.close(link.identity).catch(() => {});
         link.session = undefined;
         link.status = "backoff"; // reflects reality for status()/#liveControlLinks() if either is called after close()

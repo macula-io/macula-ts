@@ -62,6 +62,29 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Pool (live fleet)", () => {
   );
 
   it(
+    "a locally-invalid call()/publish() argument (malformed realm) never tears down a healthy control link -- " +
+      "found live 2026-09-05: session.call()/session.publish() validate realm before any wire I/O, but an " +
+      "earlier draft classified that thrown validation error exactly like a genuine dead-connection error " +
+      "and reconnected anyway, over a caller-side argument bug",
+    async () => {
+      const id = Identity.generate();
+      const pool = await Pool.connect([{ host: STATION_HOST, port: STATION_PORT }], id);
+      try {
+        expect(pool.status().healthyLinks).toBe(1);
+        await expect(pool.call("not-a-realm", "some.procedure", {})).rejects.toThrow(/64 hex characters/);
+        // The real proof: still healthy immediately after, not "healthy
+        // again after a reconnect cycle" -- this link was never touched.
+        expect(pool.status().healthyLinks).toBe(1);
+        await expect(pool.publish("not-a-realm", "some.topic", {})).rejects.toThrow(/64 hex characters/);
+        expect(pool.status().healthyLinks).toBe(1);
+      } finally {
+        await pool.close();
+      }
+    },
+    20000,
+  );
+
+  it(
     "a connection surviving a station going down actually reconnects and becomes usable again -- " +
       "not a mocked retry-logic test: a REAL competing connection under the pool's own control " +
       "identity forces the station's own per-identity dedupe to kick the pool's link, exactly the " +

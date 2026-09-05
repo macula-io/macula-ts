@@ -31,6 +31,20 @@ export interface CallOptions {
      * provider serving under that same realm through some other means. */
     realm?: string;
 }
+/** Decodes CallOptions.realm/PublishOptions.realm/SubscribeOptions.realm's
+ * public hex-string convention into the 32-byte Uint8Array native.*
+ * already accepts for its own `realm` parameter on sessionCall/
+ * sessionCallWithUcan/sessionPublish/sessionSubscribeStart -- cabi/rpc.go,
+ * cabi/pubsub.go, and addon/binding.cc were, on inspection, already fully
+ * wired for an optional realm all the way through (ReadOptionalRealm in
+ * binding.cc, realm32OrZero in cabi/main.go); this class's own methods
+ * were the only place still hardcoding `undefined`. Kept as a hex string
+ * at the PUBLIC surface specifically to match DhtRecord's existing
+ * convention, while reusing that already-working raw-byte plumbing
+ * beneath it unchanged, rather than re-threading the FFI boundary itself
+ * as a second, redundant string convention alongside it.
+ * `undefined` in, `undefined` out -- the all-zero-realm default. */
+export declare function realmBytesFromHex(realm: string | undefined): Uint8Array | undefined;
 export declare class Session {
     #private;
     private constructor();
