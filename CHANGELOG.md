@@ -2,6 +2,57 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.2] - 2026-09-06
+
+### Fixed
+
+- `cabi/go.mod`: `github.com/macula-io/macula-go` `v0.6.2` -> `v0.7.1`,
+  verified against macula-go's own commits before taking it (not just the
+  version bump claim):
+  - `v0.7.1` fixed the root cause of the intermittent client_stream/bidi
+    reply loss tracked in `macula-io/macula#8`
+    (`connection/frame_stream.go`'s `RecvFrame`): its read loop appended
+    `Stream.Read`'s returned bytes to its buffer, then immediately
+    returned any accompanying error without re-checking whether those
+    just-appended bytes now completed a frame. `io.Reader`'s own contract
+    explicitly permits a final chunk to arrive together with `io.EOF` in
+    the same call (and `quic-go`'s `Stream.Read` does this in practice) --
+    when a peer's last STREAM frame carried both the final application
+    data and the FIN bit, this loop threw the fully-delivered bytes away
+    and returned a bogus `read stream: EOF` instead of decoding the frame.
+    Confirmed live against production via qlog (baseline 6/20 pass, fixed
+    30/30 then a further clean 20/20). This binding does not currently
+    expose macula-go's `stream` package (`ClientStream`/bidi mode) as a
+    public API, but every `Session` `call()`/`advertise()`/`serve()` this
+    SDK does expose already goes through the same `RecvFrame` on the
+    control stream (`connection/connection.go`), so the fix is a general
+    transport-correctness improvement here too, not something that only
+    matters once streaming RPC is exposed.
+  - Also in `v0.7.1`: `Handle.CloseSend` (`stream/stream.go`) now closes
+    the underlying QUIC stream's send side (not just the application-level
+    `STREAM_END` frame), matching the transport-level FIN a peer may be
+    relying on independently of the parsed frame. Isolated A/B against
+    production showed this alone made no measurable difference to the
+    failure rate -- the `RecvFrame` fix above is what eliminates the bug --
+    but it closes a real transport/application inconsistency.
+  - `v0.7.0`'s `pool: add LinkSelection and opt-in station discovery via
+    hecate_stations` does **not** apply to this SDK: `cabi` never imports
+    macula-go's `pool` package, and this repo's own `Pool` (`src/pool.ts`)
+    is an independent TypeScript port of `macula_client.erl`'s design, not
+    a wrapper over macula-go's Go `Pool`.
+  - Rebuilt the native addon and re-ran the full verification: typecheck,
+    build, and the non-live suite are clean and deterministic (32/32,
+    unchanged from before this bump). The live suite against the real
+    fleet showed failures scattered across unrelated tests/files run to
+    run (`directdial.live.test.ts`'s two `station_endpoint`-resolution
+    tests, a `pubsub` subscribe timeout, an `rpc` realm-isolation
+    assertion) -- bisected against the unchanged `v0.6.2` baseline (three
+    separate runs, native addon rebuilt each way) and reproduces
+    identically there too, confirming pre-existing fleet-level flakiness
+    (macula-go's own `directdial.go` names its `ErrStationEndpointNotFound`
+    case as exactly this: a bare-IP `host_advertised` fleet entry a WebPKI
+    dial can't validate), not a regression from this bump.
+
 ## [0.14.1] - 2026-09-05
 
 ### Fixed
