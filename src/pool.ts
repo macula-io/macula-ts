@@ -70,7 +70,7 @@
 
 import { Identity } from "./identity.js";
 import type { PubsubEvent } from "./pubsub.js";
-import { MaculaCallError, type JsonValue } from "./rpc.js";
+import { bytesModeFor, MaculaCallError, type BytesOutput, type JsonValue } from "./rpc.js";
 import { realmBytesFromHex, Session } from "./session.js";
 
 /** One configured connection target. */
@@ -527,7 +527,8 @@ export class Pool {
    * until one succeeds or all have been tried. Throws
    * NoHealthyStationError if zero links are live.
    *
-   * `realm`/`payload` are validated before any link is touched, for the
+   * `realm`/`payload`/`opts.bytes` are validated before any link is
+   * touched, for the
    * same reason as publish() -- a malformed realm is a caller bug, not
    * evidence of a dead connection, and must never be attributed to one.
    *
@@ -552,10 +553,16 @@ export class Pool {
    * fresh probe is scheduled for reconnect. Each link's own `session`
    * reference is re-checked both before probing and before scheduling a
    * reconnect, in case a concurrent operation already superseded it. */
-  async call(realm: string | undefined, procedure: string, payload: JsonValue, opts: { deadlineMs?: number } = {}): Promise<JsonValue> {
+  async call(
+    realm: string | undefined,
+    procedure: string,
+    payload: JsonValue,
+    opts: { deadlineMs?: number; bytes?: BytesOutput } = {},
+  ): Promise<JsonValue> {
     if (this.#closed) throw new Error("macula-ts pool: used after close()");
     realmBytesFromHex(realm);
     JSON.stringify(payload ?? null);
+    bytesModeFor(opts.bytes);
     const targets = this.#liveControlLinks();
     if (targets.length === 0) throw new NoHealthyStationError();
     let lastErr: unknown;
@@ -563,7 +570,7 @@ export class Pool {
       const session = link.session;
       if (link.status !== "live" || !session) continue; // superseded since `targets` was captured
       try {
-        return await session.call(procedure, payload, { realm, deadlineMs: opts.deadlineMs });
+        return await session.call(procedure, payload, { realm, deadlineMs: opts.deadlineMs, bytes: opts.bytes });
       } catch (err) {
         lastErr = err;
         if (!(err instanceof MaculaCallError) && link.session === session && !(await this.#probeLiveness(session))) {
@@ -581,9 +588,18 @@ export class Pool {
    * pool's own instead (e.g. for a stable, caller-controlled identity
    * across restarts, matching macula-mcp's own observeRoomIdentityPath
    * pattern) -- the pool never disposes an identity it didn't mint.
+   * `opts.bytes` picks how bytes in each event's payload reach `handler`
+   * (rpc.ts's BytesOutput), on every seed and after every respawn.
    * Returns an unsubscribe function. */
-  async subscribe(realm: string | undefined, topic: string, handler: (evt: PubsubEvent) => void, identity?: Identity): Promise<() => Promise<void>> {
+  async subscribe(
+    realm: string | undefined,
+    topic: string,
+    handler: (evt: PubsubEvent) => void,
+    identity?: Identity,
+    opts: { bytes?: BytesOutput } = {},
+  ): Promise<() => Promise<void>> {
     if (this.#closed) throw new Error("macula-ts pool: used after close()");
+    bytesModeFor(opts.bytes);
     const key = subKey(realm, topic);
     if (this.#subscriptions.has(key)) throw new Error(`macula-ts pool: already subscribed to ${topic}${realm ? ` (realm ${realm})` : ""}`);
     if (identity) this.#assertIdentityNotAlreadyUsed(identity);
@@ -613,6 +629,7 @@ export class Pool {
         },
         {
           realm,
+          bytes: opts.bytes,
           onClosed: (err) => {
             if (link.closing) return; // already tearing down -- #scheduleReconnect would bail anyway, don't log a misleading "reconnecting"
             if (link.session === session) {

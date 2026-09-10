@@ -221,8 +221,14 @@ func macula_session_call_with_ucan(
 	payloadJSON *C.char,
 	timeoutMs C.int64_t,
 	ucanToken *C.char,
+	bytesMode C.int,
 	errOut **C.char,
 ) *C.char {
+	mode, err := parseBytesOutput(int(bytesMode))
+	if err != nil {
+		setErr(errOut, err)
+		return nil
+	}
 	session, ok := sessionFromHandle(sessionHandle)
 	if !ok {
 		setErr(errOut, errInvalidSessionHandle)
@@ -258,7 +264,7 @@ func macula_session_call_with_ucan(
 		return nil
 	}
 
-	envelopeJSON, err := json.Marshal(callResponseToEnvelope(resp))
+	envelopeJSON, err := json.Marshal(callResponseToEnvelope(resp, mode))
 	if err != nil {
 		// Only reachable on a non-finite float in the payload -- see
 		// macula_session_call's identical comment (rpc.go).

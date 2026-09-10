@@ -6,6 +6,16 @@
 // holds the shapes both directions share: the JSON-only payload model
 // and the structured BOLT#4 error macula-go's own bolt4 package
 // defines (bolt4/bolt4.go, 17 codes).
+/** BytesOutput as the integer cabi's bytesOutput takes. An unknown value
+ * (reachable from plain JavaScript) throws instead of silently falling
+ * back to hex. Internal to the FFI boundary. */
+export function bytesModeFor(bytes) {
+    if (bytes === undefined || bytes === "hex")
+        return 0;
+    if (bytes === "tagged")
+        return 1;
+    throw new Error(`macula-ts: bytes must be "hex" or "tagged", got ${JSON.stringify(bytes)}`);
+}
 /** Thrown by Session.call() when the provider (or a relay in between)
  * answered with a real BOLT#4 ERROR frame instead of a RESULT -- e.g.
  * calling a procedure nobody has advertised comes back

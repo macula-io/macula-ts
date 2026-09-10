@@ -222,13 +222,18 @@ func macula_pending_call_procedure(pendingHandle C.uintptr_t, errOut **C.char) *
 // main thread (see addon/binding.cc's PendingCallPayloadJson).
 //
 //export macula_pending_call_payload_json
-func macula_pending_call_payload_json(pendingHandle C.uintptr_t, errOut **C.char) *C.char {
+func macula_pending_call_payload_json(pendingHandle C.uintptr_t, bytesMode C.int, errOut **C.char) *C.char {
+	mode, err := parseBytesOutput(int(bytesMode))
+	if err != nil {
+		setErr(errOut, err)
+		return nil
+	}
 	pc, ok := pendingCallFromHandle(pendingHandle)
 	if !ok {
 		setErr(errOut, errInvalidPendingCallHandle)
 		return nil
 	}
-	b, err := json.Marshal(cborToJSON(pc.payload))
+	b, err := json.Marshal(cborToJSON(pc.payload, mode))
 	if err != nil {
 		setErr(errOut, err)
 		return nil

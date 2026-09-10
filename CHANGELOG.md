@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Bytes in JSON payloads, going in.** An object whose only key is
+  `"$bytes"`, holding standard padded base64 (RFC 4648 section 4),
+  becomes a CBOR byte string: `{"$bytes": "AQID"}` is `01 02 03`.
+  `cabi/wirevalue.go`'s `jsonToCbor` had no path to bytes at all before,
+  so a caller could not send an id that a provider matches as bytes
+  (hecate-tube's channel ids, for one). Any other value under that sole
+  key (invalid or unpadded base64, a number, null, an object) is an
+  explicit error, never a silent map. An object with more keys stays a
+  map, a plain string is always text, and there is no `"0x"` input form.
+- **`bytes: "hex" | "tagged"`, for bytes coming out.** On `call()`,
+  `callWithUcan()`, `callDirect()` and `callDirectWithUcan()`
+  (`CallOptions`), on `serve()` (new `ServeOptions`, third argument), on
+  `subscribe()` (`SubscribeOptions`), and on `Pool.call()` and
+  `Pool.subscribe()` (new fifth argument). `"tagged"` renders bytes in a
+  RESULT, an inbound CALL or an EVENT as `{"$bytes": "<base64>"}`, the
+  form the input side takes, so a returned value can be sent back
+  unchanged. Go makes the choice, because only Go still knows which
+  values were bytes. An unknown value throws before anything reaches the
+  wire. `BytesOutput` and `ServeOptions` are new exports, and
+  `SubscribeOptions` is now exported.
+- `cabi/wirevalue_test.go`, plus a CI step that runs the cabi Go tests.
+  The JSON/CBOR rules had no test at the layer that implements them.
+  Live tests cover the bytes round trip through `call()`/`serve()` and
+  `subscribe()`.
+
+### Changed
+
+- `"0x"` hex stays the default output, so existing callers see no change.
+  The six affected cgo exports take a `bytesMode` argument. The C ABI is
+  internal: the addon and cabi ship together in each prebuild.
+- Doc comments that said bytes could only come out (`rpc.ts`,
+  `session.ts`, `pubsub.ts`, `cabi/dht.go`, `cabi/main.go`,
+  `rpc.live.test.ts`) now describe the two-way rule. The DHT methods stay
+  hex-only.
+
 ## [0.14.2] - 2026-09-06
 
 ### Fixed

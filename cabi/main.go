@@ -36,8 +36,8 @@
 // kind/value accessor scheme (contrast macula-php's cabi, which has no
 // JSON on the PHP side and so uses one) -- converted to/from
 // macula-go's cbor.Value by wirevalue.go, ported from macula-cli's
-// internal/wirevalue package (already proven against the same no-bool,
-// bytes-as-hex-string rules this boundary needs).
+// internal/wirevalue package (already proven against the same no-bool
+// rule this boundary needs; the bytes rules are wirevalue.go's own doc).
 package main
 
 /*

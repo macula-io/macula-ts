@@ -346,11 +346,15 @@ unsigned char* ReadOptionalRealm(const Napi::Env& env, const Napi::Value& v, uin
   return realmBuf;
 }
 
+// bytesMode (the call, subscribe and pending-payload functions below) is
+// cabi/wirevalue.go's bytesOutput, passed through untouched: 0 renders
+// bytes in the returned JSON as "0x" hex, 1 as {"$bytes": base64}. Go
+// validates it, so an unknown value comes back as an error, not a guess.
 class SessionCallWorker : public Napi::AsyncWorker {
  public:
   SessionCallWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
                      uintptr_t identityHandle, std::string procedure, bool hasRealm, uint8_t realm[32],
-                     std::string payloadJson, int64_t timeoutMs)
+                     std::string payloadJson, int64_t timeoutMs, int bytesMode)
       : Napi::AsyncWorker(env),
         deferred_(deferred),
         sessionHandle_(sessionHandle),
@@ -358,7 +362,8 @@ class SessionCallWorker : public Napi::AsyncWorker {
         procedure_(std::move(procedure)),
         hasRealm_(hasRealm),
         payloadJson_(std::move(payloadJson)),
-        timeoutMs_(timeoutMs) {
+        timeoutMs_(timeoutMs),
+        bytesMode_(bytesMode) {
     if (hasRealm_) std::memcpy(realm_, realm, 32);
   }
 
@@ -366,7 +371,7 @@ class SessionCallWorker : public Napi::AsyncWorker {
     char* errOut = nullptr;
     char* envelope = macula_session_call(sessionHandle_, identityHandle_, const_cast<char*>(procedure_.c_str()),
                                           hasRealm_ ? realm_ : nullptr, const_cast<char*>(payloadJson_.c_str()),
-                                          timeoutMs_, &errOut);
+                                          timeoutMs_, bytesMode_, &errOut);
     if (errOut != nullptr) {
       std::string msg(errOut);
       macula_free_string(errOut);
@@ -396,14 +401,15 @@ class SessionCallWorker : public Napi::AsyncWorker {
   uint8_t realm_[32] = {0};
   std::string payloadJson_;
   int64_t timeoutMs_;
+  int bytesMode_;
   std::string envelopeJson_;
 };
 
 Napi::Value SessionCall(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  if (info.Length() < 6 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber()) {
+  if (info.Length() < 7 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber() || !info[6].IsNumber()) {
     Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, procedure: string, realm: "
-                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number)")
+                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number, bytesMode: number)")
         .ThrowAsJavaScriptException();
     return env.Undefined();
   }
@@ -418,10 +424,11 @@ Napi::Value SessionCall(const Napi::CallbackInfo& info) {
   if (!ok) return env.Undefined();
   std::string payloadJson = info[4].As<Napi::String>().Utf8Value();
   int64_t timeoutMs = info[5].As<Napi::Number>().Int64Value();
+  int bytesMode = info[6].As<Napi::Number>().Int32Value();
 
   auto deferred = Napi::Promise::Deferred::New(env);
   auto* worker = new SessionCallWorker(env, deferred, sessionHandle, identityHandle, std::move(procedure),
-                                        realmPtr != nullptr, realmBuf, std::move(payloadJson), timeoutMs);
+                                        realmPtr != nullptr, realmBuf, std::move(payloadJson), timeoutMs, bytesMode);
   worker->Queue();
   return deferred.Promise();
 }
@@ -495,7 +502,7 @@ class SessionCallWithUcanWorker : public Napi::AsyncWorker {
  public:
   SessionCallWithUcanWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
                              uintptr_t identityHandle, std::string procedure, bool hasRealm, uint8_t realm[32],
-                             std::string payloadJson, int64_t timeoutMs, std::string ucanToken)
+                             std::string payloadJson, int64_t timeoutMs, std::string ucanToken, int bytesMode)
       : Napi::AsyncWorker(env),
         deferred_(deferred),
         sessionHandle_(sessionHandle),
@@ -504,7 +511,8 @@ class SessionCallWithUcanWorker : public Napi::AsyncWorker {
         hasRealm_(hasRealm),
         payloadJson_(std::move(payloadJson)),
         timeoutMs_(timeoutMs),
-        ucanToken_(std::move(ucanToken)) {
+        ucanToken_(std::move(ucanToken)),
+        bytesMode_(bytesMode) {
     if (hasRealm_) std::memcpy(realm_, realm, 32);
   }
 
@@ -512,7 +520,7 @@ class SessionCallWithUcanWorker : public Napi::AsyncWorker {
     char* errOut = nullptr;
     char* envelope = macula_session_call_with_ucan(sessionHandle_, identityHandle_, const_cast<char*>(procedure_.c_str()),
                                                      hasRealm_ ? realm_ : nullptr, const_cast<char*>(payloadJson_.c_str()),
-                                                     timeoutMs_, const_cast<char*>(ucanToken_.c_str()), &errOut);
+                                                     timeoutMs_, const_cast<char*>(ucanToken_.c_str()), bytesMode_, &errOut);
     if (errOut != nullptr) {
       std::string msg(errOut);
       macula_free_string(errOut);
@@ -543,14 +551,16 @@ class SessionCallWithUcanWorker : public Napi::AsyncWorker {
   std::string payloadJson_;
   int64_t timeoutMs_;
   std::string ucanToken_;
+  int bytesMode_;
   std::string envelopeJson_;
 };
 
 Napi::Value SessionCallWithUcan(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  if (info.Length() < 7 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber() || !info[6].IsString()) {
+  if (info.Length() < 8 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber() || !info[6].IsString() ||
+      !info[7].IsNumber()) {
     Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, procedure: string, realm: "
-                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number, ucanToken: string)")
+                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number, ucanToken: string, bytesMode: number)")
         .ThrowAsJavaScriptException();
     return env.Undefined();
   }
@@ -566,11 +576,12 @@ Napi::Value SessionCallWithUcan(const Napi::CallbackInfo& info) {
   std::string payloadJson = info[4].As<Napi::String>().Utf8Value();
   int64_t timeoutMs = info[5].As<Napi::Number>().Int64Value();
   std::string ucanToken = info[6].As<Napi::String>().Utf8Value();
+  int bytesMode = info[7].As<Napi::Number>().Int32Value();
 
   auto deferred = Napi::Promise::Deferred::New(env);
   auto* worker = new SessionCallWithUcanWorker(env, deferred, sessionHandle, identityHandle, std::move(procedure),
                                                 realmPtr != nullptr, realmBuf, std::move(payloadJson), timeoutMs,
-                                                std::move(ucanToken));
+                                                std::move(ucanToken), bytesMode);
   worker->Queue();
   return deferred.Promise();
 }
@@ -768,9 +779,14 @@ Napi::Value PendingCallPayloadJson(const Napi::CallbackInfo& info) {
   bool ok = false;
   uintptr_t handle = ToHandle(env, info.Length() > 0 ? info[0] : env.Undefined(), &ok);
   if (!ok) return env.Null();
+  if (info.Length() < 2 || !info[1].IsNumber()) {
+    Napi::TypeError::New(env, "expected (pendingHandle, bytesMode: number)").ThrowAsJavaScriptException();
+    return env.Null();
+  }
+  int bytesMode = info[1].As<Napi::Number>().Int32Value();
 
   char* errOut = nullptr;
-  char* payload = macula_pending_call_payload_json(handle, &errOut);
+  char* payload = macula_pending_call_payload_json(handle, bytesMode, &errOut);
   if (!CheckErr(env, errOut)) return env.Null();
   std::string result(payload);
   macula_free_string(payload);
@@ -1420,14 +1436,15 @@ class SessionSubscribeStartWorker : public Napi::AsyncWorker {
  public:
   SessionSubscribeStartWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
                                uintptr_t identityHandle, bool hasRealm, uint8_t realm[32], std::string topic,
-                               SubscriptionContext* ctx)
+                               SubscriptionContext* ctx, int bytesMode)
       : Napi::AsyncWorker(env),
         deferred_(deferred),
         sessionHandle_(sessionHandle),
         identityHandle_(identityHandle),
         hasRealm_(hasRealm),
         topic_(std::move(topic)),
-        ctx_(ctx) {
+        ctx_(ctx),
+        bytesMode_(bytesMode) {
     if (hasRealm_) std::memcpy(realm_, realm, 32);
   }
 
@@ -1435,7 +1452,7 @@ class SessionSubscribeStartWorker : public Napi::AsyncWorker {
     char* errOut = nullptr;
     uintptr_t handle = macula_session_subscribe_start(sessionHandle_, identityHandle_, hasRealm_ ? realm_ : nullptr,
                                                         const_cast<char*>(topic_.c_str()), OnMaculaEvent,
-                                                        OnMaculaSubscriptionClosed, static_cast<void*>(ctx_), &errOut);
+                                                        OnMaculaSubscriptionClosed, static_cast<void*>(ctx_), bytesMode_, &errOut);
     if (errOut != nullptr) {
       std::string msg(errOut);
       macula_free_string(errOut);
@@ -1470,14 +1487,15 @@ class SessionSubscribeStartWorker : public Napi::AsyncWorker {
   uint8_t realm_[32] = {0};
   std::string topic_;
   SubscriptionContext* ctx_;
+  int bytesMode_;
   uintptr_t subscriptionHandle_ = 0;
 };
 
 Napi::Value SessionSubscribeStart(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  if (info.Length() < 5 || !info[3].IsString() || !info[4].IsFunction()) {
+  if (info.Length() < 6 || !info[3].IsString() || !info[4].IsFunction() || !info[5].IsNumber()) {
     Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, realm: Uint8Array|undefined, topic: "
-                               "string, onEvent: Function)")
+                               "string, onEvent: Function, bytesMode: number)")
         .ThrowAsJavaScriptException();
     return env.Undefined();
   }
@@ -1490,6 +1508,7 @@ Napi::Value SessionSubscribeStart(const Napi::CallbackInfo& info) {
   unsigned char* realmPtr = ReadOptionalRealm(env, info[2], realmBuf, &ok);
   if (!ok) return env.Undefined();
   std::string topic = info[3].As<Napi::String>().Utf8Value();
+  int bytesMode = info[5].As<Napi::Number>().Int32Value();
 
   auto* ctx = new SubscriptionContext();
   ctx->tsfn = Napi::ThreadSafeFunction::New(env, info[4].As<Napi::Function>(), "macula_event_callback",
@@ -1497,7 +1516,7 @@ Napi::Value SessionSubscribeStart(const Napi::CallbackInfo& info) {
 
   auto deferred = Napi::Promise::Deferred::New(env);
   auto* worker = new SessionSubscribeStartWorker(env, deferred, sessionHandle, identityHandle, realmPtr != nullptr,
-                                                  realmBuf, std::move(topic), ctx);
+                                                  realmBuf, std::move(topic), ctx, bytesMode);
   worker->Queue();
   return deferred.Promise();
 }
@@ -1810,7 +1829,7 @@ class DirectDialCallWorker : public Napi::AsyncWorker {
  public:
   DirectDialCallWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
                         uintptr_t identityHandle, std::string procedure, bool hasRealm, uint8_t realm[32],
-                        std::string payloadJson, int64_t timeoutMs)
+                        std::string payloadJson, int64_t timeoutMs, int bytesMode)
       : Napi::AsyncWorker(env),
         deferred_(deferred),
         sessionHandle_(sessionHandle),
@@ -1818,7 +1837,8 @@ class DirectDialCallWorker : public Napi::AsyncWorker {
         procedure_(std::move(procedure)),
         hasRealm_(hasRealm),
         payloadJson_(std::move(payloadJson)),
-        timeoutMs_(timeoutMs) {
+        timeoutMs_(timeoutMs),
+        bytesMode_(bytesMode) {
     if (hasRealm_) std::memcpy(realm_, realm, 32);
   }
 
@@ -1826,7 +1846,7 @@ class DirectDialCallWorker : public Napi::AsyncWorker {
     char* errOut = nullptr;
     char* envelope = macula_directdial_call(sessionHandle_, identityHandle_, const_cast<char*>(procedure_.c_str()),
                                              hasRealm_ ? realm_ : nullptr, const_cast<char*>(payloadJson_.c_str()),
-                                             timeoutMs_, &errOut);
+                                             timeoutMs_, bytesMode_, &errOut);
     if (errOut != nullptr) {
       std::string msg(errOut);
       macula_free_string(errOut);
@@ -1856,14 +1876,15 @@ class DirectDialCallWorker : public Napi::AsyncWorker {
   uint8_t realm_[32] = {0};
   std::string payloadJson_;
   int64_t timeoutMs_;
+  int bytesMode_;
   std::string envelopeJson_;
 };
 
 Napi::Value DirectDialCall(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  if (info.Length() < 6 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber()) {
+  if (info.Length() < 7 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber() || !info[6].IsNumber()) {
     Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, procedure: string, realm: "
-                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number)")
+                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number, bytesMode: number)")
         .ThrowAsJavaScriptException();
     return env.Undefined();
   }
@@ -1878,10 +1899,11 @@ Napi::Value DirectDialCall(const Napi::CallbackInfo& info) {
   if (!ok) return env.Undefined();
   std::string payloadJson = info[4].As<Napi::String>().Utf8Value();
   int64_t timeoutMs = info[5].As<Napi::Number>().Int64Value();
+  int bytesMode = info[6].As<Napi::Number>().Int32Value();
 
   auto deferred = Napi::Promise::Deferred::New(env);
   auto* worker = new DirectDialCallWorker(env, deferred, sessionHandle, identityHandle, std::move(procedure),
-                                           realmPtr != nullptr, realmBuf, std::move(payloadJson), timeoutMs);
+                                           realmPtr != nullptr, realmBuf, std::move(payloadJson), timeoutMs, bytesMode);
   worker->Queue();
   return deferred.Promise();
 }
@@ -1890,7 +1912,7 @@ class DirectDialCallWithUcanWorker : public Napi::AsyncWorker {
  public:
   DirectDialCallWithUcanWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
                                 uintptr_t identityHandle, std::string procedure, bool hasRealm, uint8_t realm[32],
-                                std::string payloadJson, int64_t timeoutMs, std::string ucanToken)
+                                std::string payloadJson, int64_t timeoutMs, std::string ucanToken, int bytesMode)
       : Napi::AsyncWorker(env),
         deferred_(deferred),
         sessionHandle_(sessionHandle),
@@ -1899,7 +1921,8 @@ class DirectDialCallWithUcanWorker : public Napi::AsyncWorker {
         hasRealm_(hasRealm),
         payloadJson_(std::move(payloadJson)),
         timeoutMs_(timeoutMs),
-        ucanToken_(std::move(ucanToken)) {
+        ucanToken_(std::move(ucanToken)),
+        bytesMode_(bytesMode) {
     if (hasRealm_) std::memcpy(realm_, realm, 32);
   }
 
@@ -1907,7 +1930,7 @@ class DirectDialCallWithUcanWorker : public Napi::AsyncWorker {
     char* errOut = nullptr;
     char* envelope = macula_directdial_call_with_ucan(
         sessionHandle_, identityHandle_, const_cast<char*>(procedure_.c_str()), hasRealm_ ? realm_ : nullptr,
-        const_cast<char*>(payloadJson_.c_str()), timeoutMs_, const_cast<char*>(ucanToken_.c_str()), &errOut);
+        const_cast<char*>(payloadJson_.c_str()), timeoutMs_, const_cast<char*>(ucanToken_.c_str()), bytesMode_, &errOut);
     if (errOut != nullptr) {
       std::string msg(errOut);
       macula_free_string(errOut);
@@ -1938,14 +1961,16 @@ class DirectDialCallWithUcanWorker : public Napi::AsyncWorker {
   std::string payloadJson_;
   int64_t timeoutMs_;
   std::string ucanToken_;
+  int bytesMode_;
   std::string envelopeJson_;
 };
 
 Napi::Value DirectDialCallWithUcan(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  if (info.Length() < 7 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber() || !info[6].IsString()) {
+  if (info.Length() < 8 || !info[2].IsString() || !info[4].IsString() || !info[5].IsNumber() || !info[6].IsString() ||
+      !info[7].IsNumber()) {
     Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, procedure: string, realm: "
-                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number, ucanToken: string)")
+                               "Uint8Array|undefined, payloadJson: string, timeoutMs: number, ucanToken: string, bytesMode: number)")
         .ThrowAsJavaScriptException();
     return env.Undefined();
   }
@@ -1961,11 +1986,12 @@ Napi::Value DirectDialCallWithUcan(const Napi::CallbackInfo& info) {
   std::string payloadJson = info[4].As<Napi::String>().Utf8Value();
   int64_t timeoutMs = info[5].As<Napi::Number>().Int64Value();
   std::string ucanToken = info[6].As<Napi::String>().Utf8Value();
+  int bytesMode = info[7].As<Napi::Number>().Int32Value();
 
   auto deferred = Napi::Promise::Deferred::New(env);
   auto* worker = new DirectDialCallWithUcanWorker(env, deferred, sessionHandle, identityHandle, std::move(procedure),
                                                    realmPtr != nullptr, realmBuf, std::move(payloadJson), timeoutMs,
-                                                   std::move(ucanToken));
+                                                   std::move(ucanToken), bytesMode);
   worker->Queue();
   return deferred.Promise();
 }

@@ -35,6 +35,12 @@ jobs:
       - name: Build the Go c-archive (cabi/)
         run: npm run build:go
 
+      # wirevalue.go's JSON <-> CBOR rules (the reserved {"$bytes": base64}
+      # input, the hex and tagged bytes output modes) are pinned by Go tests.
+      # vitest only reaches that layer through a live station, so they run here.
+      - name: Go tests (cabi/)
+        run: cd cabi && go test ./...
+
       - name: Install (builds the native addon via node-gyp, using the archive above)
         run: npm install
 

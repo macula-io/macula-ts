@@ -7,14 +7,31 @@
  * wire is exactly the mistake this type exists to make impossible at
  * compile time.
  *
- * Bytes have no native JSON shape either: represent them as a
- * "0x"-prefixed hex string, cabi's own convention (ported from
- * macula-cli's wirevalue package, see cabi/wirevalue.go) -- a payload
- * or reply containing raw bytes round-trips through call()/serve()
- * unchanged as long as both sides agree on that convention. */
+ * Bytes have no native JSON shape either. Going IN, write them as an
+ * object whose ONLY key is "$bytes", holding standard padded base64
+ * (RFC 4648 section 4): `{"$bytes": "AQID"}` is the three bytes 01 02 03.
+ * Any other value under that sole key is rejected, an object with more
+ * keys stays an ordinary map, and a plain string is always text, even
+ * one that looks like hex -- so the sole-key "$bytes" object is
+ * reserved. Coming OUT, bytes are a "0x"-prefixed lowercase hex string
+ * by default, or that same tagged object when the call, serve() or
+ * subscribe() asked for `bytes: "tagged"` (see BytesOutput), which lets
+ * a returned value be sent straight back. See cabi/wirevalue.go. */
 export type JsonValue = string | number | null | JsonValue[] | {
     [key: string]: JsonValue;
 };
+/** How bytes in a RESULT, an inbound CALL or an EVENT payload reach
+ * JavaScript: "hex" (the default) as a "0x"-prefixed lowercase hex
+ * string, "tagged" as `{"$bytes": "<base64>"}`, the same form a payload
+ * uses going IN. The choice is made on the Go side, per call, serve()
+ * or subscribe(), because only Go still knows which values were bytes:
+ * once rendered as hex, bytes and a text value that looks like "0x..."
+ * can no longer be told apart. */
+export type BytesOutput = "hex" | "tagged";
+/** BytesOutput as the integer cabi's bytesOutput takes. An unknown value
+ * (reachable from plain JavaScript) throws instead of silently falling
+ * back to hex. Internal to the FFI boundary. */
+export declare function bytesModeFor(bytes: BytesOutput | undefined): number;
 /** The BOLT#4 fields a failed CALL carries -- see bolt4/bolt4.go's own
  * 17-code table (UnknownNextPeer, TemporaryRelayFailure, Unauthorized,
  * ...). `retryable` is bolt4.Code.IsRetryable()'s verdict, computed

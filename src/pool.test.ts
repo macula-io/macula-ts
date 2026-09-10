@@ -171,6 +171,30 @@ describe("Pool", () => {
     }
   }, 20000);
 
+  it("call() rejects an unknown bytes option before touching any link", async () => {
+    const id = Identity.generate();
+    const pool = await Pool.connect([DOOMED_SEED], id, {});
+    try {
+      await expect(pool.call(undefined, "some.procedure", {}, { bytes: "base64" as never })).rejects.toThrow(
+        /bytes must be "hex" or "tagged"/,
+      );
+    } finally {
+      await pool.close();
+    }
+  }, 20000);
+
+  it("subscribe() rejects an unknown bytes option instead of tracking a subscription that could never start", async () => {
+    const id = Identity.generate();
+    const pool = await Pool.connect([DOOMED_SEED], id, {});
+    try {
+      await expect(pool.subscribe(undefined, "some.topic", () => {}, undefined, { bytes: "base64" as never })).rejects.toThrow(
+        /bytes must be "hex" or "tagged"/,
+      );
+    } finally {
+      await pool.close();
+    }
+  }, 20000);
+
   it("publish()/call()/subscribe() reject after close() instead of quietly minting new connections", async () => {
     const id = Identity.generate();
     const pool = await Pool.connect([DOOMED_SEED], id, {});

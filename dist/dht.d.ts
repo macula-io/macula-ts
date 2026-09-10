@@ -19,7 +19,8 @@ export declare enum DhtRecordType {
  * *inside* a cbor.Value payload, which these aren't). `payload` DID go
  * through that conversion (it's the record's own cbor.Value map) and
  * follows rpc.ts's JsonValue rules exactly like a CALL payload does --
- * no boolean, embedded bytes as "0x"-prefixed hex. Note that a
+ * no boolean, embedded bytes always as "0x"-prefixed hex (the DHT
+ * methods take no `bytes` option). Note that a
  * procedure_advertisement/content_announcement's own advertiser_node/
  * serving_station/announcer_node/mcid payload fields are themselves raw
  * bytes on the wire (CBOR byte strings) but surface here as the SAME

@@ -54,6 +54,7 @@ const addon = require("node-gyp-build")(repoRoot) as {
     realm: Uint8Array | undefined,
     payloadJson: string,
     timeoutMs: number,
+    bytesMode: number,
   ): Promise<string>;
   // UCAN (cabi/ucan.go). ucanMint/ucanDecode are pure local operations
   // (no network I/O) -- unlike every other function in this section they
@@ -82,6 +83,7 @@ const addon = require("node-gyp-build")(repoRoot) as {
     payloadJson: string,
     timeoutMs: number,
     ucanToken: string,
+    bytesMode: number,
   ): Promise<string>;
   sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
   sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
@@ -97,7 +99,7 @@ const addon = require("node-gyp-build")(repoRoot) as {
     timeoutMs: number,
   ): Promise<Handle | null>;
   pendingCallProcedure(pendingHandle: Handle): string;
-  pendingCallPayloadJson(pendingHandle: Handle): string;
+  pendingCallPayloadJson(pendingHandle: Handle, bytesMode: number): string;
   pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void>;
   pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void>;
   // DHT records (cabi/dht.go). All five are real network I/O (a signed
@@ -165,6 +167,7 @@ const addon = require("node-gyp-build")(repoRoot) as {
         | { kind: "event"; topic: string; publisher: Uint8Array; seq: number; payloadJson: string }
         | { kind: "closed"; error: string },
     ) => void,
+    bytesMode: number,
   ): Promise<bigint>;
   sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
   // Content transfer (cabi/content.go). Each opens its OWN dedicated
@@ -198,6 +201,7 @@ const addon = require("node-gyp-build")(repoRoot) as {
     realm: Uint8Array | undefined,
     payloadJson: string,
     timeoutMs: number,
+    bytesMode: number,
   ): Promise<string>;
   directdialCallWithUcan(
     sessionHandle: Handle,
@@ -207,6 +211,7 @@ const addon = require("node-gyp-build")(repoRoot) as {
     payloadJson: string,
     timeoutMs: number,
     ucanToken: string,
+    bytesMode: number,
   ): Promise<string>;
   directdialAdvertise(
     sessionHandle: Handle,
@@ -264,8 +269,9 @@ export const native = {
     realm: Uint8Array | undefined,
     payloadJson: string,
     timeoutMs: number,
+    bytesMode: number,
   ): Promise<string> {
-    return addon.sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
+    return addon.sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode);
   },
   ucanMint(
     identityHandle: Handle,
@@ -291,8 +297,9 @@ export const native = {
     payloadJson: string,
     timeoutMs: number,
     ucanToken: string,
+    bytesMode: number,
   ): Promise<string> {
-    return addon.sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken);
+    return addon.sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken, bytesMode);
   },
   sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void> {
     return addon.sessionAdvertise(sessionHandle, identityHandle, realm, procedure);
@@ -312,8 +319,8 @@ export const native = {
   pendingCallProcedure(pendingHandle: Handle): string {
     return addon.pendingCallProcedure(pendingHandle);
   },
-  pendingCallPayloadJson(pendingHandle: Handle): string {
-    return addon.pendingCallPayloadJson(pendingHandle);
+  pendingCallPayloadJson(pendingHandle: Handle, bytesMode: number): string {
+    return addon.pendingCallPayloadJson(pendingHandle, bytesMode);
   },
   pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void> {
     return addon.pendingCallReplyResult(pendingHandle, resultJson);
@@ -369,8 +376,9 @@ export const native = {
         | { kind: "event"; topic: string; publisher: Uint8Array; seq: number; payloadJson: string }
         | { kind: "closed"; error: string },
     ) => void,
+    bytesMode: number,
   ): Promise<bigint> {
-    return addon.sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent);
+    return addon.sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent, bytesMode);
   },
   sessionSubscribeStop(subscriptionHandle: Handle): Promise<void> {
     return addon.sessionSubscribeStop(subscriptionHandle);
@@ -391,8 +399,9 @@ export const native = {
     realm: Uint8Array | undefined,
     payloadJson: string,
     timeoutMs: number,
+    bytesMode: number,
   ): Promise<string> {
-    return addon.directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
+    return addon.directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode);
   },
   directdialCallWithUcan(
     sessionHandle: Handle,
@@ -402,8 +411,9 @@ export const native = {
     payloadJson: string,
     timeoutMs: number,
     ucanToken: string,
+    bytesMode: number,
   ): Promise<string> {
-    return addon.directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken);
+    return addon.directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken, bytesMode);
   },
   directdialAdvertise(
     sessionHandle: Handle,

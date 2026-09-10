@@ -182,8 +182,8 @@ func subscriptionFromHandle(h C.uintptr_t) (sub *subscription, ok bool) {
 // implementation (OnMaculaEvent, addon/binding.cc) does nothing blocking,
 // it just queues a NonBlockingCall and returns, so this does not stall
 // event delivery waiting for JS to actually process anything.
-func deliverEvent(evt frame.EventInfo, cb C.macula_event_callback, userData unsafe.Pointer) {
-	payloadJSON, err := json.Marshal(cborToJSON(evt.Payload))
+func deliverEvent(evt frame.EventInfo, cb C.macula_event_callback, userData unsafe.Pointer, mode bytesOutput) {
+	payloadJSON, err := json.Marshal(cborToJSON(evt.Payload, mode))
 	if err != nil {
 		// A payload this SDK's own JSON conversion can't represent -- drop
 		// this one event rather than killing the whole subscription over
@@ -262,8 +262,14 @@ func macula_session_subscribe_start(
 	cb C.macula_event_callback,
 	closedCb C.macula_subscription_closed_callback,
 	userData unsafe.Pointer,
+	bytesMode C.int,
 	errOut **C.char,
 ) C.uintptr_t {
+	mode, err := parseBytesOutput(int(bytesMode))
+	if err != nil {
+		setErr(errOut, err)
+		return 0
+	}
 	session, ok := sessionFromHandle(sessionHandle)
 	if !ok {
 		setErr(errOut, errInvalidSessionHandle)
@@ -286,7 +292,7 @@ func macula_session_subscribe_start(
 
 	go func() {
 		err := session.RunSubscriber(ctx, spec, id, func(evt frame.EventInfo) error {
-			deliverEvent(evt, cb, userData)
+			deliverEvent(evt, cb, userData, mode)
 			return nil
 		})
 		// A clean, caller-requested stop is context.Canceled -- the

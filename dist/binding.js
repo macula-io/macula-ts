@@ -54,8 +54,8 @@ export const native = {
     sessionClose(handle, identityHandle, reason) {
         return addon.sessionClose(handle, identityHandle, reason);
     },
-    sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs) {
-        return addon.sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
+    sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode) {
+        return addon.sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode);
     },
     ucanMint(identityHandle, issuer, audience, capabilitiesJson, expiresAt, notBefore, nonce, factsJson, proofsJson) {
         return addon.ucanMint(identityHandle, issuer, audience, capabilitiesJson, expiresAt, notBefore, nonce, factsJson, proofsJson);
@@ -63,8 +63,8 @@ export const native = {
     ucanDecode(token) {
         return addon.ucanDecode(token);
     },
-    sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken) {
-        return addon.sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken);
+    sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken, bytesMode) {
+        return addon.sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken, bytesMode);
     },
     sessionAdvertise(sessionHandle, identityHandle, realm, procedure) {
         return addon.sessionAdvertise(sessionHandle, identityHandle, realm, procedure);
@@ -78,8 +78,8 @@ export const native = {
     pendingCallProcedure(pendingHandle) {
         return addon.pendingCallProcedure(pendingHandle);
     },
-    pendingCallPayloadJson(pendingHandle) {
-        return addon.pendingCallPayloadJson(pendingHandle);
+    pendingCallPayloadJson(pendingHandle, bytesMode) {
+        return addon.pendingCallPayloadJson(pendingHandle, bytesMode);
     },
     pendingCallReplyResult(pendingHandle, resultJson) {
         return addon.pendingCallReplyResult(pendingHandle, resultJson);
@@ -105,8 +105,8 @@ export const native = {
     sessionPublish(sessionHandle, identityHandle, realm, topic, payloadJson, ttlMs) {
         return addon.sessionPublish(sessionHandle, identityHandle, realm, topic, payloadJson, ttlMs);
     },
-    sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent) {
-        return addon.sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent);
+    sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent, bytesMode) {
+        return addon.sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent, bytesMode);
     },
     sessionSubscribeStop(subscriptionHandle) {
         return addon.sessionSubscribeStop(subscriptionHandle);
@@ -120,11 +120,11 @@ export const native = {
     directdialResolve(sessionHandle, identityHandle, realm, procedure) {
         return addon.directdialResolve(sessionHandle, identityHandle, realm, procedure);
     },
-    directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs) {
-        return addon.directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs);
+    directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode) {
+        return addon.directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode);
     },
-    directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken) {
-        return addon.directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken);
+    directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken, bytesMode) {
+        return addon.directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken, bytesMode);
     },
     directdialAdvertise(sessionHandle, identityHandle, realm, procedure, ttlMs) {
         return addon.directdialAdvertise(sessionHandle, identityHandle, realm, procedure, ttlMs);

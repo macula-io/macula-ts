@@ -87,6 +87,35 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", ()
   );
 
   it(
+    'subscribe() with bytes: "tagged" delivers a published {"$bytes": base64} value as that same tagged object',
+    async () => {
+      const id = Identity.generate();
+      let session: Session | undefined;
+      let stopSubscription: (() => Promise<void>) | undefined;
+
+      try {
+        session = await Session.connect(STATION_HOST, STATION_PORT, id);
+        const topic = uniqueTopic("bytes");
+
+        const first = nextEvent(10_000);
+        stopSubscription = await session.subscribe(topic, first.onEvent, { bytes: "tagged" });
+
+        // "AQID" also appears as plain text, which must stay text.
+        const payload = { id: { $bytes: "AQID" }, text: "AQID" };
+        await session.publish(topic, payload);
+
+        const evt = await first.promise;
+        expect(evt.payload).toEqual(payload);
+      } finally {
+        if (stopSubscription) await stopSubscription();
+        if (session) await session.close(id, "pubsub.live.test.ts done (bytes)");
+        id.dispose();
+      }
+    },
+    30000,
+  );
+
+  it(
     "subscribe() while serve() is active on the same Session throws, and vice versa -- both read the shared control stream",
     async () => {
       const id = Identity.generate();

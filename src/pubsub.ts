@@ -5,7 +5,7 @@
 // serve()/the DHT methods' own shape -- this file holds the shapes that
 // side needs, the same split rpc.ts/dht.ts already have.
 
-import type { JsonValue } from "./rpc.js";
+import type { BytesOutput, JsonValue } from "./rpc.js";
 
 /** Options for Session.publish(). */
 export interface PublishOptions {
@@ -32,6 +32,9 @@ export interface SubscribeOptions {
    * all-zero realm. Must match the realm a publisher actually used, or
    * nothing published under a different realm is ever delivered here. */
   realm?: string;
+  /** How bytes in each event's payload reach the handler: "hex" (the
+   * default) or "tagged" -- see rpc.ts's BytesOutput. */
+  bytes?: BytesOutput;
   /** Called at most once, only if this subscription's background
    * reader exits on its own -- the underlying session/connection died,
    * or some other transport error ended the read loop -- rather than
@@ -53,7 +56,9 @@ export interface SubscribeOptions {
  * `DeliveredVia` (a routing/telemetry detail, not part of this SDK's
  * scope yet). `payload`
  * follows rpc.ts's JsonValue rules exactly like a CALL payload does --
- * no boolean, embedded bytes as "0x"-prefixed hex (see cabi/wirevalue.go).
+ * no boolean, embedded bytes as "0x"-prefixed hex by default or as
+ * `{"$bytes": base64}` when subscribe() asked for `bytes: "tagged"`
+ * (see cabi/wirevalue.go).
  * `publisher` is the raw 32-byte Ed25519 public key of whoever published
  * this event -- NOT verified against the frame's own signature by this
  * SDK, matching findRecord/findRecords/findRecordsByType's identical

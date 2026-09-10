@@ -167,8 +167,9 @@ return an error, on a handle this process never issued or already freed.
 **RPC payloads cross this boundary as JSON text**, not another handle —
 `cabi/wirevalue.go` converts to/from macula-go's `cbor.Value`, ported from
 [macula-cli](https://github.com/macula-io/macula-cli)'s
-`internal/wirevalue` package (already proven against the same no-bool,
-bytes-as-hex-string rules) rather than reinvented. `Session.serve()`
+`internal/wirevalue` package (already proven against the same no-bool
+rule) rather than reinvented, plus a reserved `{"$bytes": base64}` object
+for bytes (see the RPC caller role below). `Session.serve()`
 cannot hand a Go closure across the FFI boundary the way `ServeOneCall`
 expects, since the actual answer has to come from arbitrary, possibly-
 async TypeScript — so `cabi/serve.go` splits that one blocking Go call
@@ -200,15 +201,22 @@ fixed) is in [CHANGELOG.md](CHANGELOG.md).
   a signed CALL and waits for the matching RESULT/ERROR.
   `payload`/the return value are `JsonValue` (string/number/null/array/
   object — **no boolean**, since macula's wire CBOR has no bool type;
-  encode `true`/`false` as `1`/`0` yourself). A BOLT#4 ERROR frame (e.g.
+  encode `true`/`false` as `1`/`0` yourself). **Bytes** go in as an
+  object whose only key is `$bytes`, holding standard padded base64:
+  `{"$bytes": "AQID"}` is the bytes `01 02 03`. Any other value under
+  that sole key is an error, an object with more keys stays a map, and a
+  plain string is always text. Bytes come back as `"0x"`-prefixed hex by
+  default; `opts.bytes: "tagged"` returns them in the same `$bytes` form,
+  so a returned id can be passed straight back. A BOLT#4 ERROR frame (e.g.
   `unknown_next_peer`) rejects with a `MaculaCallError` carrying the
   numeric `code`, `bolt4Name`, `retryable`, and `detail`. `opts.realm` (a
   64-character hex string) scopes the call to a realm other than the
   all-zero default; `callWithUcan()`/`publish()`/`subscribe()` take the
   identical option.
-- **RPC, provider role** — `session.serve(procedure, handler)` advertises
+- **RPC, provider role** — `session.serve(procedure, handler, opts?)` advertises
   `procedure` and answers inbound CALLs against it forever, invoking
-  `handler(payload)` for each (sync or async). Resolves with an async
+  `handler(payload)` for each (sync or async; `opts.bytes` as for
+  `call()`). Resolves with an async
   `stop()` that unadvertises and waits for the current poll tick to
   finish. Only one `serve()` per `Session` at a time, and `call()`/
   `serve()` refuse to run concurrently on the same `Session` — both read
@@ -225,7 +233,8 @@ fixed) is in [CHANGELOG.md](CHANGELOG.md).
   content_announcement payload carries raw pubkey/MCID fields that must
   be actual CBOR byte strings, which only the typed builders guarantee.
 - **Pubsub** — `session.publish(topic, payload, opts?)` (fire-and-forget,
-  no ack on the wire) and `session.subscribe(topic, handler, opts?)`.
+  no ack on the wire) and `session.subscribe(topic, handler, opts?)`
+  (`opts.bytes` as for `call()`).
   `subscribe()` resolves with an async `stop()` that sends UNSUBSCRIBE
   and does not resolve until the underlying reader goroutine has
   genuinely exited. Only one `subscribe()` (and no active `serve()`) per
@@ -285,7 +294,7 @@ fixed) is in [CHANGELOG.md](CHANGELOG.md).
   dial-one-then-fallback-on-failure), each independently monitored and
   respawned with backoff on disconnect; `publish()`/`call()` fan out
   over live links, `subscribe()` re-establishes automatically on
-  reconnect. Ports `macula/src/client/macula_client.erl`'s pool design;
+  reconnect; `call()` and `subscribe()` take the same `bytes` option. Ports `macula/src/client/macula_client.erl`'s pool design;
   see `pool.ts`'s own module doc for why it's a set of role-scoped
   `Session`s per seed rather than one, given the single-reader
   constraint below.

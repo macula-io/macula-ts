@@ -1,6 +1,6 @@
 import { Identity } from "./identity.js";
 import type { PubsubEvent } from "./pubsub.js";
-import { type JsonValue } from "./rpc.js";
+import { type BytesOutput, type JsonValue } from "./rpc.js";
 /** One configured connection target. */
 export interface Seed {
     host: string;
@@ -87,7 +87,8 @@ export declare class Pool {
      * until one succeeds or all have been tried. Throws
      * NoHealthyStationError if zero links are live.
      *
-     * `realm`/`payload` are validated before any link is touched, for the
+     * `realm`/`payload`/`opts.bytes` are validated before any link is
+     * touched, for the
      * same reason as publish() -- a malformed realm is a caller bug, not
      * evidence of a dead connection, and must never be attributed to one.
      *
@@ -114,6 +115,7 @@ export declare class Pool {
      * reconnect, in case a concurrent operation already superseded it. */
     call(realm: string | undefined, procedure: string, payload: JsonValue, opts?: {
         deadlineMs?: number;
+        bytes?: BytesOutput;
     }): Promise<JsonValue>;
     /** Subscribes `handler` to `(realm, topic)`: opens one subscribe-only
      * session against every configured seed, replayed automatically on
@@ -122,8 +124,12 @@ export declare class Pool {
      * pool's own instead (e.g. for a stable, caller-controlled identity
      * across restarts, matching macula-mcp's own observeRoomIdentityPath
      * pattern) -- the pool never disposes an identity it didn't mint.
+     * `opts.bytes` picks how bytes in each event's payload reach `handler`
+     * (rpc.ts's BytesOutput), on every seed and after every respawn.
      * Returns an unsubscribe function. */
-    subscribe(realm: string | undefined, topic: string, handler: (evt: PubsubEvent) => void, identity?: Identity): Promise<() => Promise<void>>;
+    subscribe(realm: string | undefined, topic: string, handler: (evt: PubsubEvent) => void, identity?: Identity, opts?: {
+        bytes?: BytesOutput;
+    }): Promise<() => Promise<void>>;
     /** Live/backing-off CONTROL link counts (publish/call reachability).
      * Every configured seed is exactly one or the other. Per-topic
      * subscription link health is not reflected here -- inspect a

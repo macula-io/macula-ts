@@ -2,7 +2,7 @@ import { DhtRecordType, type DhtRecord } from "./dht.js";
 import type { AdvertiseDirectOptions, DirectDialTarget } from "./directdial.js";
 import { Identity } from "./identity.js";
 import type { PublishOptions, PubsubEvent, SubscribeOptions } from "./pubsub.js";
-import { type JsonValue } from "./rpc.js";
+import { type BytesOutput, type JsonValue } from "./rpc.js";
 import { Ucan } from "./ucan.js";
 /** Options for Session.call()/callWithUcan(). */
 export interface CallOptions {
@@ -30,6 +30,15 @@ export interface CallOptions {
      * yet implemented"); calling with a non-zero realm only reaches a
      * provider serving under that same realm through some other means. */
     realm?: string;
+    /** How bytes in the RESULT payload come back: "hex" (the default) or
+     * "tagged" -- see rpc.ts's BytesOutput. */
+    bytes?: BytesOutput;
+}
+/** Options for Session.serve(). */
+export interface ServeOptions {
+    /** How bytes in each inbound CALL's payload reach the handler: "hex"
+     * (the default) or "tagged" -- see rpc.ts's BytesOutput. */
+    bytes?: BytesOutput;
 }
 /** Decodes CallOptions.realm/PublishOptions.realm/SubscribeOptions.realm's
  * public hex-string convention into the 32-byte Uint8Array native.*
@@ -95,7 +104,8 @@ export declare class Session {
      * matching RESULT or ERROR (macula-go's connection.Session.Call).
      * `payload` is JSON, converted to a cbor.Value on the Go side
      * (cabi/wirevalue.go) -- see rpc.ts's JsonValue for the wire's own
-     * restrictions (no booleans, bytes as hex strings).
+     * restrictions (no booleans; bytes go in as `{"$bytes": base64}` and
+     * come back as `opts.bytes` asks, hex by default).
      *
      * Resolves with the RESULT's payload on success. Rejects with a
      * MaculaCallError (rpc.ts) when a real BOLT#4 ERROR frame came back
@@ -162,13 +172,18 @@ export declare class Session {
      * Session for a second procedure instead of trying to serve two
      * procedures off one.
      *
+     * `opts.bytes` picks how bytes in each inbound CALL's payload reach
+     * `handler`: "hex" (the default) or "tagged" (rpc.ts's BytesOutput).
+     * A reply follows the same JsonValue rules as any payload, so a
+     * tagged value can be returned as it arrived.
+     *
      * The returned stop function is async: it unadvertises the
      * procedure (a real network write) and waits for the current poll
      * tick to finish (up to rpc.ts's SERVE_POLL_MS) before resolving --
      * there is no way to interrupt a Go-side wait already in flight, the
      * same bounded-latency shape macula-go's own ServeForever has
      * internally. */
-    serve(procedure: string, handler: (payload: JsonValue) => JsonValue | Promise<JsonValue>): Promise<() => Promise<void>>;
+    serve(procedure: string, handler: (payload: JsonValue) => JsonValue | Promise<JsonValue>, opts?: ServeOptions): Promise<() => Promise<void>>;
     /** DHT: returns every record of `recordType` currently visible from
      * the station this Session is connected to (macula-go's
      * dht.FindRecordsByType, via a signed CALL to `_dht.find_records_by_type`
@@ -228,7 +243,9 @@ export declare class Session {
      * serving_station) are raw 32-byte pubkeys that must be actual CBOR
      * byte strings for a real resolver to read, and this SDK's generic
      * JSON<->cbor.Value conversion (rpc.ts's JsonValue, wirevalue.go) has
-     * no way to produce those going IN -- only OUT, as "0x"-prefixed hex
+     * no way to guarantee that on its own: it produces them only when
+     * every caller tags both as `{"$bytes": base64}`, and a plain string
+     * silently becomes CBOR text. Typed arguments rule that mistake out
      * (see DhtRecord's own doc). `ttlMs` defaults to DHT_DEFAULT_TTL_MS
      * (48h). Resolves with the signed record actually stored. Same I/O
      * and exclusivity notes as findRecordsByType(). */
@@ -348,7 +365,7 @@ export declare class Session {
      * publisher_sig a relayed EVENT needs to survive beyond one hop --
      * see that method's own doc, not reimplemented here). `payload`
      * follows the same JsonValue rules as call()'s payload (no boolean,
-     * embedded bytes as "0x"-prefixed hex). Fire-and-forget: Publish's
+     * embedded bytes as `{"$bytes": base64}`). Fire-and-forget: Publish's
      * own doc is explicit that no reply is expected on the wire, so the
      * returned Promise resolving only means this Session's own frame was
      * encoded, signed, and sent -- never that any subscriber received it
@@ -408,6 +425,9 @@ export declare class Session {
      * listens on -- omitted means the all-zero realm, this SDK's sole
      * default before this option existed. Only an EVENT published under
      * the SAME realm is ever delivered to `handler`.
+     *
+     * `opts.bytes` picks how bytes in each event's payload reach
+     * `handler`: "hex" (the default) or "tagged" (rpc.ts's BytesOutput).
      *
      * If the underlying connection dies (or any other transport error
      * ends the background reader) rather than the returned stop() being

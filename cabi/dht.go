@@ -61,7 +61,7 @@ func dhtRecordToJSON(r dht.Record) dhtRecordJSON {
 		Version:   hex.EncodeToString(r.Version),
 		CreatedAt: r.CreatedAt,
 		ExpiresAt: r.ExpiresAt,
-		Payload:   cborToJSON(r.Payload),
+		Payload:   cborToJSON(r.Payload, bytesHex),
 		Signature: hex.EncodeToString(r.Signature),
 	}
 }
@@ -239,12 +239,11 @@ func signAndPutRecord(session *connection.Session, id identity.KeyPair, rec dht.
 // record type's three payload fields (advertiser_node, serving_station)
 // are raw 32-byte pubkeys that must round-trip as CBOR BYTE strings
 // (major type 2) for a real resolver's bytesField() reads to succeed --
-// and wirevalue.go's jsonToCbor, by its own doc, has no path that
-// produces cbor.Bytes going IN (only cborToJSON produces the
-// "0x"-prefixed hex convention going OUT). A generic JSON-payload path
-// here would silently write those fields as CBOR TEXT strings instead,
-// producing a record that stores and signs successfully but that no
-// real reader could parse. ttlMs<=0 means "use dht.DefaultTTL" (48h) --
+// and a generic JSON-payload path would get them right only if every
+// caller tagged both as {"$bytes": base64} (wirevalue.go). One that sent
+// plain strings would silently write CBOR TEXT instead, producing a
+// record that stores and signs successfully but that no real reader
+// could parse. Typed arguments rule that mistake out. ttlMs<=0 means "use dht.DefaultTTL" (48h) --
 // NewProcedureAdvertisement's own ttl<=0 handling, not duplicated here.
 //
 // Real network I/O (dht.PutRecord is a signed CALL under the hood) --

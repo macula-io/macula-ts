@@ -45,7 +45,7 @@ type callEnvelopeError struct {
 	Detail    *string `json:"detail"`
 }
 
-func callResponseToEnvelope(resp frame.CallResponse) callEnvelope {
+func callResponseToEnvelope(resp frame.CallResponse, mode bytesOutput) callEnvelope {
 	if resp.IsError {
 		return callEnvelope{OK: false, Bolt4: &callEnvelopeError{
 			Code: resp.Code,
@@ -58,7 +58,7 @@ func callResponseToEnvelope(resp frame.CallResponse) callEnvelope {
 			Detail:    resp.Detail,
 		}}
 	}
-	return callEnvelope{OK: true, Payload: cborToJSON(resp.Payload)}
+	return callEnvelope{OK: true, Payload: cborToJSON(resp.Payload, mode)}
 }
 
 // macula_session_call sends a signed CALL for procedure and waits for
@@ -68,6 +68,8 @@ func callResponseToEnvelope(resp frame.CallResponse) callEnvelope {
 // examples/quickstart/main.go, which derives both from one duration).
 //
 // realm32 nil means the all-zero realm (realm32OrZero, main.go).
+// bytesMode picks how bytes in the reply render: 0 = "0x" hex, 1 =
+// {"$bytes": base64} (wirevalue.go's bytesOutput).
 // payloadJSON is converted to a cbor.Value via jsonToCbor
 // (wirevalue.go); a malformed payload (e.g. containing a JSON boolean,
 // which has no CBOR representation on this wire) is a *errOut failure,
@@ -95,8 +97,14 @@ func macula_session_call(
 	realm32 *C.uchar,
 	payloadJSON *C.char,
 	timeoutMs C.int64_t,
+	bytesMode C.int,
 	errOut **C.char,
 ) *C.char {
+	mode, err := parseBytesOutput(int(bytesMode))
+	if err != nil {
+		setErr(errOut, err)
+		return nil
+	}
 	session, ok := sessionFromHandle(sessionHandle)
 	if !ok {
 		setErr(errOut, errInvalidSessionHandle)
@@ -127,7 +135,7 @@ func macula_session_call(
 		return nil
 	}
 
-	envelopeJSON, err := json.Marshal(callResponseToEnvelope(resp))
+	envelopeJSON, err := json.Marshal(callResponseToEnvelope(resp, mode))
 	if err != nil {
 		// Only reachable if the payload contains a non-finite float
 		// (NaN/+-Inf) -- encoding/json refuses to marshal those, and

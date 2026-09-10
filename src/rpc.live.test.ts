@@ -43,18 +43,12 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
           return { echoed: payload, handled_by: "macula-ts-live-test-provider" };
         });
 
-        // The caller role: a real payload exercising every JsonValue
-        // shape this SDK's wire encoding supports going IN -- text, an
-        // integer, a float, null, and a nested list/map. (Bytes are
-        // one-directional in this encoding: cabi/wirevalue.go's
-        // cborToJSON renders a cbor.Value of KindBytes as a
-        // "0x"-prefixed hex string coming OUT, but jsonToCbor never
-        // turns such a string back into KindBytes going IN -- a plain
-        // JSON string always becomes cbor.Text, matching macula-cli's
-        // own wirevalue package this was ported from. The
-        // "0xdeadbeef"-shaped field below is therefore just text that
-        // happens to look hex-like, round-tripped as text -- not a
-        // test of byte encoding.)
+        // The caller role: a real payload exercising the JsonValue
+        // shapes other than bytes going IN -- text, an integer, a float,
+        // null, and a nested list/map. (Bytes have their own test below.
+        // A plain JSON string always becomes cbor.Text, so the
+        // "0xdeadbeef"-shaped field is text that happens to look
+        // hex-like, round-tripped as text -- not a test of byte encoding.)
         const payload: JsonValue = {
           text: "hello from macula-ts",
           integer: 42,
@@ -78,6 +72,72 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
       }
     },
     35000,
+  );
+
+  it(
+    'bytes: {"$bytes": base64} goes IN as CBOR bytes and comes back OUT as hex by default, or tagged on request, on both the caller and the provider side',
+    async () => {
+      const providerId = Identity.generate();
+      const callerId = Identity.generate();
+      let providerSession: Session | undefined;
+      let callerSession: Session | undefined;
+      let stopServing: (() => Promise<void>) | undefined;
+
+      try {
+        [providerSession, callerSession] = await Promise.all([
+          Session.connect(STATION_HOST, STATION_PORT, providerId),
+          Session.connect(STATION_HOST, STATION_PORT, callerId),
+        ]);
+
+        const procedure = uniqueProcedure("bytes_echo");
+
+        // The provider asks for tagged bytes, so its handler sees exactly
+        // what the caller sent, and returning that unchanged sends the
+        // bytes back AS bytes: the "pass a returned id straight back"
+        // property the tagged form exists for.
+        const seenByProvider: JsonValue[] = [];
+        stopServing = await providerSession.serve(
+          procedure,
+          (payload: JsonValue) => {
+            seenByProvider.push(payload);
+            return payload;
+          },
+          { bytes: "tagged" },
+        );
+
+        // "AQID" also appears as plain text, which must stay text both ways.
+        const payload: JsonValue = { id: { $bytes: "AQID" }, list: [{ $bytes: "" }], text: "AQID" };
+
+        // A station can still answer unknown_next_peer for a moment after
+        // serve()'s advertise resolves (seen once while the live files ran
+        // in parallel), so the first call gets a short bounded retry, like
+        // directdial.live.test.ts's propagation-lag window. Only that
+        // routing answer is retried; anything else fails the test at once.
+        let tagged: JsonValue | undefined;
+        for (let attempt = 1; tagged === undefined; attempt++) {
+          try {
+            tagged = await callerSession.call(procedure, payload, { deadlineMs: 15000, bytes: "tagged" });
+          } catch (err) {
+            if (!(err instanceof MaculaCallError) || err.bolt4Name !== "unknown_next_peer" || attempt >= 20) throw err;
+            await new Promise((r) => setTimeout(r, 250));
+          }
+        }
+        expect(seenByProvider[0]).toEqual(payload);
+        expect(tagged).toEqual(payload);
+
+        // Same call, default output: the reply's bytes arrive as hex, which
+        // also proves the provider's tagged reply went back as real bytes.
+        const hex = await callerSession.call(procedure, payload, { deadlineMs: 15000 });
+        expect(hex).toEqual({ id: "0x010203", list: ["0x"], text: "AQID" });
+      } finally {
+        if (stopServing) await stopServing();
+        if (callerSession) await callerSession.close(callerId, "rpc.live.test.ts done (caller)");
+        if (providerSession) await providerSession.close(providerId, "rpc.live.test.ts done (provider)");
+        providerId.dispose();
+        callerId.dispose();
+      }
+    },
+    50000,
   );
 
   it(

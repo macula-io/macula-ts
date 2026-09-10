@@ -13,7 +13,7 @@
 import { native } from "./binding.js";
 import { ContentNotFoundError } from "./content.js";
 import { DHT_DEFAULT_TTL_MS } from "./dht.js";
-import { DEFAULT_CALL_TIMEOUT_MS, MaculaCallError, SERVE_POLL_MS } from "./rpc.js";
+import { bytesModeFor, DEFAULT_CALL_TIMEOUT_MS, MaculaCallError, SERVE_POLL_MS, } from "./rpc.js";
 const REALM_HEX_PATTERN = /^[0-9a-fA-F]{64}$/;
 /** Decodes CallOptions.realm/PublishOptions.realm/SubscribeOptions.realm's
  * public hex-string convention into the 32-byte Uint8Array native.*
@@ -197,7 +197,8 @@ export class Session {
      * matching RESULT or ERROR (macula-go's connection.Session.Call).
      * `payload` is JSON, converted to a cbor.Value on the Go side
      * (cabi/wirevalue.go) -- see rpc.ts's JsonValue for the wire's own
-     * restrictions (no booleans, bytes as hex strings).
+     * restrictions (no booleans; bytes go in as `{"$bytes": base64}` and
+     * come back as `opts.bytes` asks, hex by default).
      *
      * Resolves with the RESULT's payload on success. Rejects with a
      * MaculaCallError (rpc.ts) when a real BOLT#4 ERROR frame came back
@@ -221,7 +222,8 @@ export class Session {
         const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
         const payloadJson = JSON.stringify(payload ?? null);
         const realm = realmBytesFromHex(opts.realm);
-        const envelopeJson = await this.#enqueue(() => native.sessionCall(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs));
+        const bytesMode = bytesModeFor(opts.bytes);
+        const envelopeJson = await this.#enqueue(() => native.sessionCall(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs, bytesMode));
         const envelope = JSON.parse(envelopeJson);
         if (envelope.ok)
             return envelope.payload;
@@ -261,7 +263,8 @@ export class Session {
         const payloadJson = JSON.stringify(payload ?? null);
         const realm = realmBytesFromHex(opts.realm);
         const token = typeof ucanToken === "string" ? ucanToken : ucanToken.token;
-        const envelopeJson = await this.#enqueue(() => native.sessionCallWithUcan(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs, token));
+        const bytesMode = bytesModeFor(opts.bytes);
+        const envelopeJson = await this.#enqueue(() => native.sessionCallWithUcan(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs, token, bytesMode));
         const envelope = JSON.parse(envelopeJson);
         if (envelope.ok)
             return envelope.payload;
@@ -285,13 +288,19 @@ export class Session {
      * Session for a second procedure instead of trying to serve two
      * procedures off one.
      *
+     * `opts.bytes` picks how bytes in each inbound CALL's payload reach
+     * `handler`: "hex" (the default) or "tagged" (rpc.ts's BytesOutput).
+     * A reply follows the same JsonValue rules as any payload, so a
+     * tagged value can be returned as it arrived.
+     *
      * The returned stop function is async: it unadvertises the
      * procedure (a real network write) and waits for the current poll
      * tick to finish (up to rpc.ts's SERVE_POLL_MS) before resolving --
      * there is no way to interrupt a Go-side wait already in flight, the
      * same bounded-latency shape macula-go's own ServeForever has
      * internally. */
-    async serve(procedure, handler) {
+    async serve(procedure, handler, opts = {}) {
+        const bytesMode = bytesModeFor(opts.bytes);
         if (this.#activeServe !== null) {
             throw new Error(`macula-ts: Session is already serving "${this.#activeServe.procedure}" -- macula-go's ServeOneCall reads ` +
                 `one frame at a time off the shared control stream, so a second concurrent serve() (or a serve() ` +
@@ -340,7 +349,7 @@ export class Session {
                 }
                 if (pendingHandle === null)
                     continue; // nothing arrived this tick -- poll again
-                const payload = JSON.parse(native.pendingCallPayloadJson(pendingHandle));
+                const payload = JSON.parse(native.pendingCallPayloadJson(pendingHandle, bytesMode));
                 try {
                     const reply = await handler(payload);
                     await native.pendingCallReplyResult(pendingHandle, JSON.stringify(reply ?? null));
@@ -440,7 +449,9 @@ export class Session {
      * serving_station) are raw 32-byte pubkeys that must be actual CBOR
      * byte strings for a real resolver to read, and this SDK's generic
      * JSON<->cbor.Value conversion (rpc.ts's JsonValue, wirevalue.go) has
-     * no way to produce those going IN -- only OUT, as "0x"-prefixed hex
+     * no way to guarantee that on its own: it produces them only when
+     * every caller tags both as `{"$bytes": base64}`, and a plain string
+     * silently becomes CBOR text. Typed arguments rule that mistake out
      * (see DhtRecord's own doc). `ttlMs` defaults to DHT_DEFAULT_TTL_MS
      * (48h). Resolves with the signed record actually stored. Same I/O
      * and exclusivity notes as findRecordsByType(). */
@@ -524,7 +535,8 @@ export class Session {
         const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
         const payloadJson = JSON.stringify(payload ?? null);
         const realm = realmBytesFromHex(opts.realm);
-        const envelopeJson = await this.#enqueue(() => native.directdialCall(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs));
+        const bytesMode = bytesModeFor(opts.bytes);
+        const envelopeJson = await this.#enqueue(() => native.directdialCall(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs, bytesMode));
         const envelope = JSON.parse(envelopeJson);
         if (envelope.ok)
             return envelope.payload;
@@ -548,7 +560,8 @@ export class Session {
         const payloadJson = JSON.stringify(payload ?? null);
         const realm = realmBytesFromHex(opts.realm);
         const token = typeof ucanToken === "string" ? ucanToken : ucanToken.token;
-        const envelopeJson = await this.#enqueue(() => native.directdialCallWithUcan(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs, token));
+        const bytesMode = bytesModeFor(opts.bytes);
+        const envelopeJson = await this.#enqueue(() => native.directdialCallWithUcan(handle, this.#identity.handleForFfi(), procedure, realm, payloadJson, timeoutMs, token, bytesMode));
         const envelope = JSON.parse(envelopeJson);
         if (envelope.ok)
             return envelope.payload;
@@ -599,7 +612,7 @@ export class Session {
      * publisher_sig a relayed EVENT needs to survive beyond one hop --
      * see that method's own doc, not reimplemented here). `payload`
      * follows the same JsonValue rules as call()'s payload (no boolean,
-     * embedded bytes as "0x"-prefixed hex). Fire-and-forget: Publish's
+     * embedded bytes as `{"$bytes": base64}`). Fire-and-forget: Publish's
      * own doc is explicit that no reply is expected on the wire, so the
      * returned Promise resolving only means this Session's own frame was
      * encoded, signed, and sent -- never that any subscriber received it
@@ -665,6 +678,9 @@ export class Session {
      * default before this option existed. Only an EVENT published under
      * the SAME realm is ever delivered to `handler`.
      *
+     * `opts.bytes` picks how bytes in each event's payload reach
+     * `handler`: "hex" (the default) or "tagged" (rpc.ts's BytesOutput).
+     *
      * If the underlying connection dies (or any other transport error
      * ends the background reader) rather than the returned stop() being
      * called, this subscription tears itself down automatically -- the
@@ -687,6 +703,7 @@ export class Session {
         const handle = this.#requireHandle();
         const identityHandle = this.#identity.handleForFfi();
         const realm = realmBytesFromHex(opts.realm);
+        const bytesMode = bytesModeFor(opts.bytes);
         // Marked BEFORE the subscribe-start await below, not after -- same
         // race-window fix as serve()'s own placeholder above, and for the
         // identical reason (this repo's own live testing found the same
@@ -736,7 +753,7 @@ export class Session {
                     return;
                 }
                 handler({ payload: JSON.parse(msg.payloadJson), publisher: msg.publisher, seq: msg.seq });
-            }));
+            }, bytesMode));
         }
         catch (err) {
             this.#activeSubscription = null;

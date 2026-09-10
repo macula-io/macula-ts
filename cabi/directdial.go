@@ -136,8 +136,14 @@ func macula_directdial_call(
 	realm32 *C.uchar,
 	payloadJSON *C.char,
 	timeoutMs C.int64_t,
+	bytesMode C.int,
 	errOut **C.char,
 ) *C.char {
+	mode, err := parseBytesOutput(int(bytesMode))
+	if err != nil {
+		setErr(errOut, err)
+		return nil
+	}
 	session, ok := sessionFromHandle(sessionHandle)
 	if !ok {
 		setErr(errOut, errInvalidSessionHandle)
@@ -166,7 +172,7 @@ func macula_directdial_call(
 		return nil
 	}
 
-	envelopeJSON, err := json.Marshal(callResponseToEnvelope(resp))
+	envelopeJSON, err := json.Marshal(callResponseToEnvelope(resp, mode))
 	if err != nil {
 		setErr(errOut, fmt.Errorf("macula-ts/cabi: encode direct-dial call response as JSON: %w", err))
 		return nil
@@ -192,8 +198,14 @@ func macula_directdial_call_with_ucan(
 	payloadJSON *C.char,
 	timeoutMs C.int64_t,
 	ucanToken *C.char,
+	bytesMode C.int,
 	errOut **C.char,
 ) *C.char {
+	mode, err := parseBytesOutput(int(bytesMode))
+	if err != nil {
+		setErr(errOut, err)
+		return nil
+	}
 	session, ok := sessionFromHandle(sessionHandle)
 	if !ok {
 		setErr(errOut, errInvalidSessionHandle)
@@ -229,7 +241,7 @@ func macula_directdial_call_with_ucan(
 		return nil
 	}
 
-	envelopeJSON, err := json.Marshal(callResponseToEnvelope(resp))
+	envelopeJSON, err := json.Marshal(callResponseToEnvelope(resp, mode))
 	if err != nil {
 		setErr(errOut, fmt.Errorf("macula-ts/cabi: encode direct-dial call-with-UCAN response as JSON: %w", err))
 		return nil

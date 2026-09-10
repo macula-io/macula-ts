@@ -10,15 +10,15 @@ export declare const native: {
     sessionRemoteAddr(handle: Handle): string;
     sessionStationNodeId(handle: Handle): Uint8Array;
     sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void>;
-    sessionCall(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number): Promise<string>;
+    sessionCall(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, bytesMode: number): Promise<string>;
     ucanMint(identityHandle: Handle, issuer: string, audience: string, capabilitiesJson: string, expiresAt: number | undefined, notBefore: number | undefined, nonce: string, factsJson: string | undefined, proofsJson: string | undefined): string;
     ucanDecode(token: string): string;
-    sessionCallWithUcan(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, ucanToken: string): Promise<string>;
+    sessionCallWithUcan(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, ucanToken: string, bytesMode: number): Promise<string>;
     sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
     sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
     serveWaitForCall(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, timeoutMs: number): Promise<Handle | null>;
     pendingCallProcedure(pendingHandle: Handle): string;
-    pendingCallPayloadJson(pendingHandle: Handle): string;
+    pendingCallPayloadJson(pendingHandle: Handle, bytesMode: number): string;
     pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void>;
     pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void>;
     dhtFindRecordsByType(sessionHandle: Handle, identityHandle: Handle, recordType: number): Promise<string>;
@@ -36,12 +36,12 @@ export declare const native: {
     } | {
         kind: "closed";
         error: string;
-    }) => void): Promise<bigint>;
+    }) => void, bytesMode: number): Promise<bigint>;
     sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
     contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string>;
     contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null>;
     directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<string>;
-    directdialCall(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number): Promise<string>;
-    directdialCallWithUcan(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, ucanToken: string): Promise<string>;
+    directdialCall(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, bytesMode: number): Promise<string>;
+    directdialCallWithUcan(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, ucanToken: string, bytesMode: number): Promise<string>;
     directdialAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, ttlMs: number): Promise<void>;
 };
