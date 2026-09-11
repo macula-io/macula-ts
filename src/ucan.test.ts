@@ -32,7 +32,7 @@ describe("Ucan", () => {
       expect(ucan.token.split(".")).toHaveLength(3);
 
       expect(ucan.issuer).toBe(`did:macula:${Buffer.from(issuer.nodeId).toString("hex")}`);
-      expect(ucan.audience).toBe(`did:macula:${Buffer.from(audience.nodeId).toString("hex")}`);
+      expect(ucan.audience).toBe(Buffer.from(audience.nodeId).toString("hex"));
       expect(ucan.capabilities).toEqual(caps);
       expect(ucan.expiresAt).toBe(expiresAt);
       expect(ucan.notBefore).toBe(notBefore);
@@ -110,12 +110,12 @@ describe("Ucan", () => {
     }
   });
 
-  it("Ucan.mint() places no restriction relating issuer to audience -- an audience unrelated to any real identity is accepted, matching the mesh's own bearer-token gate", () => {
+  it("Ucan.mint() mints for any 32-byte audience, whether or not it belongs to a known identity", () => {
     const issuer = Identity.generate();
     try {
       const unrelatedAudience = new Uint8Array(32).fill(0xab);
       const ucan = Ucan.mint(issuer, unrelatedAudience);
-      expect(ucan.audience).toBe(`did:macula:${Buffer.from(unrelatedAudience).toString("hex")}`);
+      expect(ucan.audience).toBe(Buffer.from(unrelatedAudience).toString("hex"));
     } finally {
       issuer.dispose();
     }

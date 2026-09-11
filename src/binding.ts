@@ -193,7 +193,7 @@ const addon = require("node-gyp-build")(repoRoot) as {
   // text (a DirectDialTarget, per directdial.ts); directdialCall/
   // directdialCallWithUcan resolve with the SAME callEnvelope JSON shape
   // sessionCall/sessionCallWithUcan do (rpc.ts's CallEnvelope).
-  directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<string>;
+  directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, timeoutMs: number): Promise<string>;
   directdialCall(
     sessionHandle: Handle,
     identityHandle: Handle,
@@ -389,8 +389,8 @@ export const native = {
   contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null> {
     return addon.contentGet(sessionHandle, identityHandle, mcidHex);
   },
-  directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<string> {
-    return addon.directdialResolve(sessionHandle, identityHandle, realm, procedure);
+  directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, timeoutMs: number): Promise<string> {
+    return addon.directdialResolve(sessionHandle, identityHandle, realm, procedure, timeoutMs);
   },
   directdialCall(
     sessionHandle: Handle,

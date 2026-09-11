@@ -117,8 +117,8 @@ export const native = {
     contentGet(sessionHandle, identityHandle, mcidHex) {
         return addon.contentGet(sessionHandle, identityHandle, mcidHex);
     },
-    directdialResolve(sessionHandle, identityHandle, realm, procedure) {
-        return addon.directdialResolve(sessionHandle, identityHandle, realm, procedure);
+    directdialResolve(sessionHandle, identityHandle, realm, procedure, timeoutMs) {
+        return addon.directdialResolve(sessionHandle, identityHandle, realm, procedure, timeoutMs);
     },
     directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode) {
         return addon.directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode);

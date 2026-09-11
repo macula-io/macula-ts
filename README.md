@@ -253,17 +253,14 @@ fixed) is in [CHANGELOG.md](CHANGELOG.md).
   JWT-shaped, EdDSA-signed capability token, UCAN spec `"0.10.0"`) and
   `Ucan.decode(token)` (parses claims WITHOUT verifying signature or
   expiry — `Ucan#isExpired` mirrors macula-go's own semantics). Both are
-  pure local operations, no network I/O. `issuer`/`audience` DID strings
-  are `did:macula:<hex NodeID>`. `session.callWithUcan(procedure,
-  payload, ucanToken, opts?)` attaches a token to an outgoing CALL, for
-  invoking a procedure gated behind a provider-side `ucan.Policy.Required`
-  policy. **Deliberately places no restriction relating the calling
-  identity to the token's own `aud` claim** — macula's UCAN gate is a
-  BEARER-token check (verifies signature + expiry against the issuer
-  only, never the caller's identity against `aud`), so a client-side
-  "does my identity match this token's audience" guard would both reject
-  configurations the real wire-level gate accepts and misrepresent a
-  security property the mesh doesn't enforce. This SDK does **not**
+  pure local operations, no network I/O. `issuer` is written as
+  `did:macula:<hex NodeID>` and `audience` as the audience NodeID in
+  lowercase hex. `session.callWithUcan(procedure, payload, ucanToken,
+  opts?)` attaches a token to an outgoing CALL, for invoking a procedure
+  gated behind a provider-side `ucan.Policy.Required` policy. A gated
+  provider accepts a token only from the caller its `aud` names, so mint
+  it for the identity that will present it; `callWithUcan` attaches
+  whatever token it is given. This SDK does **not**
   expose `ucan.Verify` or `ucan.Policy` — only minting, inspecting, and
   attaching a token are implemented; enforcing one is provider-side, out
   of scope here.
@@ -276,7 +273,11 @@ fixed) is in [CHANGELOG.md](CHANGELOG.md).
   to its serving station's own signed `station_endpoint`, then dials that
   station directly in one hop instead of depending on advertise-gossip
   having reached whichever station the caller happens to already be
-  connected to. Trust is enforced at the application layer: the freshly
+  connected to. Every advertisement that verifies is a candidate:
+  `resolveDirect()` asks the DHT again until one's station endpoint
+  resolves, within `opts.deadlineMs` (10 s when unset), and `callDirect()`
+  moves on to the next candidate when a dial fails, within its own
+  `deadlineMs`. Trust is enforced at the application layer: the freshly
   connected peer's HELLO-proven identity is checked against the exact
   pubkey the signed DHT chain resolved. `advertiseDirect()` issues both a
   plain ADVERTISE and the signed DHT record on the same call — both are

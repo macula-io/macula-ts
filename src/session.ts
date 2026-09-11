@@ -617,11 +617,12 @@ export class Session {
    * serving station and its dialable host/port (macula-go's
    * `directdial.Resolve`), via this Session used only to query the DHT
    * -- it does not need to be connected to the station that ends up
-   * serving `procedure`. Retries past DHT propagation lag internally (up
-   * to ~5s, macula-go's own fixed schedule, not configurable here); a
-   * `procedure` nobody ever called `advertiseDirect()` for rejects
-   * cleanly after that window (a plain `Error` wrapping macula-go's
-   * `ErrProcedureNotAdvertised`), never a hang.
+   * serving `procedure`. Every advertisement that verifies is a
+   * candidate, and the DHT is asked again until one's station endpoint
+   * resolves or `opts.deadlineMs` passes (10 s when unset, macula-go's
+   * `directdial.DefaultResolveTimeout`); a `procedure` nobody ever called
+   * `advertiseDirect()` for rejects once that time is up (a plain `Error`
+   * wrapping macula-go's `ErrProcedureNotAdvertised`), never a hang.
    *
    * `opts.realm` must match whatever realm `procedure` was
    * `advertiseDirect()`d under, or the discovery URI the two sides
@@ -635,10 +636,16 @@ export class Session {
    * Real network I/O, off the main thread on the native side, subject to
    * the same same-Session exclusivity rule as `call()`/the DHT methods
    * (`#requireHandleNotServing`). */
-  async resolveDirect(procedure: string, opts: { realm?: string } = {}): Promise<DirectDialTarget> {
+  async resolveDirect(procedure: string, opts: { realm?: string; deadlineMs?: number } = {}): Promise<DirectDialTarget> {
+    if (opts.deadlineMs !== undefined && !(opts.deadlineMs > 0)) {
+      throw new RangeError(`macula-ts: resolveDirect deadlineMs must be a positive number of milliseconds, got ${opts.deadlineMs}`);
+    }
     const handle = this.#requireHandleNotServing("resolveDirect");
     const realm = realmBytesFromHex(opts.realm);
-    const json = await this.#enqueue(() => native.directdialResolve(handle, this.#identity.handleForFfi(), realm, procedure));
+    const deadlineMs = opts.deadlineMs ?? 0;
+    const json = await this.#enqueue(() =>
+      native.directdialResolve(handle, this.#identity.handleForFfi(), realm, procedure, deadlineMs),
+    );
     return JSON.parse(json) as DirectDialTarget;
   }
 

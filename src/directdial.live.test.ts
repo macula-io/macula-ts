@@ -130,13 +130,15 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session direct-dial (live station)
         const nobodyAdvertisedThis = uniqueProcedure("nobody_advertised_this");
 
         const startedAt = Date.now();
-        await expect(callerSession.resolveDirect(nobodyAdvertisedThis)).rejects.toThrow(
+        await expect(callerSession.resolveDirect(nobodyAdvertisedThis, { deadlineMs: 3000 })).rejects.toThrow(
           /procedure has no direct-dial advertisement/,
         );
-        // Proves this actually went through macula-go's real bounded
-        // retry window (~50 attempts x 100ms) rather than failing
-        // suspiciously instantly on some unrelated client-side error.
-        expect(Date.now() - startedAt).toBeGreaterThan(1000);
+        // Proves resolution asked the DHT again for the whole deadline it
+        // was given, rather than failing instantly on some unrelated
+        // client-side error or running on to the 10 s default.
+        const elapsed = Date.now() - startedAt;
+        expect(elapsed).toBeGreaterThanOrEqual(2500);
+        expect(elapsed).toBeLessThan(8000);
 
         let thrown: unknown;
         try {

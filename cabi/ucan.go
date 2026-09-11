@@ -80,13 +80,13 @@ func ucanPayloadToJSON(p ucan.Payload) ucanPayloadJSON {
 // macula_ucan_mint mints a new UCAN token (ucan.Create), self-issued and
 // signed by identityHandle's own private key -- the resulting token
 // verifies against that same identity's public key (NodeID), matching
-// ucan.Create's own documented convention. issuer/audience are opaque
-// DID strings; macula-go's ucan package does not validate or resolve DID
+// ucan.Create's own documented convention. issuer is an opaque DID
+// string; macula-go's ucan package does not validate or resolve DID
 // structure (that's macula_did_nif's job on the Erlang reference SDK,
-// out of scope here and there) -- src/ucan.ts builds them itself as
-// "did:macula:<hex nodeId>", matching the convention macula-go's own
-// tests and examples/ucan/main.go already use, rather than this cabi
-// layer inventing a different one.
+// out of scope here and there) -- src/ucan.ts builds it as
+// "did:macula:<hex nodeId>". audience names the caller that will present
+// the token: its NodeID as lowercase hex, which src/ucan.ts writes and a
+// gated provider (ucan.Policy.Check) compares with the calling identity.
 //
 // capabilitiesJSON is a JSON array of {"with":"...","can":"..."} (never
 // NULL from the TS side -- src/ucan.ts always JSON.stringifies an array,
@@ -196,16 +196,11 @@ func macula_ucan_decode(token *C.char, errOut **C.char) *C.char {
 // callEnvelope/callResponseToEnvelope verbatim (same package, same JSON
 // envelope shape callers already parse via src/rpc.ts's CallEnvelope) --
 // only the extra ucanToken parameter and the CallWithUCAN-vs-Call choice
-// differ from macula_session_call itself. Per this SDK's own established
-// finding (see the caller's own task notes and connection/connection.go's
-// CallWithUCAN doc): macula's UCAN gate is a BEARER-token check -- it
-// verifies the token's signature and expiry against its issuer, and does
-// NOT check the calling identity against the token's own audience claim.
-// This function attaches whatever ucanToken bytes it is given without
-// any local "does my identity match this token's audience" guard, for
-// exactly that reason -- such a guard would reject configurations the
-// real wire-level gate accepts fine, and would misrepresent a security
-// property the mesh does not actually enforce.
+// differ from macula_session_call itself. A gated provider accepts the
+// token only when it verifies against the required issuer and its
+// audience is this session's own NodeID as lowercase hex
+// (ucan.Policy.Check); this function attaches whatever ucanToken bytes it
+// is given and leaves that check to the provider.
 //
 // Real network I/O -- a signed frame out (carrying ucanToken's bytes in
 // its ucan_token field) and a wait for the matching RESULT or ERROR, up

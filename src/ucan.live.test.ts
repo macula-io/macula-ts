@@ -56,7 +56,7 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session.callWithUcan (live station
           return { echoed: payload, handled_by: "macula-ts-ucan-live-test-provider" };
         });
 
-        const ucan = Ucan.mint(callerId, providerId.nodeId, [{ with: `mri:test:${procedure}`, can: "call" }], {
+        const ucan = Ucan.mint(callerId, callerId.nodeId, [{ with: `mri:test:${procedure}`, can: "call" }], {
           expiresAt: Math.floor(Date.now() / 1000) + 300,
         });
         expect(ucan.token.split(".")).toHaveLength(3);
@@ -98,7 +98,7 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session.callWithUcan (live station
         const procedure = uniqueProcedure("raw_token_string");
         stopServing = await providerSession.serve(procedure, () => "ok");
 
-        const ucan = Ucan.mint(callerId, providerId.nodeId);
+        const ucan = Ucan.mint(callerId, callerId.nodeId);
         const result = await callerSession.callWithUcan(procedure, null, ucan.token, { deadlineMs: 15000 });
         expect(result).toBe("ok");
       } finally {
@@ -157,7 +157,7 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session.callWithUcan (live station
 
         const procedure = uniqueProcedure("realm_scoped_ucan");
         stopServing = await providerSession.serve(procedure, () => "reached under the default realm");
-        const ucan = Ucan.mint(callerId, providerId.nodeId);
+        const ucan = Ucan.mint(callerId, callerId.nodeId);
 
         const defaultRealmResult = await callerSession.callWithUcan(procedure, null, ucan, { deadlineMs: 15000 });
         expect(defaultRealmResult).toBe("reached under the default realm");

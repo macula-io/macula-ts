@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Breaking
+
+- `Ucan.mint(issuer, audience)` writes the `aud` claim as the audience
+  NodeID in lowercase hex, where it wrote `did:macula:<hex NodeID>`. A
+  provider gated with `ucan.Required` on macula-go v0.8.0 accepts a
+  token only from the caller its `aud` names, in that form, so mint a
+  token for the identity that will present it. `iss` stays
+  `did:macula:<hex NodeID>`.
+- `serve()` answers only CALLs signed by the caller they name; any other
+  CALL gets no reply (macula-go v0.8.0).
+
+### Changed
+
+- macula-go v0.7.1 to v0.8.2.
+- `resolveDirect()` treats every advertisement that verifies as a
+  candidate and asks the DHT again until one's station endpoint resolves
+  or its deadline passes. `callDirect()` and `callDirectWithUcan()` move
+  on to the next candidate when a dial fails, and their `deadlineMs`
+  bounds resolution, the dial and the CALL.
+
+### Added
+
+- `resolveDirect(procedure, { deadlineMs })`: how long resolution may
+  take, 10 s when unset.
+
 ## [0.15.0] - 2026-09-10
 
 ### Added

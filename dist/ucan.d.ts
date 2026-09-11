@@ -54,9 +54,11 @@ export declare class Ucan {
     /** The `iss` claim -- an opaque DID string (see didFromNodeId's own
      * doc: not parsed or resolved by this module, carried through as-is). */
     readonly issuer: string;
-    /** The `aud` claim. NOT checked against any local identity by this
-     * module or by Session.callWithUcan -- see this module's own doc on
-     * why: the real gate is bearer-token, not audience-matched. */
+    /** The `aud` claim: for a token Ucan.mint() wrote, the NodeID, as
+     * lowercase hex, of the caller it is for. A gated provider accepts the
+     * token only from that caller; this module and Session.callWithUcan
+     * don't compare it with any local identity (see this module's own
+     * doc). */
     readonly audience: string;
     readonly capabilities: readonly UcanCapability[];
     /** The `exp` claim, unix seconds, or `null` if this token has none
@@ -87,12 +89,12 @@ export declare class Ucan {
     /** Mints a fresh UCAN token, self-issued and signed by `issuer`'s own
      * private key (macula-go's `ucan.Create`) -- the resulting token
      * verifies against `issuer`'s own public key (NodeID), matching
-     * `ucan.Create`'s documented convention. `issuer`'s and `audience`'s
-     * DID strings are both built automatically as
-     * `did:macula:<hex NodeID>` (see `didFromNodeId`'s own doc for why:
-     * this ecosystem's own established convention, not invented here) --
-     * there is no way to mint with a custom DID string through this
-     * method.
+     * `ucan.Create`'s documented convention. `iss` is written as
+     * `did:macula:<hex NodeID>` (`didFromNodeId`) and `aud` as `audience`'s
+     * lowercase hex (`audienceFromNodeId`), the form a gated provider
+     * compares with the calling identity: pass the NodeID of the identity
+     * that will present the token. There is no way to mint with custom
+     * claim strings through this method.
      *
      * No network I/O -- this never touches a Session or a station; a
      * token can be minted entirely offline given only an `Identity`. */

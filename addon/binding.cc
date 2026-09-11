@@ -1757,20 +1757,22 @@ Napi::Value ContentGet(const Napi::CallbackInfo& info) {
 class DirectDialResolveWorker : public Napi::AsyncWorker {
  public:
   DirectDialResolveWorker(Napi::Env env, Napi::Promise::Deferred deferred, uintptr_t sessionHandle,
-                           uintptr_t identityHandle, bool hasRealm, uint8_t realm[32], std::string procedure)
+                           uintptr_t identityHandle, bool hasRealm, uint8_t realm[32], std::string procedure,
+                           int64_t timeoutMs)
       : Napi::AsyncWorker(env),
         deferred_(deferred),
         sessionHandle_(sessionHandle),
         identityHandle_(identityHandle),
         hasRealm_(hasRealm),
-        procedure_(std::move(procedure)) {
+        procedure_(std::move(procedure)),
+        timeoutMs_(timeoutMs) {
     if (hasRealm_) std::memcpy(realm_, realm, 32);
   }
 
   void Execute() override {
     char* errOut = nullptr;
     char* json = macula_directdial_resolve(sessionHandle_, identityHandle_, hasRealm_ ? realm_ : nullptr,
-                                            const_cast<char*>(procedure_.c_str()), &errOut);
+                                            const_cast<char*>(procedure_.c_str()), timeoutMs_, &errOut);
     if (errOut != nullptr) {
       std::string msg(errOut);
       macula_free_string(errOut);
@@ -1798,13 +1800,15 @@ class DirectDialResolveWorker : public Napi::AsyncWorker {
   bool hasRealm_;
   uint8_t realm_[32] = {0};
   std::string procedure_;
+  int64_t timeoutMs_;
   std::string resultJson_;
 };
 
 Napi::Value DirectDialResolve(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  if (info.Length() < 4 || !info[3].IsString()) {
-    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, realm: Uint8Array|undefined, procedure: string)")
+  if (info.Length() < 5 || !info[3].IsString() || !info[4].IsNumber()) {
+    Napi::TypeError::New(env, "expected (sessionHandle, identityHandle, realm: Uint8Array|undefined, procedure: string, "
+                              "timeoutMs: number)")
         .ThrowAsJavaScriptException();
     return env.Undefined();
   }
@@ -1817,10 +1821,11 @@ Napi::Value DirectDialResolve(const Napi::CallbackInfo& info) {
   unsigned char* realmPtr = ReadOptionalRealm(env, info[2], realmBuf, &ok);
   if (!ok) return env.Undefined();
   std::string procedure = info[3].As<Napi::String>().Utf8Value();
+  int64_t timeoutMs = info[4].As<Napi::Number>().Int64Value();
 
   auto deferred = Napi::Promise::Deferred::New(env);
   auto* worker = new DirectDialResolveWorker(env, deferred, sessionHandle, identityHandle, realmPtr != nullptr,
-                                              realmBuf, std::move(procedure));
+                                              realmBuf, std::move(procedure), timeoutMs);
   worker->Queue();
   return deferred.Promise();
 }

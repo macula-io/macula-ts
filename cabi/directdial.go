@@ -73,21 +73,21 @@ type resolveResultJSON struct {
 	Port    uint16 `json:"port"`
 }
 
-// macula_directdial_resolve finds procedure's currently-advertised
-// serving station and its dialable host/port (directdial.Resolve),
-// retrying past DHT propagation lag internally -- up to 50 attempts x
-// 100ms, macula-go's own fixed resolveRetries/resolveRetryDelay, not
-// duplicated or made configurable here. realm32 nil means the all-zero
-// realm (realm32OrZero, main.go), matching every other realm-taking
-// export in this cabi. A procedure nobody ever called AdvertiseDirect for
-// fails cleanly here (ErrProcedureNotAdvertised, wrapped into *errOut)
-// after that bounded ~5s retry window -- never a hang.
+// macula_directdial_resolve finds procedure's serving station and its
+// dialable host/port (directdial.Resolve): every advertisement that
+// verifies is a candidate, and the DHT is asked again until one's station
+// endpoint resolves or timeoutMs passes. timeoutMs <= 0 leaves the bound
+// to directdial.DefaultResolveTimeout (10 s). realm32 nil means the
+// all-zero realm (realm32OrZero, main.go), matching every other
+// realm-taking export in this cabi. A procedure nobody ever called
+// AdvertiseDirect for fails once that time is up
+// (ErrProcedureNotAdvertised, wrapped into *errOut) -- never a hang.
 //
 // Real network I/O (one or more signed CALLs under the hood) -- must run
 // off Node's main thread, like macula_dht_find_record.
 //
 //export macula_directdial_resolve
-func macula_directdial_resolve(sessionHandle, identityHandle C.uintptr_t, realm32 *C.uchar, procedure *C.char, errOut **C.char) *C.char {
+func macula_directdial_resolve(sessionHandle, identityHandle C.uintptr_t, realm32 *C.uchar, procedure *C.char, timeoutMs C.int64_t, errOut **C.char) *C.char {
 	session, ok := sessionFromHandle(sessionHandle)
 	if !ok {
 		setErr(errOut, errInvalidSessionHandle)
@@ -98,7 +98,9 @@ func macula_directdial_resolve(sessionHandle, identityHandle C.uintptr_t, realm3
 		setErr(errOut, errInvalidIdentityHandle)
 		return nil
 	}
-	station, host, port, err := directdial.Resolve(session, id, realm32OrZero(realm32), C.GoString(procedure))
+	ctx, cancel := resolveContext(int64(timeoutMs))
+	defer cancel()
+	station, host, port, err := directdial.Resolve(ctx, session, id, realm32OrZero(realm32), C.GoString(procedure))
 	if err != nil {
 		setErr(errOut, err)
 		return nil
@@ -109,6 +111,15 @@ func macula_directdial_resolve(sessionHandle, identityHandle C.uintptr_t, realm3
 		return nil
 	}
 	return C.CString(string(b))
+}
+
+// resolveContext bounds a resolve by timeoutMs, or leaves it to
+// directdial.DefaultResolveTimeout when timeoutMs <= 0.
+func resolveContext(timeoutMs int64) (context.Context, context.CancelFunc) {
+	if timeoutMs <= 0 {
+		return context.WithCancel(context.Background())
+	}
+	return context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 }
 
 // macula_directdial_call resolves procedure's provider via direct-dial
