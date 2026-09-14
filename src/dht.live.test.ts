@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect } from "vitest";
+import { liveStationHost, requireLiveStation } from "../test/live_station.js";
 import { createHash } from "node:crypto";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
@@ -7,7 +8,7 @@ import { DhtRecordType, type DhtRecord } from "./dht.js";
 // Opt-in only: MACULA_TS_LIVE=1 npm run test:live -- see
 // session.live.test.ts for why (real production station, not run in
 // default CI).
-const STATION_HOST = "station-de-frankfurt.macula.io";
+const STATION_HOST = liveStationHost("MACULA_TS_LIVE_STATION");
 const STATION_PORT = 4433;
 
 const HEX32 = /^[0-9a-f]{64}$/;
@@ -54,6 +55,7 @@ function assertWellFormedRecord(rec: DhtRecord): void {
 }
 
 describe.skipIf(!process.env.MACULA_TS_LIVE)("Session DHT records (live station)", () => {
+  beforeEach(() => requireLiveStation("MACULA_TS_LIVE_STATION"), 45_000);
   it(
     "findRecordsByType(StationEndpoint) against the real fleet returns real, well-formed records",
     async () => {

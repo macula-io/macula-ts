@@ -1,5 +1,7 @@
+import { appendFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect } from "vitest";
+import { liveStationHost, requireLiveStation } from "../test/live_station.js";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
 import type { PubsubEvent } from "./pubsub.js";
@@ -7,7 +9,7 @@ import type { PubsubEvent } from "./pubsub.js";
 // Opt-in only: MACULA_TS_LIVE=1 npm run test:live -- see
 // session.live.test.ts for why (real production station, not run in
 // default CI).
-const STATION_HOST = "station-de-frankfurt.macula.io";
+const STATION_HOST = liveStationHost("MACULA_TS_LIVE_STATION");
 const STATION_PORT = 4433;
 
 // A fresh, unlikely-to-collide topic per test run, matching rpc.live.test.ts/
@@ -17,22 +19,52 @@ function uniqueTopic(label: string): string {
   return `io.macula.ts.pubsub_live_test.${label}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
 }
 
-// Resolves with the next event delivered to a subscribe() handler, or
-// rejects after timeoutMs -- turns the callback-shaped subscribe() API
-// into something a test can straightforwardly await.
-function nextEvent(timeoutMs: number): { promise: Promise<PubsubEvent>; onEvent: (evt: PubsubEvent) => void } {
-  let onEvent!: (evt: PubsubEvent) => void;
-  const promise = new Promise<PubsubEvent>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`no event arrived within ${timeoutMs}ms`)), timeoutMs);
-    onEvent = (evt) => {
-      clearTimeout(timer);
-      resolve(evt);
-    };
-  });
-  return { promise, onEvent };
+// Records one wait: on the console, and in the file MACULA_TS_LIVE_WAITS names when set, since a
+// test run's console output isn't always shown.
+function recordWait(line: string): void {
+  console.log(line);
+  if (process.env.MACULA_TS_LIVE_WAITS) appendFileSync(process.env.MACULA_TS_LIVE_WAITS, `${line}\n`);
+}
+
+// How long a test may publish before its subscriber has the event: past the longest registration
+// wait measured on a live station (about 300 ms), with a publish every 500 ms. A wait near it is a
+// station finding, not a reason to raise it.
+const DELIVERY_WAIT_MS = 2000;
+
+// Publishes until the subscriber has the event. SUBSCRIBE is fire-and-forget, so a station can take a
+// moment to register it, and an event published before that is not delivered. Publishes again every
+// 500 ms until delivered() holds, for up to DELIVERY_WAIT_MS from the first publish. Logs how many
+// publishes it took and how long, and returns when the last publish was sent.
+async function publishUntilDelivered(label: string, publish: () => Promise<void>, delivered: () => boolean): Promise<number> {
+  const start = Date.now();
+  let publishes = 0;
+  let lastPublishAt = start;
+  let nextPublish = start;
+  while (!delivered() && Date.now() - start < DELIVERY_WAIT_MS) {
+    if (Date.now() >= nextPublish) {
+      await publish();
+      publishes++;
+      lastPublishAt = Date.now();
+      nextPublish = lastPublishAt + 500;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  const outcome = delivered() ? "delivered" : "not delivered";
+  recordWait(`live wait, ${label}: ${outcome} after ${publishes} publish(es), ${Date.now() - start} ms`);
+  if (!delivered()) throw new Error(`no event arrived within ${DELIVERY_WAIT_MS}ms of the first publish`);
+  return lastPublishAt;
+}
+
+// How long after the last publish a subscriber that must not get an event is watched: past the
+// Go-side reader's 2 s poll interval plus real network latency.
+const QUIET_WINDOW_MS = 4000;
+
+async function quietUntil(lastPublishAt: number): Promise<void> {
+  await new Promise((r) => setTimeout(r, Math.max(0, lastPublishAt + QUIET_WINDOW_MS - Date.now())));
 }
 
 describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", () => {
+  beforeEach(() => requireLiveStation("MACULA_TS_LIVE_STATION"), 45_000);
   it(
     "subscribe() receives this same Session's own publish() with the correct payload, and stop() genuinely stops delivery",
     async () => {
@@ -45,22 +77,19 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", ()
         const topic = uniqueTopic("roundtrip");
 
         const delivered: PubsubEvent[] = [];
-        const first = nextEvent(10_000);
         stopSubscription = await session.subscribe(topic, (evt) => {
           delivered.push(evt);
-          first.onEvent(evt);
         });
 
         const payload = { text: "hello from macula-ts pubsub live test", n: 42, nested: { list: [1, 2, 3] } };
-        await session.publish(topic, payload);
+        await publishUntilDelivered("pubsub roundtrip", () => session.publish(topic, payload), () => delivered.length > 0);
 
-        const evt = await first.promise;
+        const evt = delivered[0];
         expect(evt.payload).toEqual(payload);
         expect(evt.publisher.length).toBe(32);
         expect(Buffer.from(evt.publisher).equals(Buffer.from(id.nodeId))).toBe(true);
         expect(Number.isInteger(evt.seq)).toBe(true);
         expect(evt.seq).toBeGreaterThan(0);
-        expect(delivered.length).toBe(1);
 
         // stop() must not resolve until the Go-side reader goroutine has
         // actually sent UNSUBSCRIBE and exited -- verified here by
@@ -69,6 +98,7 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", ()
         // no event happened to arrive yet.
         await stopSubscription();
         stopSubscription = undefined;
+        const deliveredBeforeStop = delivered.length;
 
         await session.publish(topic, { after: "unsubscribe -- must not be delivered" });
         // Long enough to comfortably exceed the Go-side reader's own
@@ -76,7 +106,8 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", ()
         // real network latency, so this is a genuine "nothing arrived"
         // observation, not a race against delivery.
         await new Promise((r) => setTimeout(r, 4000));
-        expect(delivered.length).toBe(1);
+        expect(delivered.length).toBe(deliveredBeforeStop);
+        for (const each of delivered) expect(each.payload).toEqual(payload);
       } finally {
         if (stopSubscription) await stopSubscription();
         if (session) await session.close(id, "pubsub.live.test.ts done (roundtrip)");
@@ -97,15 +128,14 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", ()
         session = await Session.connect(STATION_HOST, STATION_PORT, id);
         const topic = uniqueTopic("bytes");
 
-        const first = nextEvent(10_000);
-        stopSubscription = await session.subscribe(topic, first.onEvent, { bytes: "tagged" });
+        const delivered: PubsubEvent[] = [];
+        stopSubscription = await session.subscribe(topic, (evt) => delivered.push(evt), { bytes: "tagged" });
 
         // "AQID" also appears as plain text, which must stay text.
         const payload = { id: { $bytes: "AQID" }, text: "AQID" };
-        await session.publish(topic, payload);
+        await publishUntilDelivered("pubsub bytes", () => session.publish(topic, payload), () => delivered.length > 0);
 
-        const evt = await first.promise;
-        expect(evt.payload).toEqual(payload);
+        expect(delivered[0].payload).toEqual(payload);
       } finally {
         if (stopSubscription) await stopSubscription();
         if (session) await session.close(id, "pubsub.live.test.ts done (bytes)");
@@ -174,8 +204,6 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", ()
 
         const defaultDelivered: PubsubEvent[] = [];
         const otherDelivered: PubsubEvent[] = [];
-        const firstOnOther = nextEvent(10_000);
-        const firstOnDefault = nextEvent(10_000);
 
         // Two subscriptions to the SAME topic string, on two separate
         // Sessions (one Session allows only one active subscribe() at a
@@ -183,38 +211,44 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", ()
         // (all-zero), one pinned to otherRealm.
         stopDefaultSub = await defaultSubSession.subscribe(topic, (evt) => {
           defaultDelivered.push(evt);
-          firstOnDefault.onEvent(evt);
         });
         stopOtherSub = await otherSubSession.subscribe(topic, (evt) => {
           otherDelivered.push(evt);
-          firstOnOther.onEvent(evt);
         }, { realm: otherRealm });
 
-        // Publish under otherRealm: only the otherRealm subscriber
-        // should ever see this.
-        await publisherSession.publish(topic, { marker: "otherRealm-event" }, { realm: otherRealm });
-        const otherEvt = await firstOnOther.promise;
-        expect(otherEvt.payload).toEqual({ marker: "otherRealm-event" });
+        // Publish under otherRealm until the otherRealm subscriber has it.
+        const otherMarker = { marker: "otherRealm-event" };
+        const lastOtherPublish = await publishUntilDelivered(
+          "pubsub realm B",
+          () => publisherSession.publish(topic, otherMarker, { realm: otherRealm }),
+          () => otherDelivered.length > 0,
+        );
+        expect(otherDelivered[0].payload).toEqual(otherMarker);
 
-        // Give the default-realm subscriber every chance to have wrongly
-        // received it too -- long enough to exceed real network latency
-        // plus the Go-side reader's own poll interval (matches the
-        // roundtrip test's own 4s margin above).
-        await new Promise((r) => setTimeout(r, 4000));
+        // Then the default-realm subscriber gets its own full window after the
+        // last of those publishes, and must have received none of them.
+        await quietUntil(lastOtherPublish);
         expect(defaultDelivered.length).toBe(0);
-        expect(otherDelivered.length).toBe(1);
 
         // Now publish under the DEFAULT realm (no realm option): only
         // the default-realm subscriber should see THIS one -- ruling
         // out "the otherRealm subscriber just receives everything" as
         // an alternative explanation for the isolation observed above.
-        await publisherSession.publish(topic, { marker: "defaultRealm-event" });
-        const defaultEvt = await firstOnDefault.promise;
-        expect(defaultEvt.payload).toEqual({ marker: "defaultRealm-event" });
+        const defaultMarker = { marker: "defaultRealm-event" };
+        const otherBeforeDefault = otherDelivered.length;
+        const lastDefaultPublish = await publishUntilDelivered(
+          "pubsub realm A",
+          () => publisherSession.publish(topic, defaultMarker),
+          () => defaultDelivered.length > 0,
+        );
+        expect(defaultDelivered[0].payload).toEqual(defaultMarker);
 
-        await new Promise((r) => setTimeout(r, 4000));
-        expect(defaultDelivered.length).toBe(1);
-        expect(otherDelivered.length).toBe(1); // unchanged -- still just the one otherRealm event
+        // And the otherRealm subscriber gets its own full window after the last
+        // default-realm publish, and must have received none of those copies.
+        await quietUntil(lastDefaultPublish);
+        expect(otherDelivered.slice(otherBeforeDefault).filter((e) => JSON.stringify(e.payload) === JSON.stringify(defaultMarker))).toEqual([]);
+        for (const evt of otherDelivered) expect(evt.payload).toEqual(otherMarker);
+        for (const evt of defaultDelivered) expect(evt.payload).toEqual(defaultMarker);
       } finally {
         if (stopDefaultSub) await stopDefaultSub();
         if (stopOtherSub) await stopOtherSub();

@@ -1,18 +1,20 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect } from "vitest";
+import { liveStationHost, requireLiveStation } from "../test/live_station.js";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
 
 // Opt-in only: MACULA_TS_LIVE=1 npm run test:live. Never part of
-// default `npm test`/CI, since it depends on a real production
-// station being reachable -- matching macula-rust's #[ignore] and
-// macula-dotnet's [Trait("Category","Live")] convention for the same
-// kind of test. Host/port taken from those two SDKs' own committed
-// live-station suites, which already proved this station+port+trust
-// combination works.
-const STATION_HOST = "station-de-frankfurt.macula.io";
+// default `npm test`/CI, since it depends on a real station being
+// reachable -- matching macula-rust's #[ignore] and macula-dotnet's
+// [Trait("Category","Live")] convention for the same kind of test. The
+// station comes from MACULA_TS_LIVE_STATION, with no default: with
+// MACULA_TS_LIVE set, a station that isn't set, or that no session can be
+// opened to, fails the tests, naming the variable (test/live_station.ts).
+const STATION_HOST = liveStationHost("MACULA_TS_LIVE_STATION");
 const STATION_PORT = 4433;
 
 describe.skipIf(!process.env.MACULA_TS_LIVE)("Session (live station)", () => {
+  beforeEach(() => requireLiveStation("MACULA_TS_LIVE_STATION"), 45_000);
   it("connect() completes a real CONNECT/HELLO handshake against the production fleet", async () => {
     const id = Identity.generate();
     let session: Session | undefined;

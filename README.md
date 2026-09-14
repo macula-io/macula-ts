@@ -332,7 +332,7 @@ slice of work built on top of a working `Session`.
 
 ```bash
 npx vitest run    # default suite, no network
-npm run test:live # MACULA_TS_LIVE=1 vitest run src/session.live.test.ts src/rpc.live.test.ts src/dht.live.test.ts src/pubsub.live.test.ts src/content.live.test.ts src/ucan.live.test.ts src/directdial.live.test.ts src/pool.live.test.ts
+MACULA_TS_LIVE_STATION=<station host> MACULA_TS_LIVE_OTHER_STATION=<another station host> npm run test:live
 ```
 
 `src/session.live.test.ts`, `src/rpc.live.test.ts`, `src/dht.live.test.ts`,
@@ -347,6 +347,14 @@ runnable, just excluded from the default/CI run so a station outage doesn't
 make ordinary CI flaky. `.github/workflows/ci.yml` exposes this as a
 manually-triggered (`workflow_dispatch`) job, never run automatically on
 push/PR.
+
+A live run names its stations: `MACULA_TS_LIVE_STATION` is the host every live
+test uses, and `MACULA_TS_LIVE_OTHER_STATION` is the second station the pool's
+multi-station test connects to. Neither has a default. With `MACULA_TS_LIVE`
+set, a station that isn't set, or that no session can be opened to, fails the
+tests with a message naming its variable instead of skipping them. When
+`MACULA_TS_LIVE_WAITS` names a file, each wait for a station to register an
+ADVERTISE or SUBSCRIBE is also recorded there.
 
 ## Packaging: genuinely zero install-time scripts
 

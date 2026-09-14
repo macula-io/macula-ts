@@ -1,4 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { appendFileSync } from "node:fs";
+import { beforeEach, describe, it, expect } from "vitest";
+import { liveStationHost, requireLiveStation } from "../test/live_station.js";
 import { Identity } from "./identity.js";
 import { Pool } from "./pool.js";
 import { MaculaCallError } from "./rpc.js";
@@ -7,16 +9,54 @@ import { Session } from "./session.js";
 // Opt-in only: MACULA_TS_LIVE=1 npm run test:live. Never part of default
 // `npm test`/CI, same convention as session.live.test.ts -- this depends
 // on the real production fleet.
-const STATION_HOST = "station-de-frankfurt.macula.io";
-const OTHER_STATION_HOST = "station-fr-paris.macula.io";
+const STATION_HOST = liveStationHost("MACULA_TS_LIVE_STATION");
+const OTHER_STATION_HOST = liveStationHost("MACULA_TS_LIVE_OTHER_STATION");
 const STATION_PORT = 4433;
 
 function randomTopic(): string {
   return `pool.live.test.${Math.random().toString(16).slice(2)}`;
 }
 
+// Records one wait: on the console, and in the file MACULA_TS_LIVE_WAITS names when set, since a
+// test run's console output isn't always shown.
+function recordWait(line: string): void {
+  console.log(line);
+  if (process.env.MACULA_TS_LIVE_WAITS) appendFileSync(process.env.MACULA_TS_LIVE_WAITS, `${line}\n`);
+}
+
+// How long a test may publish before its subscriber has the event: past the longest registration
+// wait measured on a live station (about 300 ms), with a publish every 500 ms. A wait near it is a
+// station finding, not a reason to raise it.
+const DELIVERY_WAIT_MS = 2000;
+
+// Publishes until the subscriber has the event. SUBSCRIBE is fire-and-forget, so a station can take a
+// moment to register it, and an event published before that is not delivered. Publishes again every
+// 500 ms until delivered() holds, for up to DELIVERY_WAIT_MS from the first publish. Logs how many
+// publishes it took and how long, and returns when the last publish was sent.
+async function publishUntilDelivered(label: string, publish: () => Promise<void>, delivered: () => boolean): Promise<number> {
+  const start = Date.now();
+  let publishes = 0;
+  let lastPublishAt = start;
+  let nextPublish = start;
+  while (!delivered() && Date.now() - start < DELIVERY_WAIT_MS) {
+    if (Date.now() >= nextPublish) {
+      await publish();
+      publishes++;
+      lastPublishAt = Date.now();
+      nextPublish = lastPublishAt + 500;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  const outcome = delivered() ? "delivered" : "not delivered";
+  recordWait(`live wait, ${label}: ${outcome} after ${publishes} publish(es), ${Date.now() - start} ms`);
+  if (!delivered()) throw new Error(`no event arrived within ${DELIVERY_WAIT_MS}ms of the first publish`);
+  return lastPublishAt;
+}
+
 describe.skipIf(!process.env.MACULA_TS_LIVE)("Pool (live fleet)", () => {
+  beforeEach(() => requireLiveStation("MACULA_TS_LIVE_STATION"), 45_000);
   it("connects to multiple real stations concurrently, all healthy", async () => {
+    await requireLiveStation("MACULA_TS_LIVE_OTHER_STATION");
     const id = Identity.generate();
     const pool = await Pool.connect(
       [
@@ -145,11 +185,10 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Pool (live fleet)", () => {
     try {
       const received: unknown[] = [];
       const unsubscribe = await pool.subscribe(undefined, topic, (evt) => received.push(evt.payload), topicId);
+      const sawSeq = (seq: number) => () => received.some((p) => JSON.stringify(p) === JSON.stringify({ seq }));
 
       pubSession = await Session.connect(STATION_HOST, STATION_PORT, pubId);
-      await pubSession.publish(topic, { seq: 1 }, {});
-      await new Promise((r) => setTimeout(r, 1500));
-      expect(received.length).toBe(1);
+      await publishUntilDelivered("pool subscribe", () => pubSession.publish(topic, { seq: 1 }, {}), sawSeq(1));
 
       // Kick the pool's own topic-subscribe link: a second connection
       // under that SAME identity to the SAME station. This is
@@ -162,9 +201,7 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Pool (live fleet)", () => {
       // The real proof: a FRESH publish, after the kick, is still
       // delivered -- meaning the fresh link the pool respawned was
       // actually re-subscribed to this topic, not just reconnected.
-      await pubSession.publish(topic, { seq: 2 }, {});
-      await new Promise((r) => setTimeout(r, 1500));
-      expect(received.length).toBe(2);
+      await publishUntilDelivered("pool replayed subscribe", () => pubSession.publish(topic, { seq: 2 }, {}), sawSeq(2));
 
       await unsubscribe();
     } finally {
@@ -174,5 +211,5 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Pool (live fleet)", () => {
       pubId.dispose();
       topicId.dispose();
     }
-  }, 30000);
+  }, 45000);
 });

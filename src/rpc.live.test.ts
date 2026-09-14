@@ -1,5 +1,7 @@
+import { appendFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect } from "vitest";
+import { liveStationHost, requireLiveStation } from "../test/live_station.js";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
 import { MaculaCallError, type JsonValue } from "./rpc.js";
@@ -7,7 +9,7 @@ import { MaculaCallError, type JsonValue } from "./rpc.js";
 // Opt-in only: MACULA_TS_LIVE=1 npm run test:live -- see
 // session.live.test.ts for why (real production station, not run in
 // default CI).
-const STATION_HOST = "station-de-frankfurt.macula.io";
+const STATION_HOST = liveStationHost("MACULA_TS_LIVE_STATION");
 const STATION_PORT = 4433;
 
 // A fresh, unlikely-to-collide procedure name per test run -- the
@@ -18,7 +20,46 @@ function uniqueProcedure(label: string): string {
   return `io.macula.ts.rpc_live_test.${label}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
 }
 
+// Records one wait: on the console, and in the file MACULA_TS_LIVE_WAITS names when set, since a
+// test run's console output isn't always shown.
+function recordWait(line: string): void {
+  console.log(line);
+  if (process.env.MACULA_TS_LIVE_WAITS) appendFileSync(process.env.MACULA_TS_LIVE_WAITS, `${line}\n`);
+}
+
+// How long a call may keep getting unknown_next_peer after serve() before the test fails: about six
+// times the longest wait measured on a live station (one retry, about 300 ms). A wait near it is a
+// station finding, not a reason to raise it.
+const ROUTE_WAIT_MS = 2000;
+
+// Calls until the station routes the CALL. serve()'s ADVERTISE is fire-and-forget, so a station can
+// still answer unknown_next_peer for a moment after serve() resolves. Only that answer is retried,
+// every 250 ms, for up to ROUTE_WAIT_MS; any other outcome is returned or thrown at once. Logs how
+// many attempts the call took and how long it waited, so registration lag shows in the run.
+async function whenRouted<T>(label: string, call: () => Promise<T>): Promise<T> {
+  const start = Date.now();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const result = await call();
+      recordWait(`live wait, ${label}: routed on attempt ${attempt} after ${Date.now() - start} ms`);
+      return result;
+    } catch (err) {
+      const routing = err instanceof MaculaCallError && err.bolt4Name === "unknown_next_peer";
+      if (!routing) {
+        recordWait(`live wait, ${label}: answered on attempt ${attempt} after ${Date.now() - start} ms with ${String(err)}`);
+        throw err;
+      }
+      if (Date.now() - start >= ROUTE_WAIT_MS) {
+        recordWait(`live wait, ${label}: still unknown_next_peer on attempt ${attempt} after ${Date.now() - start} ms, giving up`);
+        throw err;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () => {
+  beforeEach(() => requireLiveStation("MACULA_TS_LIVE_STATION"), 45_000);
   it(
     "a provider's serve() answers a caller's call() with the real round-tripped payload, over two real Sessions",
     async () => {
@@ -57,10 +98,12 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
           nested: { list: [1, 2, 3], hexlike_text: "0xdeadbeef" },
         };
 
-        const result = await callerSession.call(procedure, payload, { deadlineMs: 15000 });
+        const result = await whenRouted("rpc echo", () => callerSession.call(procedure, payload, { deadlineMs: 15000 }));
 
+        // A map payload reaches the provider with the caller its session verified under "caller"
+        // (macula-go v0.10.0), as "0x" hex by default: this caller's own node id.
         expect(result).toEqual({
-          echoed: payload,
+          echoed: { ...(payload as Record<string, JsonValue>), caller: `0x${Buffer.from(callerId.nodeId).toString("hex")}` },
           handled_by: "macula-ts-live-test-provider",
         });
       } finally {
@@ -108,27 +151,20 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
         // "AQID" also appears as plain text, which must stay text both ways.
         const payload: JsonValue = { id: { $bytes: "AQID" }, list: [{ $bytes: "" }], text: "AQID" };
 
-        // A station can still answer unknown_next_peer for a moment after
-        // serve()'s advertise resolves (seen once while the live files ran
-        // in parallel), so the first call gets a short bounded retry, like
-        // directdial.live.test.ts's propagation-lag window. Only that
-        // routing answer is retried; anything else fails the test at once.
-        let tagged: JsonValue | undefined;
-        for (let attempt = 1; tagged === undefined; attempt++) {
-          try {
-            tagged = await callerSession.call(procedure, payload, { deadlineMs: 15000, bytes: "tagged" });
-          } catch (err) {
-            if (!(err instanceof MaculaCallError) || err.bolt4Name !== "unknown_next_peer" || attempt >= 20) throw err;
-            await new Promise((r) => setTimeout(r, 250));
-          }
-        }
-        expect(seenByProvider[0]).toEqual(payload);
-        expect(tagged).toEqual(payload);
+        const tagged = await whenRouted("rpc bytes", () =>
+          callerSession.call(procedure, payload, { deadlineMs: 15000, bytes: "tagged" }),
+        );
+        // The provider also sees the caller its session verified, as tagged bytes, and echoes it
+        // back with the rest (macula-go v0.10.0).
+        const callerNodeId = Buffer.from(callerId.nodeId);
+        const withCaller = { ...(payload as Record<string, JsonValue>), caller: { $bytes: callerNodeId.toString("base64") } };
+        expect(seenByProvider[0]).toEqual(withCaller);
+        expect(tagged).toEqual(withCaller);
 
         // Same call, default output: the reply's bytes arrive as hex, which
         // also proves the provider's tagged reply went back as real bytes.
         const hex = await callerSession.call(procedure, payload, { deadlineMs: 15000 });
-        expect(hex).toEqual({ id: "0x010203", list: ["0x"], text: "AQID" });
+        expect(hex).toEqual({ id: "0x010203", list: ["0x"], text: "AQID", caller: `0x${callerNodeId.toString("hex")}` });
       } finally {
         if (stopServing) await stopServing();
         if (callerSession) await callerSession.close(callerId, "rpc.live.test.ts done (caller)");
@@ -189,7 +225,7 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
 
       let thrown: unknown;
       try {
-        await callerSession.call(procedure, null, { deadlineMs: 15000 });
+        await whenRouted("rpc throwing handler", () => callerSession.call(procedure, null, { deadlineMs: 15000 }));
       } catch (err) {
         thrown = err;
       }
@@ -234,7 +270,7 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
         // Same realm (the default, implicit) as the provider -- reaches
         // it, proving the happy path still works with the new option
         // simply left unset.
-        const defaultRealmResult = await callerSession.call(procedure, null, { deadlineMs: 15000 });
+        const defaultRealmResult = await whenRouted("rpc realm", () => callerSession.call(procedure, null, { deadlineMs: 15000 }));
         expect(defaultRealmResult).toBe("reached under the default realm");
 
         // A real, random, non-zero 32-byte realm -- the SAME procedure

@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect } from "vitest";
+import { liveStationHost, requireLiveStation } from "../test/live_station.js";
 import { randomBytes } from "node:crypto";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
@@ -7,12 +8,13 @@ import { ContentNotFoundError } from "./content.js";
 // Opt-in only: MACULA_TS_LIVE=1 npm run test:live -- see
 // session.live.test.ts for why (real production station, not run in
 // default CI).
-const STATION_HOST = "station-de-frankfurt.macula.io";
+const STATION_HOST = liveStationHost("MACULA_TS_LIVE_STATION");
 const STATION_PORT = 4433;
 
 const MCID_HEX = /^[0-9a-f]{68}$/;
 
 describe.skipIf(!process.env.MACULA_TS_LIVE)("Session content transfer (live station)", () => {
+  beforeEach(() => requireLiveStation("MACULA_TS_LIVE_STATION"), 45_000);
   it(
     "putContent() then getContent() round-trips a real, non-trivial byte buffer byte-for-byte",
     async () => {
