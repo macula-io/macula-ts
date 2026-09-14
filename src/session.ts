@@ -88,24 +88,17 @@ export function realmBytesFromHex(realm: string | undefined): Uint8Array | undef
   return new Uint8Array(Buffer.from(realm, "hex"));
 }
 
-/** One Session.serve() registration -- tracked so a second concurrent
- * serve() on the same Session fails fast instead of racing (see
- * serve()'s own doc for why mixing two server loops, or a server loop
- * and call(), on one Session is unsafe at the protocol level, not just
- * an API nicety). */
+/** One Session.serve() registration -- tracked so a second serve(), or
+ * another role, on the same Session fails fast (see serve()'s own doc: a
+ * second serve() would answer CALLs meant for the first). */
 interface ActiveServe {
   procedure: string;
   stop: () => Promise<void>;
 }
 
 /** One Session.subscribe() registration -- tracked the same way
- * ActiveServe is, and for the identical reason: subscribe()'s
- * background reader goroutine reads frames off this Session's shared
- * control stream on its own schedule, exactly like serve()'s poll loop
- * does, so a second concurrent subscribe() (or a subscribe() alongside
- * serve()/call()/a DHT method) on the same Session races the same way
- * mixing serve() and call() does -- see #requireHandleNotServing's own
- * doc, which this shares. */
+ * ActiveServe is, so a Session keeps to one role at a time (see
+ * #requireHandleNotServing's own doc). */
 interface ActiveSubscription {
   topic: string;
   stop: () => Promise<void>;
@@ -126,26 +119,20 @@ export class Session {
   #activeServe: ActiveServe | null = null;
   #activeSubscription: ActiveSubscription | null = null;
 
-  // Serializes every operation that reads this Session's shared
-  // control stream: call()/callWithUcan()/the DHT methods, plus
-  // serve()'s advertise + each poll tick + unadvertise, plus
-  // subscribe()'s start + stop. macula-go's connection/frame_stream.go
-  // RecvFrame mutates a shared buffer with no mutex of its own, so two
-  // reads racing it corrupt the stream -- verified live: `Promise.all`
-  // of 4 concurrent call()s on one Session left EVERY later read on
-  // that same Session permanently failing "claimed frame length ...
-  // exceeds the 16777215-byte cap" (a torn buffer), not just that one
-  // batch. The `#activeServe`/`#activeSubscription` checks above only
-  // ever protected call()-family operations from an ACTIVE serve()/
-  // subscribe() -- they did nothing to stop two ordinary call()s (or a
-  // call() racing a DHT method) from racing each other, since neither
-  // flag is set in that case. This queue is what actually closes that
-  // gap: every control-stream-reading native call funnels through
-  // #enqueue, so only one is ever in flight at a time, regardless of
-  // which method it came from. publish()/putContent()/getContent() do
-  // NOT go through this -- see their own docs for why (a pure write,
-  // and each own dedicated QUIC stream, respectively -- neither reads
-  // this shared stream at all).
+  // Serializes every native call that uses this Session's control
+  // stream: call()/callWithUcan()/the DHT methods, plus serve()'s
+  // advertise, each poll tick and unadvertise, plus subscribe()'s start
+  // and stop, so only one of them is in flight at a time. It was added
+  // when macula-go read the control stream without a lock, so two reads
+  // racing it corrupted the stream -- verified live: `Promise.all` of 4
+  // concurrent call()s on one Session left EVERY later read on that
+  // Session permanently failing "claimed frame length ... exceeds the
+  // 16777215-byte cap". macula-go v0.10.0, which this release embeds,
+  // reads the control stream on one goroutine and routes each reply,
+  // event and inbound CALL to what is waiting for it, so concurrent calls
+  // no longer race; this release keeps the queue as it was.
+  // publish()/putContent()/getContent() do NOT go through it -- see their
+  // own docs (a pure write, and each own dedicated QUIC stream).
   #queue: Promise<void> = Promise.resolve();
 
   #enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -192,34 +179,30 @@ export class Session {
     return this.#handle;
   }
 
-  /** call()'s own handle-plus-exclusivity guard, factored out since the
-   * DHT methods below (findRecord/findRecords/findRecordsByType/
-   * putRecord) all end up on this Session's same shared control stream
-   * too -- macula-go's dht.FindRecord et al. are themselves just a
-   * connection.Session.Call under the hood (see cabi/dht.go), so mixing
-   * one of these with an active serve() OR subscribe() on this Session
-   * races exactly the way call() itself would: serve()'s poll loop and
-   * subscribe()'s background reader both read frames off this same
-   * stream on their own schedule, same as call()'s own blocking read
-   * does. publish() is deliberately NOT guarded by this: it only ever
-   * WRITES a fire-and-forget frame (connection.Session.Publish), never
-   * reads, so it does not race a concurrent reader the way call()/
-   * serve()/subscribe()/the DHT methods do -- and the live pubsub round
-   * trip this SDK's own test performs (subscribe(), then publish() on
-   * the SAME Session while that subscription is active) depends on
-   * publish() staying unguarded here. */
+  /** call()'s own handle-plus-one-role check, factored out since the DHT
+   * methods below and the direct-dial methods are CALLs too (macula-go's
+   * dht.FindRecord et al. are a connection.Session.Call under the hood,
+   * see cabi/dht.go). A Session takes one role at a time: calls, one
+   * serve(), or one subscribe(). macula-go v0.10.0 routes each reply,
+   * event and inbound CALL on its own, so a call beside a serve() or
+   * subscribe() no longer races; this release keeps the check as it was.
+   * publish() is deliberately NOT checked: it only ever WRITES a
+   * fire-and-forget frame (connection.Session.Publish), and the live
+   * pubsub round trip this SDK's own test performs (subscribe(), then
+   * publish() on the SAME Session while that subscription is active)
+   * depends on publish() staying unchecked here. */
   #requireHandleNotServing(caller: string): Handle {
     const handle = this.#requireHandle();
     if (this.#activeServe !== null) {
       throw new Error(
         `macula-ts: Session.${caller}() while serve("${this.#activeServe.procedure}") is active on the same ` +
-          `Session races on the shared control stream -- open a second Session for the other role.`,
+          `Session is not supported -- open a second Session for the other role.`,
       );
     }
     if (this.#activeSubscription !== null) {
       throw new Error(
         `macula-ts: Session.${caller}() while subscribe("${this.#activeSubscription.topic}") is active on the ` +
-          `same Session races on the shared control stream -- open a second Session for the other role.`,
+          `same Session is not supported -- open a second Session for the other role.`,
       );
     }
     return handle;
@@ -300,13 +283,10 @@ export class Session {
    *
    * Real network I/O -- a signed frame out and a wait for the reply,
    * up to opts.deadlineMs -- so this runs off the main thread on the
-   * native side, like connect()/close(). Do not call this
-   * concurrently with an active serve() on the SAME Session: both read
-   * frames off the one shared control stream, and macula-go's own
-   * ServeOneCall/Call docs both warn that mixing roles on one
-   * connection races (an unrelated frame arriving first is discarded,
-   * not queued) -- open a second Session for the other role instead,
-   * exactly what this SDK's own live test does. */
+   * native side, like connect()/close(). Rejects while a serve() or
+   * subscribe() is active on the SAME Session (#requireHandleNotServing):
+   * a Session takes one role at a time, so open a second Session for the
+   * other role, exactly what this SDK's own live test does. */
   async call(procedure: string, payload: JsonValue, opts: CallOptions = {}): Promise<JsonValue> {
     const handle = this.#requireHandleNotServing("call");
     const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
@@ -346,9 +326,8 @@ export class Session {
    * security property that isn't actually enforced.
    *
    * Real network I/O, off the main thread on the native side, and
-   * subject to the identical same-Session exclusivity rule as `call()`
-   * (`#requireHandleNotServing`) -- both end up on the same shared
-   * control stream. */
+   * subject to the same one-role check as `call()`
+   * (`#requireHandleNotServing`). */
   async callWithUcan(procedure: string, payload: JsonValue, ucanToken: string | Ucan, opts: CallOptions = {}): Promise<JsonValue> {
     const handle = this.#requireHandleNotServing("callWithUcan");
     const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
@@ -385,11 +364,15 @@ export class Session {
    * between this and the JS handler) would map to
    * TemporaryRelayFailure, per that same file.
    *
-   * Only one serve() registration is allowed per Session at a time --
-   * see call()'s own doc on why mixing roles (or two server loops) on
-   * one connection is unsafe, not just inadvisable; open a second
-   * Session for a second procedure instead of trying to serve two
-   * procedures off one.
+   * Only one serve() registration is allowed per Session at a time: each
+   * poll tick takes the next inbound CALL from the session's one queue
+   * (macula-go's ServeOneCall) and answers a CALL for a procedure it
+   * doesn't serve with unknown_next_peer, so a second serve() would answer
+   * CALLs meant for the first. Open a second Session for a second
+   * procedure instead of trying to serve two procedures off one. serve()
+   * also refuses while a subscribe() is active on the same Session, and
+   * call()/the DHT methods refuse while a serve() is (the one-role rule,
+   * #requireHandleNotServing).
    *
    * `opts.bytes` picks how bytes in each inbound CALL's payload reach
    * `handler`: "hex" (the default) or "tagged" (rpc.ts's BytesOutput).
@@ -410,15 +393,15 @@ export class Session {
     const bytesMode = bytesModeFor(opts.bytes);
     if (this.#activeServe !== null) {
       throw new Error(
-        `macula-ts: Session is already serving "${this.#activeServe.procedure}" -- macula-go's ServeOneCall reads ` +
-          `one frame at a time off the shared control stream, so a second concurrent serve() (or a serve() ` +
-          `alongside call()) on the same Session races; open a second Session instead.`,
+        `macula-ts: Session is already serving "${this.#activeServe.procedure}" -- a second serve() on the ` +
+          `same Session would answer CALLs meant for the first, since each serve() takes the next inbound CALL ` +
+          `from the session's one queue; open a second Session instead.`,
       );
     }
     if (this.#activeSubscription !== null) {
       throw new Error(
         `macula-ts: Session.serve() while subscribe("${this.#activeSubscription.topic}") is active on the same ` +
-          `Session races on the shared control stream -- open a second Session for the other role.`,
+          `Session is not supported -- open a second Session for the other role.`,
       );
     }
     const handle = this.#requireHandle();
@@ -500,9 +483,9 @@ export class Session {
    * signature or checks its expiry -- see DhtRecord's own doc (dht.ts).
    *
    * Real network I/O, off the main thread on the native side, exactly
-   * like call() -- and subject to the same same-Session exclusivity
-   * rule as call() (see #requireHandleNotServing's own doc): do not
-   * call this while serve() is active on the same Session. */
+   * like call() -- and subject to the same one-role rule as call() (see
+   * #requireHandleNotServing's own doc): it refuses while a serve() or
+   * subscribe() is active on the same Session. */
   async findRecordsByType(recordType: DhtRecordType | number): Promise<DhtRecord[]> {
     const handle = this.#requireHandleNotServing("findRecordsByType");
     const json = await this.#enqueue(() => native.dhtFindRecordsByType(handle, this.#identity.handleForFfi(), recordType));
@@ -515,7 +498,7 @@ export class Session {
    * procedure, not just the first one found. `key` must be exactly 32
    * bytes -- see dht/record.go's ProcedureKey/StationEndpointKey/
    * ContentKey (macula-go) for how those are derived from the thing
-   * being looked up. Same I/O and exclusivity notes as
+   * being looked up. Same I/O and one-role notes as
    * findRecordsByType(). */
   async findRecords(key: Uint8Array): Promise<DhtRecord[]> {
     const handle = this.#requireHandleNotServing("findRecords");
@@ -528,7 +511,7 @@ export class Session {
    * dht.FindRecord). Resolves `null` when none exists -- mirrors
    * macula-go's own dht.ErrNotFound, translated to a value instead of a
    * thrown error since "not found" is an expected, routine outcome
-   * here, not exceptional. Same I/O and exclusivity notes as
+   * here, not exceptional. Same I/O and one-role notes as
    * findRecordsByType(). */
   async findRecord(key: Uint8Array): Promise<DhtRecord | null> {
     const handle = this.#requireHandleNotServing("findRecord");
@@ -571,7 +554,7 @@ export class Session {
    * silently becomes CBOR text. Typed arguments rule that mistake out
    * (see DhtRecord's own doc). `ttlMs` defaults to DHT_DEFAULT_TTL_MS
    * (48h). Resolves with the signed record actually stored. Same I/O
-   * and exclusivity notes as findRecordsByType(). */
+   * and one-role notes as findRecordsByType(). */
   async putProcedureAdvertisement(
     procedure: string,
     servingStation: Uint8Array,
@@ -601,7 +584,7 @@ export class Session {
    * own doc for wrapping macula-go's real constructor instead of a
    * generic JSON-payload builder (announcer_node/mcid are the same kind
    * of raw-byte field). `ttlMs` defaults to DHT_DEFAULT_TTL_MS (48h).
-   * Same I/O and exclusivity notes as findRecordsByType(). */
+   * Same I/O and one-role notes as findRecordsByType(). */
   async putContentAnnouncement(mcid: Uint8Array, endpoint: string, ttlMs = DHT_DEFAULT_TTL_MS): Promise<DhtRecord> {
     const handle = this.#requireHandleNotServing("putContentAnnouncement");
     if (mcid.length !== 34) {
@@ -634,7 +617,7 @@ export class Session {
    * diagnostics).
    *
    * Real network I/O, off the main thread on the native side, subject to
-   * the same same-Session exclusivity rule as `call()`/the DHT methods
+   * the same one-role rule as `call()`/the DHT methods
    * (`#requireHandleNotServing`). */
   async resolveDirect(procedure: string, opts: { realm?: string; deadlineMs?: number } = {}): Promise<DirectDialTarget> {
     if (opts.deadlineMs !== undefined && !(opts.deadlineMs > 0)) {
@@ -668,9 +651,9 @@ export class Session {
    *
    * Real network I/O (DHT lookups, a fresh QUIC dial, then the CALL
    * itself) -- off the main thread on the native side, subject to the
-   * same same-Session exclusivity rule as `call()` for THIS Session's own
-   * DHT-querying use (the separate dialed connection this opens
-   * internally is not this Session and is never exposed as one). */
+   * same one-role rule as `call()` for THIS Session's own DHT-querying use
+   * (the separate dialed connection this opens internally is not this
+   * Session and is never exposed as one). */
   async callDirect(procedure: string, payload: JsonValue, opts: CallOptions = {}): Promise<JsonValue> {
     const handle = this.#requireHandleNotServing("callDirect");
     const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
@@ -696,7 +679,7 @@ export class Session {
    * method's and ucan.ts's own doc for why: macula's UCAN gate is a
    * bearer-token check, not an audience match).
    *
-   * Same I/O and exclusivity notes as `callDirect()`. */
+   * Same I/O and one-role notes as `callDirect()`. */
   async callDirectWithUcan(procedure: string, payload: JsonValue, ucanToken: string | Ucan, opts: CallOptions = {}): Promise<JsonValue> {
     const handle = this.#requireHandleNotServing("callDirectWithUcan");
     const timeoutMs = opts.deadlineMs ?? DEFAULT_CALL_TIMEOUT_MS;
@@ -737,10 +720,8 @@ export class Session {
    *
    * **Must NOT be called on a Session that is also actively
    * `serve()`-ing** -- enforced by the same `#requireHandleNotServing`
-   * guard `call()`/the DHT methods use, for the identical reason: this
-   * method's own `PutRecord` CALL reads a RESULT off the same shared
-   * control stream `serve()`'s poll loop is also reading, and the two
-   * would race (matches `directdial.AdvertiseDirect`'s own doc). A
+   * one-role check `call()`/the DHT methods use, since this method's own
+   * `PutRecord` is a CALL. A
    * provider that also serves `procedure` needs a SEPARATE Session (and
    * identity -- this fleet enforces one connection per identity, kicking
    * whichever connects second) to call this on.
@@ -768,13 +749,11 @@ export class Session {
    * observes a subscriber's own publish arriving back at it rather than
    * asserting it as a hard guarantee, for the same reason).
    *
-   * Deliberately NOT guarded by the same-Session exclusivity rule
-   * call()/serve()/subscribe()/the DHT methods share (see
-   * #requireHandleNotServing's own doc) -- publish() only ever writes,
-   * never reads off the shared control stream, so it does not race a
-   * concurrent serve()/subscribe() the way those do, and can run safely
-   * on the SAME Session a subscribe() of its own is active on -- exactly
-   * what a subscriber publishing to (and receiving) its own topic needs.
+   * Deliberately NOT subject to the one-role rule call()/serve()/
+   * subscribe()/the DHT methods share (see #requireHandleNotServing's own
+   * doc) -- publish() only ever writes, so it runs on the SAME Session a
+   * subscribe() of its own is active on -- exactly what a subscriber
+   * publishing to (and receiving) its own topic needs.
    *
    * `opts.realm` (see CallOptions.realm's own doc for the hex-string
    * format and exact-match semantics) scopes which realm this EVENT is
@@ -793,21 +772,18 @@ export class Session {
   }
 
   /** Pubsub: sends a signed SUBSCRIBE for `topic`, then delivers every
-   * inbound EVENT for it to `handler` -- macula-go's own
-   * connection.Session.RunSubscriber (connection/subscriber.go) drives
-   * the actual read loop on the Go side, in a background goroutine, NOT
-   * reimplemented on top of a hand-rolled poll here (see cabi/pubsub.go's
-   * own doc for why RunSubscriber specifically, over the lower-level
-   * RecvEvent). Delivery is Go-driven, not JS-driven: unlike serve()'s
+   * inbound EVENT for it to `handler` -- a background goroutine on the Go
+   * side reads the macula-go connection.Subscription that SUBSCRIBE
+   * opened (see cabi/pubsub.go's own doc for why the SUBSCRIBE goes out
+   * before that goroutine starts). Delivery is Go-driven, not JS-driven:
+   * unlike serve()'s
    * poll loop, nothing on this side calls into the native layer
    * repeatedly to ask "did anything arrive yet" -- the addon calls INTO
    * this handler asynchronously, via a Napi::ThreadSafeFunction wired to
    * that background goroutine, whenever an EVENT actually shows up.
    *
    * Only one subscribe() (and no active serve()) is allowed per Session
-   * at a time -- same reasoning as serve()'s own one-at-a-time rule
-   * (#requireHandleNotServing's own doc): the background reader and any
-   * other read off this Session's shared control stream would race.
+   * at a time -- the one-role rule (#requireHandleNotServing's own doc).
    * Open a second Session for a second topic (or to serve/call
    * concurrently) instead.
    *
@@ -843,14 +819,13 @@ export class Session {
     if (this.#activeServe !== null) {
       throw new Error(
         `macula-ts: Session.subscribe() while serve("${this.#activeServe.procedure}") is active on the same ` +
-          `Session races on the shared control stream -- open a second Session for the other role.`,
+          `Session is not supported -- open a second Session for the other role.`,
       );
     }
     if (this.#activeSubscription !== null) {
       throw new Error(
-        `macula-ts: Session is already subscribed to "${this.#activeSubscription.topic}" -- macula-go's ` +
-          `RunSubscriber reads one frame at a time off the shared control stream, so a second concurrent ` +
-          `subscribe() on the same Session races; open a second Session instead.`,
+        `macula-ts: Session is already subscribed to "${this.#activeSubscription.topic}" -- one ` +
+          `subscribe() per Session is supported; open a second Session instead.`,
       );
     }
     const handle = this.#requireHandle();
@@ -924,8 +899,8 @@ export class Session {
 
   /** Content transfer: stores `data` (macula-go's content.Put, on this
    * Session's own fresh dedicated QUIC stream -- Session.
-   * OpenDedicatedStream on the Go side, NOT the shared control stream
-   * call()/serve()/the DHT methods/subscribe() all read from), chunking
+   * OpenDedicatedStream on the Go side, NOT the control stream
+   * call()/serve()/the DHT methods/subscribe() all use), chunking
    * automatically above manifest.DefaultChunkSize (256 KiB) and
    * returning the hex-encoded mcid it's now addressable by. `name` is
    * used ONLY on the chunked path (attached to the resulting manifest)
@@ -936,12 +911,11 @@ export class Session {
    * station may forget this content later, and there is no list/delete
    * operation. Treat this as "hand these bytes to a peer once."
    *
-   * Because Put opens its own dedicated stream instead of reading the
-   * shared control stream, this is, unlike call()/serve()/the DHT
-   * methods/subscribe(), never subject to Session's same-Session
-   * exclusivity guard (#requireHandleNotServing) -- it can run
-   * concurrently with an active serve()/subscribe() (or another
-   * putContent()/getContent()) on the same Session without racing.
+   * Because Put opens its own dedicated stream, this is, unlike call()/
+   * serve()/the DHT methods/subscribe(), never subject to Session's
+   * one-role rule (#requireHandleNotServing) -- it can run concurrently
+   * with an active serve()/subscribe() (or another putContent()/
+   * getContent()) on the same Session.
    *
    * Real network I/O (one or more signed CALLs on the new stream) --
    * runs off the main thread on the native side, like every other
@@ -966,9 +940,9 @@ export class Session {
    * (a bad session, a malformed mcid, a real transport error) rejects
    * with a plain Error instead.
    *
-   * Same dedicated-stream, no-exclusivity-guard reasoning as
-   * putContent() -- safe alongside an active serve()/subscribe() on the
-   * same Session. Real network I/O, runs off the main thread. */
+   * Not subject to the one-role rule, for the same dedicated-stream
+   * reason as putContent() -- safe alongside an active serve()/subscribe()
+   * on the same Session. Real network I/O, runs off the main thread. */
   async getContent(mcid: string): Promise<Uint8Array> {
     const handle = this.#requireHandle();
     const data = await native.contentGet(handle, this.#identity.handleForFfi(), mcid);

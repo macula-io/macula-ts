@@ -218,10 +218,10 @@ fixed) is in [CHANGELOG.md](CHANGELOG.md).
   `handler(payload)` for each (sync or async; `opts.bytes` as for
   `call()`). Resolves with an async
   `stop()` that unadvertises and waits for the current poll tick to
-  finish. Only one `serve()` per `Session` at a time, and `call()`/
-  `serve()` refuse to run concurrently on the same `Session` — both read
-  frames off one shared control stream; open a second `Session` for the
-  other role.
+  finish. Only one `serve()` per `Session` at a time, since a second would
+  answer CALLs meant for the first, and a `Session` takes one role at a
+  time: `call()` refuses while a `serve()` or `subscribe()` is active on
+  it. Open a second `Session` for the other role.
 - **DHT** — `session.findRecordsByType(recordType)`,
   `session.findRecords(key)`, `session.findRecord(key)`, and
   `session.putProcedureAdvertisement(procedure, servingStation, opts?)`/
@@ -243,8 +243,8 @@ fixed) is in [CHANGELOG.md](CHANGELOG.md).
   `subscribe()`d to.
 - **Content transfer** — `session.putContent(data, name?)` /
   `session.getContent(mcid)`, sent on their own dedicated QUIC stream
-  (not the shared control stream, so they run safely alongside an active
-  `serve()`/`subscribe()`). Data above 256 KiB is chunked and reassembled
+  (not the control stream, and outside the one-role rule, so they run
+  alongside an active `serve()`/`subscribe()`). Data above 256 KiB is chunked and reassembled
   automatically. `mcid` crosses the boundary as a lowercase hex string.
   **This is a one-time TRANSFER mechanism, not durable object storage** —
   a station may forget content after serving it, and there is no
@@ -283,8 +283,8 @@ fixed) is in [CHANGELOG.md](CHANGELOG.md).
   plain ADVERTISE and the signed DHT record on the same call — both are
   required for `resolveDirect()`+`callDirect()` to actually reach a live
   route. `resolveDirect`/`callDirect`/`callDirectWithUcan`/
-  `advertiseDirect` share the same same-Session exclusivity guard as
-  `call()`/the DHT methods; a long-lived provider that also serves the
+  `advertiseDirect` follow the same one-role rule as `call()`/the DHT
+  methods; a long-lived provider that also serves the
   same procedure needs a separate `Session` (and identity — this fleet
   enforces one connection per identity) to keep re-advertising on, which
   is why `keepAdvertisedDirect()` is a standalone function rather than a

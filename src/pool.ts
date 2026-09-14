@@ -15,24 +15,22 @@
 // Erlang's macula_client can put N tracked (Realm, Topic) subscriptions
 // (plus Call, plus Advertise) on ONE gen_server-owned link, because a BEAM
 // mailbox demuxes every message type for that one process regardless of how
-// many concerns it's juggling. This SDK's Session has no equivalent: its
-// underlying control stream supports exactly one concurrent reader --
-// `subscribe()` throws outright if called twice on the same Session
-// ("a second concurrent subscribe() on the same Session races; open a
-// second Session instead"), and `call()`/`serve()` are mutually exclusive
-// with an active subscribe on the same Session for the identical reason
-// (macula-go's FrameStream does a raw sequential read into a shared buffer,
-// no per-caller demux). Confirmed live 2026-09-04 while porting the Go side
-// of this same design: this is a wire-level constraint, not a TS-specific
-// gap -- macula-mcp already works around it today by giving lobby_observer.ts
-// a dedicated identity+Session PER ROOM TOPIC rather than multiplexing one
-// connection.
+// many concerns it's juggling. This SDK's Session takes one role at a time:
+// `subscribe()` throws outright if called twice on the same Session, and
+// `call()`/`serve()` refuse to run beside an active subscribe on the same
+// Session. The rule dates from macula-go's FrameStream doing a raw
+// sequential read into a shared buffer with no per-caller demux (confirmed
+// live 2026-09-04). macula-go v0.10.0, which this release embeds, routes
+// each reply and event on one reader, but Session keeps its one-role rule
+// in this release, so a pool link is still built around it -- as
+// macula-mcp's lobby_observer.ts is, with a dedicated identity+Session PER
+// ROOM TOPIC rather than multiplexing one connection.
 //
 // So a "link" to one station here is a small SET of role-scoped sessions,
 // not one session:
 //   - one "control" session (this pool's own caller-supplied identity),
 //     used for publish() and call() and NEVER subscribed on -- publish() is
-//     write-only (explicitly unguarded by the exclusivity rule) and call()'s
+//     write-only (explicitly outside the one-role rule) and call()'s
 //     own internal queue already serialises concurrent calls safely, so one
 //     control session per station is enough regardless of call volume.
 //   - one additional session PER CURRENTLY-TRACKED TOPIC, under an identity
@@ -45,8 +43,8 @@
 // backoff; a topic session dying just re-subscribes its own one topic on
 // respawn (no "replay N subscriptions onto a survivor" step needed, since
 // each session only ever carried one). A control link can't also carry a
-// liveness-only subscribe without reintroducing the exclusivity problem it
-// exists to avoid, and a failed call() genuinely does surface a dead
+// liveness-only subscribe without breaking the one-role rule it exists to
+// keep, and a failed call() genuinely does surface a dead
 // connection -- but publish() does not: found live 2026-09-04 that a
 // publish() attempt on a session the station had already kicked can still
 // locally "succeed" (the frame is handed off before the QUIC stack notices

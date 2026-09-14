@@ -100,12 +100,11 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session content transfer (live sta
       try {
         session = await Session.connect(STATION_HOST, STATION_PORT, id);
 
-        // Unlike call()/findRecord()/subscribe(), which all race an
-        // active serve() on the SAME Session's shared control stream
-        // (see pubsub.live.test.ts's own exclusivity test), content
-        // transfer opens its own fresh QUIC stream every time -- so
-        // this must NOT throw the same "races on the shared control
-        // stream" error those do.
+        // Unlike call()/findRecord()/subscribe(), which all refuse to run
+        // beside an active serve() on the SAME Session (see
+        // pubsub.live.test.ts's own one-role test), content transfer opens
+        // its own fresh QUIC stream every time -- so this must NOT throw
+        // the one-role error those do.
         stopServing = await session.serve(`io.macula.ts.content_live_test.exclusivity.${Date.now()}`, () => null);
 
         const data = randomBytes(128);

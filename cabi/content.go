@@ -1,22 +1,19 @@
 // content.go exposes macula-go's content package (Put/Get -- ordinary
 // CALL/RESULT against four reserved `_content.*` procedures, sent on
 // their OWN dedicated QUIC stream via Session.OpenDedicatedStream, NOT
-// the shared control stream rpc.go/serve.go/dht.go/pubsub.go all read
-// from). See content/content.go's own doc: this is a one-time TRANSFER
+// the control stream rpc.go/serve.go/dht.go/pubsub.go all use). See
+// content/content.go's own doc: this is a one-time TRANSFER
 // mechanism, not durable object storage -- a station is free to forget
 // content after serving it, and there is no list/delete operation.
 // src/content.ts and src/session.ts's putContent/getContent docs carry
 // the same warning to TypeScript callers.
 //
 // Because Put/Get each open a FRESH dedicated stream of their own
-// (content.Put/Get -> Session.OpenDedicatedStream), neither races a
-// concurrent call()/serve()/subscribe()/DHT method on this session's
-// shared control stream, and two concurrent Put/Get calls don't race
-// each other either -- unlike every other network-touching export in
-// this cabi so far, this pair needs no session-side exclusivity
-// reasoning at all. src/session.ts's putContent/getContent are
-// deliberately NOT routed through #requireHandleNotServing for exactly
-// this reason.
+// (content.Put/Get -> Session.OpenDedicatedStream), neither uses this
+// session's control stream, and two concurrent Put/Get calls don't race
+// each other either. src/session.ts's putContent/getContent are
+// deliberately NOT subject to its one-role rule
+// (#requireHandleNotServing) for this reason.
 //
 // mcid crosses this boundary as a lowercase hex string (68 hex chars =
 // manifest.Mcid's 34 bytes: <<Version:8, Codec:8, Hash:32/binary>>) --

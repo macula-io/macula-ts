@@ -43,10 +43,9 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session direct-dial (live station)
         const procedure = uniqueProcedure("resolve_and_call");
 
         // Provider side: publish this procedure as direct-dial-reachable
-        // BEFORE starting to serve it -- advertiseDirect()'s own PutRecord
-        // CALL must not race an active serve() loop's reads of the same
-        // shared control stream (see advertiseDirect()'s own doc), so
-        // this order matters, not just happens to work.
+        // BEFORE starting to serve it -- advertiseDirect() refuses on a
+        // Session with an active serve() (see advertiseDirect()'s own doc),
+        // so this order matters, not just happens to work.
         await providerSession.advertiseDirect(procedure, { ttlMs: 5 * 60_000 });
 
         stopServing = await providerSession.serve(procedure, (payload: JsonValue) => {

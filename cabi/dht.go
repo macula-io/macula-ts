@@ -9,10 +9,9 @@
 // the existing Session/RPC work: dht.FindRecordsByType et al. take the
 // SAME *connection.Session macula_session_connect already hands back --
 // no new transport-level plumbing needed here, and (like
-// macula_session_call) these all end up on the same shared control
-// stream a CALL uses, so src/session.ts applies the same
-// call()-vs-active-serve() exclusivity guard to these as it does to
-// call() itself.
+// macula_session_call) these are CALLs on the session's control stream,
+// so src/session.ts applies the same one-role rule to these as it does
+// to call() itself.
 //
 // Records cross this boundary as JSON, the same convention RPC payloads
 // use (see wirevalue.go) -- dhtRecordJSON below, kept in sync by hand

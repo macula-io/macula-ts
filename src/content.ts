@@ -1,13 +1,12 @@
 // Content transfer -- macula-go's content package (Put/Get), thin
 // CALL/RESULT wrappers to reserved `_content.*` procedures sent on
 // their OWN dedicated QUIC stream (Session.OpenDedicatedStream on the
-// Go side), NOT the shared control stream call()/serve()/the DHT
-// methods/subscribe() all read from -- see cabi/content.go's own doc
-// for why Session.putContent()/getContent() (session.ts) are, unlike
-// those, never subject to Session's same-Session exclusivity guard, and
-// why two concurrent putContent()/getContent() calls on one Session
-// don't race each other either (each gets its own fresh dedicated
-// stream).
+// Go side), NOT the control stream call()/serve()/the DHT
+// methods/subscribe() all use -- see cabi/content.go's own doc for why
+// Session.putContent()/getContent() (session.ts) are, unlike those, never
+// subject to Session's one-role rule, and why two concurrent
+// putContent()/getContent() calls on one Session don't race each other
+// either (each gets its own fresh dedicated stream).
 //
 // IMPORTANT: this is a one-time TRANSFER mechanism, not durable object
 // storage. A station may forget content after serving it, there is no

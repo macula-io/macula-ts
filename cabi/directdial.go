@@ -20,13 +20,9 @@
 // function here takes the SAME *connection.Session macula_session_connect
 // already hands back. Resolve/Call/CallWithUCAN use it only to query the
 // DHT (matching dht.go's FindRecord et al.); AdvertiseDirect sends the
-// plain ADVERTISE and the DHT PutRecord on it directly. Both are reads/
-// writes of this session's shared control stream, so src/session.ts
-// applies the same call()-vs-active-serve() exclusivity guard to these as
-// it does to call()/the DHT methods -- see AdvertiseDirect's own doc on
-// why: it must not run on a session whose receive loop belongs to a
-// ServeForever/ServeOneCall loop, or its own PutRecord CALL's reply is
-// consumed by that loop instead and the put times out. A long-lived
+// plain ADVERTISE and the DHT PutRecord on it directly. Both use this
+// session's control stream, so src/session.ts applies the same one-role
+// rule to these as it does to call()/the DHT methods. A long-lived
 // provider that wants to keep re-advertising on an interval while also
 // serving therefore needs a SEPARATE session (and identity -- this fleet
 // enforces one connection per identity, kicking whichever connects

@@ -87,9 +87,9 @@ export interface KeepAdvertisedDirectOptions extends AdvertiseDirectOptions {
  * long-lived provider needs to call `AdvertiseDirect` again on its own
  * schedule, and it is this function's CALLER's job to decide WHICH
  * Session that runs on. See `Session.advertiseDirect()`'s own doc for why
- * that must NOT be a Session with an active `serve()` on it
- * (`advertiseDirect()`'s own `PutRecord` CALL would race `serve()`'s own
- * reads of the same shared control stream): a long-lived provider that
+ * that must NOT be a Session with an active `serve()` on it (a Session
+ * takes one role at a time, and `advertiseDirect()`'s own `PutRecord` is a
+ * CALL): a long-lived provider that
  * also serves `procedure` needs a SEPARATE Session (and identity -- this
  * fleet enforces one connection per identity, kicking whichever connects
  * second) for that, passed here instead of the serving Session.

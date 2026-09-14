@@ -116,7 +116,7 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session pubsub (live station)", ()
   );
 
   it(
-    "subscribe() while serve() is active on the same Session throws, and vice versa -- both read the shared control stream",
+    "subscribe() while serve() is active on the same Session throws, and vice versa -- a Session takes one role at a time",
     async () => {
       const id = Identity.generate();
       let session: Session | undefined;

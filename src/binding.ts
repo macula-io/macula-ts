@@ -172,11 +172,11 @@ const addon = require("node-gyp-build")(repoRoot) as {
   sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
   // Content transfer (cabi/content.go). Each opens its OWN dedicated
   // QUIC stream on the Go side (content.Put/Get -> Session.
-  // OpenDedicatedStream), separate from the shared control stream every
-  // other network-touching function above reads from -- so, unlike
+  // OpenDedicatedStream), separate from the control stream every other
+  // network-touching function above uses -- so, unlike
   // sessionCall/serveWaitForCall/the DHT methods/sessionSubscribeStart,
-  // neither of these needs the same-Session exclusivity guard
-  // session.ts applies to those. Real network I/O either way (one or
+  // neither of these is subject to the one-role rule session.ts applies
+  // to those. Real network I/O either way (one or
   // more signed CALLs on the new stream) -- backed by Napi::AsyncWorker
   // on the C++ side, same as sessionCall. contentGet resolves `null`
   // for macula-go's content.ErrNotFound specifically (an expected,
