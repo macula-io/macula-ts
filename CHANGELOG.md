@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- The live tests run through `scripts/run-live-tests.sh`, which
+  `.github/workflows/live.yml` now calls, so a local run and a CI run take
+  the same steps. The script first checks that the machine has a route to
+  both stations, and fails within seconds, naming the station, its addresses
+  and the missing route, instead of every live test failing on the same dial
+  error.
+- The README says reaching the public stations needs IPv6: they have IPv6
+  addresses only, and GitHub-hosted runners have no IPv6.
+
 ## [0.17.0] - 2026-09-14
 
 ### Breaking

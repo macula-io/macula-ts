@@ -89,6 +89,10 @@ convention).
 
 ## Quick start
 
+Reaching the public stations needs IPv6: they have IPv6 addresses only, so on
+a machine without IPv6, `Session.connect()` fails with a dial error ending in
+`network is unreachable`.
+
 Also lives as a runnable example -- `npm run build && node
 examples/01_quickstart.ts`. Advertises and calls its own trivial echo
 procedure (two identities, a provider and a caller, since a station kicks
@@ -333,6 +337,8 @@ slice of work built on top of a working `Session`.
 ```bash
 npx vitest run    # default suite, no network
 MACULA_TS_LIVE_STATION=<station host> MACULA_TS_LIVE_OTHER_STATION=<another station host> npm run test:live
+# the same steps as live.yml, from a clean checkout of the commit under test:
+MACULA_TS_LIVE_STATION=<station host> MACULA_TS_LIVE_OTHER_STATION=<another station host> scripts/run-live-tests.sh
 ```
 
 `src/session.live.test.ts`, `src/rpc.live.test.ts`, `src/dht.live.test.ts`,
@@ -344,10 +350,19 @@ explicitly, gated behind `MACULA_TS_LIVE`. Same convention as macula-go's
 `live` build tag, macula-rust's `#[ignore]`, and macula-dotnet's
 `[Trait("Category","Live")]`: real-network tests are written and
 runnable, just excluded from the default/CI run so a station outage doesn't
-make ordinary CI flaky. `.github/workflows/live.yml` runs them when dispatched
-by hand (`workflow_dispatch`), never on push or PR. Its two required inputs name
-the stations, and it loads the committed linux-x64 prebuild, the same `.node`
-file the npm package ships, after checking its sha256 against the commit.
+make ordinary CI flaky.
+
+`scripts/run-live-tests.sh` runs them from a clean checkout of the commit under
+test. It checks that this machine has a route to both stations, installs
+without building the addon, checks by sha256 that the addon the tests load is
+the committed prebuild (the same `.node` file the npm package ships), runs the
+live tests, and prints the registration waits. `.github/workflows/live.yml`,
+dispatched by hand (`workflow_dispatch`) and never on push or PR, calls that
+script with its two required station inputs, so a local run and a CI run take
+the same steps. The public stations have IPv6 addresses only, and
+GitHub-hosted runners have no IPv6, so live.yml needs a runner with IPv6. On a
+hosted runner the route check fails within seconds, naming the station and the
+missing route.
 
 A live run names its stations: `MACULA_TS_LIVE_STATION` is the host every live
 test uses, and `MACULA_TS_LIVE_OTHER_STATION` is the second station the pool's
