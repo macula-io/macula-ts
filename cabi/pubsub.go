@@ -78,6 +78,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/frame"
 )
 
@@ -159,7 +160,7 @@ func macula_session_publish(
 // in-flight call).
 type subscription struct {
 	cancel context.CancelFunc
-	doneCh chan error // the reader goroutine's own RunSubscriber return value
+	doneCh chan error // why the reader goroutine's event loop ended
 }
 
 func subscriptionFromHandle(h C.uintptr_t) (sub *subscription, ok bool) {
@@ -187,8 +188,7 @@ func deliverEvent(evt frame.EventInfo, cb C.macula_event_callback, userData unsa
 	if err != nil {
 		// A payload this SDK's own JSON conversion can't represent -- drop
 		// this one event rather than killing the whole subscription over
-		// it (matches connection.RunSubscriber's own posture toward a
-		// frame it can't use: skip, keep listening -- see its own doc).
+		// it: skip it and keep listening.
 		return
 	}
 	cTopic := C.CString(evt.Topic)
@@ -200,50 +200,36 @@ func deliverEvent(evt frame.EventInfo, cb C.macula_event_callback, userData unsa
 	C.callEventCallback(cb, userData, cTopic, (*C.uchar)(unsafe.Pointer(&pub32[0])), C.ulonglong(evt.Seq), cPayload)
 }
 
-// macula_session_subscribe_start sends a signed SUBSCRIBE for (realm,
-// topic) SYNCHRONOUSLY first -- connection.Session.Subscribe, completed
-// before this function returns -- then starts a background goroutine
-// running macula-go's OWN Session.RunSubscriber (connection/subscriber.go)
-// for the actual event loop.
+// macula_session_subscribe_start subscribes to (realm, topic)
+// SYNCHRONOUSLY first -- connection.Session.Subscribe, whose SUBSCRIBE is
+// written before this function returns -- then starts a background
+// goroutine that hands every event that Subscription receives to cb.
 //
-// The synchronous send matters, not just as a nicety: RunSubscriber
-// would happily send its own SUBSCRIBE internally, inside the goroutine
-// it starts, but "start a goroutine" and "that goroutine has actually
-// reached its first line" are not the same moment -- Go's scheduler
-// gives no guarantee the SUBSCRIBE would be on the wire before this
-// function returns and the JS side's subscribe() Promise resolves. A
-// caller that immediately publish()es to the topic it just subscribed
-// to (this SDK's own live pubsub round-trip test does exactly this, the
-// self-delivery pattern this project's task description calls for)
-// would then race its own PUBLISH against a SUBSCRIBE that has not
-// necessarily reached the station yet. Confirmed live, not just reasoned
-// about: without the synchronous send below, that exact round-trip test
-// intermittently failed ("no event arrived") on an otherwise-correct
-// implementation. Sending here first, before starting the goroutine at
-// all, matches the ordering macula-go's OWN TestLivePubSubRoundTrip
-// relies on (subscribe then immediately publish, no sleep, in one
-// sequential goroutine) -- reusing a proven-reliable ordering instead of
-// introducing a new race this SDK is the first to hit.
+// The synchronous subscribe matters, not just as a nicety: "start a
+// goroutine" and "that goroutine has actually reached its first line" are
+// not the same moment -- Go's scheduler gives no guarantee a SUBSCRIBE sent
+// from inside the goroutine would be on the wire before this function
+// returns and the JS side's subscribe() Promise resolves. A caller that
+// immediately publish()es to the topic it just subscribed to (this SDK's
+// own live pubsub round-trip test does exactly this) would then race its
+// own PUBLISH against a SUBSCRIBE that has not necessarily reached the
+// station yet. Confirmed live, not just reasoned about: without a
+// synchronous subscribe, that exact round-trip test intermittently failed
+// ("no event arrived").
 //
-// RunSubscriber sends its own (harmless, idempotent -- SUBSCRIBE is a
-// registration, not a counter) second SUBSCRIBE when its goroutine
-// starts; the loop itself is still deliberately RunSubscriber's, not
-// hand-rolled here on top of the lower-level Session.RecvEvent, even
-// though RecvEvent is exported and would work for the happy path:
-// RunSubscriber already gets a real, previously-live-found bug right
-// (its own doc: a single non-EVENT frame arriving on this shared control
-// stream must be skipped, not treated as fatal -- RecvEvent's own
-// contract, by contrast, treats ANY non-EVENT frame as a hard error)
-// that a hand-rolled loop here would be at genuine risk of getting wrong
-// again on a real, busy, shared station.
+// The goroutine reads the same Subscription the synchronous call returned,
+// so the session holds exactly one subscription for this handle. Since
+// macula-go v0.9.0 a session has a single reader that routes each EVENT to
+// the Subscriptions it matches, so Subscription.Recv only ever returns
+// events for this one: frames of other types never reach this loop.
 //
 // This is the one new shape in this SDK: every other export so far is a
 // single request answered by a single response (or a bounded poll for
 // one, like macula_serve_wait_for_call). An event subscription has no
 // such bound -- events arrive on their own schedule for as long as it
 // stays open -- so unlike that JS-driven poll loop, delivery here is
-// Go-driven: cb is called from the goroutine's own thread whenever
-// RunSubscriber's handler fires, for as long as the subscription stays
+// Go-driven: cb is called from the goroutine's own thread whenever an
+// event arrives, for as long as the subscription stays
 // open. See macula_session_subscribe_stop for how the goroutine is
 // actually torn down again -- it does not run forever unbounded.
 //
@@ -282,34 +268,75 @@ func macula_session_subscribe_start(
 	}
 
 	spec := frame.NewSubscribeSpec(C.GoString(topic), realm32OrZero(realm32), id.NodeID())
-	if err := session.Subscribe(spec, id); err != nil {
+	goSub, err := session.Subscribe(spec, id)
+	if err != nil {
 		setErr(errOut, err)
 		return 0
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	sub := &subscription{cancel: cancel, doneCh: make(chan error, 1)}
-
-	go func() {
-		err := session.RunSubscriber(ctx, spec, id, func(evt frame.EventInfo) error {
-			deliverEvent(evt, cb, userData, mode)
-			return nil
-		})
-		// A clean, caller-requested stop is context.Canceled -- the
-		// stop() caller already knows synchronously it asked for this
-		// and tears down via macula_session_subscribe_stop, so no
-		// signal is needed here for that case. Anything else means
-		// this loop ended on its own (the connection died, a real
-		// transport error, etc) with nobody else aware of it yet --
-		// this is the ONLY place that will ever find out, so it must
-		// say so rather than going silent.
-		if !errors.Is(err, context.Canceled) {
-			deliverClosed(err, closedCb, userData)
-		}
-		sub.doneCh <- err
-	}()
+	deliver := func(evt frame.EventInfo) { deliverEvent(evt, cb, userData, mode) }
+	go runSubscription(ctx, goSub, sub, deliver, closedCb, userData)
 
 	return C.uintptr_t(cgo.NewHandle(sub))
+}
+
+// runSubscription is a subscription's background goroutine: it runs goSub's
+// event loop and reports how the loop ended. A clean, caller-requested stop
+// is context.Canceled -- the stop() caller already knows synchronously it
+// asked for this and tears down via macula_session_subscribe_stop, so no
+// signal is needed for that case. Anything else means the loop ended on its
+// own (the session ended, the subscription fell behind its queue, etc) with
+// nobody else aware of it yet -- this is the ONLY place that will ever find
+// out, so it must say so rather than going silent.
+func runSubscription(
+	ctx context.Context,
+	goSub *connection.Subscription,
+	sub *subscription,
+	deliver func(frame.EventInfo),
+	closedCb C.macula_subscription_closed_callback,
+	userData unsafe.Pointer,
+) {
+	err := receiveEvents(ctx, goSub, deliver)
+	if !errors.Is(err, context.Canceled) {
+		deliverClosed(err, closedCb, userData)
+	}
+	sub.doneCh <- err
+}
+
+// eventPollInterval bounds how long one Subscription.Recv wait blocks
+// before the event loop checks whether it was asked to stop.
+const eventPollInterval = 2 * time.Second
+
+// receiveEvents hands every event goSub receives to deliver until ctx is
+// done (context.Canceled) or the subscription ends (its error), then closes
+// goSub, which writes UNSUBSCRIBE once nothing else on the session holds the
+// topic.
+func receiveEvents(ctx context.Context, goSub *connection.Subscription, deliver func(frame.EventInfo)) error {
+	defer func() { _ = goSub.Close() }()
+	err := nextEvent(ctx, goSub, deliver)
+	for err == nil {
+		err = nextEvent(ctx, goSub, deliver)
+	}
+	return err
+}
+
+// nextEvent waits up to eventPollInterval for goSub's next event and hands
+// it to deliver. A wait that finds nothing is not an error.
+func nextEvent(ctx context.Context, goSub *connection.Subscription, deliver func(frame.EventInfo)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	evt, err := goSub.Recv(eventPollInterval)
+	if errors.Is(err, connection.ErrRecvTimeout) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	deliver(evt)
+	return nil
 }
 
 // deliverClosed calls closedCb via the callClosedCallback trampoline,
@@ -325,19 +352,19 @@ func deliverClosed(err error, cb C.macula_subscription_closed_callback, userData
 }
 
 // macula_session_subscribe_stop cancels the background reader goroutine
-// (whose own deferred Unsubscribe then actually runs -- a real network
-// write, connection.Session.Unsubscribe) and BLOCKS until that goroutine
+// (whose deferred Subscription.Close then actually runs -- a real network
+// write of UNSUBSCRIBE once nothing else on the session holds the topic)
+// and BLOCKS until that goroutine
 // has genuinely exited, so a caller can rely on "no further cb call can
 // arrive after this returns", not merely "a stop was requested" -- this
 // is the actual mechanism behind the requirement that a subscription's
 // background goroutine never runs forever with no way to stop it.
-// ctx.Canceled (RunSubscriber's own return value on a clean stop) is not
+// context.Canceled (the event loop's return value on a clean stop) is not
 // treated as a failure; any other error is a genuine transport-level
 // problem, surfaced via *errOut same as everywhere else in this cabi.
 //
-// Bounded by RunSubscriber's own poll interval (2s, unexported in
-// macula-go -- see connection/subscriber.go's subscriberPollInterval)
-// plus whatever's left of an in-flight RecvFrame wait -- real,
+// Bounded by eventPollInterval (2s) plus whatever's left of an in-flight
+// Subscription.Recv wait -- real,
 // if bounded, blocking work, so like macula_session_subscribe_start this
 // must run off Node's main thread (addon/binding.cc's
 // SessionSubscribeStopWorker).
