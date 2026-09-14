@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.17.0] - Unreleased
+
+### Breaking
+
+- A `serve()` handler whose payload is a map receives the caller the
+  provider's session verified under `"caller"`, as bytes (hex by default,
+  `$bytes` with `bytes: "tagged"`), replacing a `"caller"` the sender put
+  there. A payload that isn't a map reaches the handler unchanged
+  (macula-go v0.10.0).
+
+### Security
+
+This release fixes these defects in 0.16.0 and earlier releases.
+
+- `getContent()` used a fetched manifest before it was checked against the
+  MCID asked for, and took its size, chunk count and chunk size as given,
+  which could stop or stall the process.
+- A RESULT or ERROR counted without a check that it was signed by the key
+  its `responded_by` or `reported_by` names.
+- CBOR decoding had no limit on how deeply lists and maps nest.
+
+### Changed
+
+- macula-go v0.8.2 to v0.10.0.
+- A `subscribe()` that falls behind its 256-event queue ends, and
+  `onClosed` is called with the reason (macula-go v0.9.0).
+- A provider's inbound CALLs wait in a queue of 64 for `serve()`, and a
+  CALL that doesn't fit is answered with `temporary_relay_failure`
+  (macula-go v0.9.0).
+- The errors `call()`, `serve()`, `subscribe()` and the DHT and direct-dial
+  methods throw while a Session has another role active no longer say the
+  Session races on its control stream. The checks are unchanged. A second
+  `serve()` on one Session is refused because it would answer CALLs meant
+  for the first.
+- `.tool-versions` names Node.js 24.20.0, the version CI uses.
+
+### Fixed
+
+- `subscribe()` writes one SUBSCRIBE, and one UNSUBSCRIBE when it ends while
+  the Session is still connected. It wrote two SUBSCRIBEs, its own and one
+  from macula-go's `RunSubscriber`.
+
 ## [0.16.0] - 2026-09-11
 
 ### Breaking
