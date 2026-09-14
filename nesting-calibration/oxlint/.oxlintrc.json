@@ -1,0 +1,6 @@
+{
+  "rules": {
+    "max-depth": ["warn", 0],
+    "max-nested-callbacks": ["warn", 0]
+  }
+}

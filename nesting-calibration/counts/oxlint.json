@@ -1,0 +1,4 @@
+{
+  "categories": {"correctness": "off", "suspicious": "off", "pedantic": "off", "perf": "off", "restriction": "off", "style": "off", "nursery": "off"},
+  "rules": {"max-depth": ["warn", 1], "max-nested-callbacks": ["warn", 1]}
+}
