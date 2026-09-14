@@ -1,6 +1,6 @@
-import { appendFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { beforeEach, describe, it, expect } from "vitest";
+import { serveUntilRouted } from "../test/live_registration.js";
 import { liveStationHost, requireLiveStation } from "../test/live_station.js";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
@@ -18,44 +18,6 @@ const STATION_PORT = 4433;
 // timestamp/random suffix.
 function uniqueProcedure(label: string): string {
   return `io.macula.ts.rpc_live_test.${label}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-}
-
-// Records one wait: on the console, and in the file MACULA_TS_LIVE_WAITS names when set, since a
-// test run's console output isn't always shown.
-function recordWait(line: string): void {
-  console.log(line);
-  if (process.env.MACULA_TS_LIVE_WAITS) appendFileSync(process.env.MACULA_TS_LIVE_WAITS, `${line}\n`);
-}
-
-// How long a call may keep getting unknown_next_peer after serve() before the test fails: about six
-// times the longest wait measured on a live station (one retry, about 300 ms). A wait near it is a
-// station finding, not a reason to raise it.
-const ROUTE_WAIT_MS = 2000;
-
-// Calls until the station routes the CALL. serve()'s ADVERTISE is fire-and-forget, so a station can
-// still answer unknown_next_peer for a moment after serve() resolves. Only that answer is retried,
-// every 250 ms, for up to ROUTE_WAIT_MS; any other outcome is returned or thrown at once. Logs how
-// many attempts the call took and how long it waited, so registration lag shows in the run.
-async function whenRouted<T>(label: string, call: () => Promise<T>): Promise<T> {
-  const start = Date.now();
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const result = await call();
-      recordWait(`live wait, ${label}: routed on attempt ${attempt} after ${Date.now() - start} ms`);
-      return result;
-    } catch (err) {
-      const routing = err instanceof MaculaCallError && err.bolt4Name === "unknown_next_peer";
-      if (!routing) {
-        recordWait(`live wait, ${label}: answered on attempt ${attempt} after ${Date.now() - start} ms with ${String(err)}`);
-        throw err;
-      }
-      if (Date.now() - start >= ROUTE_WAIT_MS) {
-        recordWait(`live wait, ${label}: still unknown_next_peer on attempt ${attempt} after ${Date.now() - start} ms, giving up`);
-        throw err;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
 }
 
 describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () => {
@@ -77,13 +39,6 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
 
         const procedure = uniqueProcedure("echo");
 
-        // The provider role: echo whatever payload it receives, plus
-        // proof the handler itself actually ran (not a stub) by
-        // wrapping the payload rather than just returning it verbatim.
-        stopServing = await providerSession.serve(procedure, (payload: JsonValue) => {
-          return { echoed: payload, handled_by: "macula-ts-live-test-provider" };
-        });
-
         // The caller role: a real payload exercising the JsonValue
         // shapes other than bytes going IN -- text, an integer, a float,
         // null, and a nested list/map. (Bytes have their own test below.
@@ -98,7 +53,20 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
           nested: { list: [1, 2, 3], hexlike_text: "0xdeadbeef" },
         };
 
-        const result = await whenRouted("rpc echo", () => callerSession.call(procedure, payload, { deadlineMs: 15000 }));
+        // The provider role: echo whatever payload it receives, plus
+        // proof the handler itself actually ran (not a stub) by
+        // wrapping the payload rather than just returning it verbatim.
+        const served = await serveUntilRouted({
+          label: "rpc echo",
+          provider: providerSession,
+          procedure,
+          handler: (received: JsonValue) => {
+            return { echoed: received, handled_by: "macula-ts-live-test-provider" };
+          },
+          firstCall: () => callerSession.call(procedure, payload, { deadlineMs: 15000 }),
+        });
+        stopServing = served.stop;
+        const result = served.firstResult;
 
         // A map payload reaches the provider with the caller its session verified under "caller"
         // (macula-go v0.10.0), as "0x" hex by default: this caller's own node id.
@@ -134,26 +102,27 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
 
         const procedure = uniqueProcedure("bytes_echo");
 
+        // "AQID" also appears as plain text, which must stay text both ways.
+        const payload: JsonValue = { id: { $bytes: "AQID" }, list: [{ $bytes: "" }], text: "AQID" };
+
         // The provider asks for tagged bytes, so its handler sees exactly
         // what the caller sent, and returning that unchanged sends the
         // bytes back AS bytes: the "pass a returned id straight back"
         // property the tagged form exists for.
         const seenByProvider: JsonValue[] = [];
-        stopServing = await providerSession.serve(
+        const served = await serveUntilRouted({
+          label: "rpc bytes",
+          provider: providerSession,
           procedure,
-          (payload: JsonValue) => {
-            seenByProvider.push(payload);
-            return payload;
+          handler: (received: JsonValue) => {
+            seenByProvider.push(received);
+            return received;
           },
-          { bytes: "tagged" },
-        );
-
-        // "AQID" also appears as plain text, which must stay text both ways.
-        const payload: JsonValue = { id: { $bytes: "AQID" }, list: [{ $bytes: "" }], text: "AQID" };
-
-        const tagged = await whenRouted("rpc bytes", () =>
-          callerSession.call(procedure, payload, { deadlineMs: 15000, bytes: "tagged" }),
-        );
+          options: { bytes: "tagged" },
+          firstCall: () => callerSession.call(procedure, payload, { deadlineMs: 15000, bytes: "tagged" }),
+        });
+        stopServing = served.stop;
+        const tagged = served.firstResult;
         // The provider also sees the caller its session verified, as tagged bytes, and echoes it
         // back with the rest (macula-go v0.10.0).
         const callerNodeId = Buffer.from(callerId.nodeId);
@@ -219,13 +188,18 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
       ]);
 
       const procedure = uniqueProcedure("always_throws");
-      stopServing = await providerSession.serve(procedure, () => {
-        throw new Error("macula-ts-live-test: deliberate handler failure");
-      });
-
       let thrown: unknown;
       try {
-        await whenRouted("rpc throwing handler", () => callerSession.call(procedure, null, { deadlineMs: 15000 }));
+        const served = await serveUntilRouted({
+          label: "rpc throwing handler",
+          provider: providerSession,
+          procedure,
+          handler: () => {
+            throw new Error("macula-ts-live-test: deliberate handler failure");
+          },
+          firstCall: () => callerSession.call(procedure, null, { deadlineMs: 15000 }),
+        });
+        stopServing = served.stop;
       } catch (err) {
         thrown = err;
       }
@@ -264,13 +238,18 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session RPC (live station)", () =>
         // serve()/advertise still only use the all-zero realm this
         // slice (session.ts's own doc) -- this procedure is therefore
         // reachable under realm:undefined (the default) and nowhere
-        // else.
-        stopServing = await providerSession.serve(procedure, () => "reached under the default realm");
-
-        // Same realm (the default, implicit) as the provider -- reaches
-        // it, proving the happy path still works with the new option
-        // simply left unset.
-        const defaultRealmResult = await whenRouted("rpc realm", () => callerSession.call(procedure, null, { deadlineMs: 15000 }));
+        // else. The first call uses the same realm (the default,
+        // implicit) as the provider -- it reaches it, proving the happy
+        // path still works with the new option simply left unset.
+        const served = await serveUntilRouted({
+          label: "rpc realm",
+          provider: providerSession,
+          procedure,
+          handler: () => "reached under the default realm",
+          firstCall: () => callerSession.call(procedure, null, { deadlineMs: 15000 }),
+        });
+        stopServing = served.stop;
+        const defaultRealmResult = served.firstResult;
         expect(defaultRealmResult).toBe("reached under the default realm");
 
         // A real, random, non-zero 32-byte realm -- the SAME procedure

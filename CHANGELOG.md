@@ -14,6 +14,11 @@ All notable changes to this project will be documented in this file.
   error.
 - The README says reaching the public stations needs IPv6: they have IPv6
   addresses only, and GitHub-hosted runners have no IPv6.
+- The live tests serve and subscribe only through `test/live_registration.ts`,
+  whose helpers wait until the station routes a call or delivers an event
+  before a test relies on it, since `serve()` and `subscribe()` return before
+  the station has registered anything. A test in the offline suite fails if a
+  live test calls `serve()` or `subscribe()` directly.
 
 ## [0.17.0] - 2026-09-14
 

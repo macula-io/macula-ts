@@ -1,4 +1,5 @@
 import { beforeEach, describe, it, expect } from "vitest";
+import { serveUncalled } from "../test/live_registration.js";
 import { liveStationHost, requireLiveStation } from "../test/live_station.js";
 import { randomBytes } from "node:crypto";
 import { Identity } from "./identity.js";
@@ -107,7 +108,7 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session content transfer (live sta
         // pubsub.live.test.ts's own one-role test), content transfer opens
         // its own fresh QUIC stream every time -- so this must NOT throw
         // the one-role error those do.
-        stopServing = await session.serve(`io.macula.ts.content_live_test.exclusivity.${Date.now()}`, () => null);
+        stopServing = await serveUncalled(session, `io.macula.ts.content_live_test.exclusivity.${Date.now()}`, () => null);
 
         const data = randomBytes(128);
         const { mcid } = await session.putContent(data);

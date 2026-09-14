@@ -1,6 +1,6 @@
-import { appendFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { beforeEach, describe, it, expect } from "vitest";
+import { serveUntilRouted } from "../test/live_registration.js";
 import { liveStationHost, requireLiveStation } from "../test/live_station.js";
 import { Identity } from "./identity.js";
 import { Session } from "./session.js";
@@ -15,44 +15,6 @@ const STATION_PORT = 4433;
 
 function uniqueProcedure(label: string): string {
   return `io.macula.ts.ucan_live_test.${label}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-}
-
-// Records one wait: on the console, and in the file MACULA_TS_LIVE_WAITS names when set, since a
-// test run's console output isn't always shown.
-function recordWait(line: string): void {
-  console.log(line);
-  if (process.env.MACULA_TS_LIVE_WAITS) appendFileSync(process.env.MACULA_TS_LIVE_WAITS, `${line}\n`);
-}
-
-// How long a call may keep getting unknown_next_peer after serve() before the test fails: about six
-// times the longest wait measured on a live station (one retry, about 300 ms). A wait near it is a
-// station finding, not a reason to raise it.
-const ROUTE_WAIT_MS = 2000;
-
-// Calls until the station routes the CALL. serve()'s ADVERTISE is fire-and-forget, so a station can
-// still answer unknown_next_peer for a moment after serve() resolves. Only that answer is retried,
-// every 250 ms, for up to ROUTE_WAIT_MS; any other outcome is returned or thrown at once. Logs how
-// many attempts the call took and how long it waited, so registration lag shows in the run.
-async function whenRouted<T>(label: string, call: () => Promise<T>): Promise<T> {
-  const start = Date.now();
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const result = await call();
-      recordWait(`live wait, ${label}: routed on attempt ${attempt} after ${Date.now() - start} ms`);
-      return result;
-    } catch (err) {
-      const routing = err instanceof MaculaCallError && err.bolt4Name === "unknown_next_peer";
-      if (!routing) {
-        recordWait(`live wait, ${label}: answered on attempt ${attempt} after ${Date.now() - start} ms with ${String(err)}`);
-        throw err;
-      }
-      if (Date.now() - start >= ROUTE_WAIT_MS) {
-        recordWait(`live wait, ${label}: still unknown_next_peer on attempt ${attempt} after ${Date.now() - start} ms, giving up`);
-        throw err;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
 }
 
 // IMPORTANT, honest scope note: this SDK does not implement provider-
@@ -89,14 +51,6 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session.callWithUcan (live station
 
         const procedure = uniqueProcedure("gated_shape_echo");
 
-        // Not actually gated (this SDK has no served-side UCAN policy --
-        // see this file's own module doc) -- an ordinary echo handler,
-        // proving the token really reached the wire and the call
-        // completed, not that the provider checked it.
-        stopServing = await providerSession.serve(procedure, (payload: JsonValue) => {
-          return { echoed: payload, handled_by: "macula-ts-ucan-live-test-provider" };
-        });
-
         const ucan = Ucan.mint(callerId, callerId.nodeId, [{ with: `mri:test:${procedure}`, can: "call" }], {
           expiresAt: Math.floor(Date.now() / 1000) + 300,
         });
@@ -104,9 +58,21 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session.callWithUcan (live station
         expect(ucan.isExpired).toBe(false);
 
         const payload: JsonValue = { text: "hello with a real ucan attached", integer: 7 };
-        const result = await whenRouted("ucan echo", () =>
-          callerSession.callWithUcan(procedure, payload, ucan, { deadlineMs: 15000 }),
-        );
+        // Not actually gated (this SDK has no served-side UCAN policy --
+        // see this file's own module doc) -- an ordinary echo handler,
+        // proving the token really reached the wire and the call
+        // completed, not that the provider checked it.
+        const served = await serveUntilRouted({
+          label: "ucan echo",
+          provider: providerSession,
+          procedure,
+          handler: (received: JsonValue) => {
+            return { echoed: received, handled_by: "macula-ts-ucan-live-test-provider" };
+          },
+          firstCall: () => callerSession.callWithUcan(procedure, payload, ucan, { deadlineMs: 15000 }),
+        });
+        stopServing = served.stop;
+        const result = served.firstResult;
 
         // A map payload reaches the provider with the caller its session verified under "caller"
         // (macula-go v0.10.0), as "0x" hex by default: this caller's own node id.
@@ -141,12 +107,16 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session.callWithUcan (live station
         ]);
 
         const procedure = uniqueProcedure("raw_token_string");
-        stopServing = await providerSession.serve(procedure, () => "ok");
-
         const ucan = Ucan.mint(callerId, callerId.nodeId);
-        const result = await whenRouted("ucan raw token", () =>
-          callerSession.callWithUcan(procedure, null, ucan.token, { deadlineMs: 15000 }),
-        );
+        const served = await serveUntilRouted({
+          label: "ucan raw token",
+          provider: providerSession,
+          procedure,
+          handler: () => "ok",
+          firstCall: () => callerSession.callWithUcan(procedure, null, ucan.token, { deadlineMs: 15000 }),
+        });
+        stopServing = served.stop;
+        const result = served.firstResult;
         expect(result).toBe("ok");
       } finally {
         if (stopServing) await stopServing();
@@ -202,11 +172,19 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("Session.callWithUcan (live station
           Session.connect(STATION_HOST, STATION_PORT, callerId),
         ]);
 
+        const caller = callerSession;
         const procedure = uniqueProcedure("realm_scoped_ucan");
-        stopServing = await providerSession.serve(procedure, () => "reached under the default realm");
         const ucan = Ucan.mint(callerId, callerId.nodeId);
 
-        const defaultRealmResult = await callerSession.callWithUcan(procedure, null, ucan, { deadlineMs: 15000 });
+        const served = await serveUntilRouted({
+          label: "ucan realm",
+          provider: providerSession,
+          procedure,
+          handler: () => "reached under the default realm",
+          firstCall: () => caller.callWithUcan(procedure, null, ucan, { deadlineMs: 15000 }),
+        });
+        stopServing = served.stop;
+        const defaultRealmResult = served.firstResult;
         expect(defaultRealmResult).toBe("reached under the default realm");
 
         const otherRealm = randomBytes(32).toString("hex");
