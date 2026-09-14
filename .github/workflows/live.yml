@@ -1,0 +1,101 @@
+name: Live
+
+# Runs the live station tests (src/*.live.test.ts) against real stations. It is
+# dispatched by hand and never runs on push or PR, because a station outage or
+# a network hiccup must not make ordinary CI flaky. Both stations are required
+# inputs with no default, so every run names the stations it used.
+#
+# The tests load the committed linux-x64 prebuild, the same .node file the npm
+# package ships. Nothing here builds Go or the addon. On the same commit,
+# ci.yml's "Confirm the committed prebuild is not stale" step shows that this
+# prebuild matches the source.
+
+on:
+  workflow_dispatch:
+    inputs:
+      station:
+        description: "Host name of the station every live test uses (MACULA_TS_LIVE_STATION)"
+        required: true
+        type: string
+      other_station:
+        description: "Host name of a second station, for the pool's multi-station test (MACULA_TS_LIVE_OTHER_STATION)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Two runs at once would share the stations, so a second dispatch waits.
+concurrency:
+  group: live-stations
+  cancel-in-progress: false
+
+jobs:
+  test-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # node-gyp-build then never looks in build/, in the check or in the tests.
+      PREBUILDS_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+
+      # binding.gyp makes npm run `node-gyp rebuild` on install, and
+      # --ignore-scripts stops it, so no build/ directory appears.
+      - name: Install without building the addon
+        run: npm ci --ignore-scripts
+
+      - name: Check the tests load the committed prebuild
+        run: |
+          set -euo pipefail
+          if [ -e build ]; then
+            echo "::error::build/ exists, so the tests might not load the committed prebuild"
+            exit 1
+          fi
+          # Loads the addon the way src/binding.ts does and reports the .node
+          # file the process actually opened.
+          loaded=$(node -e '
+            require("node-gyp-build")(process.cwd());
+            const nodes = process.report.getReport().sharedObjects.filter((p) => p.endsWith(".node"));
+            if (nodes.length !== 1) throw new Error(`expected one loaded .node file, found ${nodes.length}: ${nodes.join(", ")}`);
+            console.log(nodes[0]);
+          ')
+          rel=$(realpath --relative-to=. "$loaded")
+          case "$rel" in
+            prebuilds/linux-x64/*.node) ;;
+            *) echo "::error::the addon loaded from $rel, not from prebuilds/linux-x64/"; exit 1 ;;
+          esac
+          loaded_sha=$(sha256sum "$rel" | awk '{print $1}')
+          committed_sha=$(git cat-file blob "HEAD:$rel" | sha256sum | awk '{print $1}')
+          echo "commit:           $(git rev-parse HEAD)"
+          echo "loaded:           $rel"
+          echo "sha256 loaded:    $loaded_sha"
+          echo "sha256 committed: $committed_sha"
+          if [ "$loaded_sha" != "$committed_sha" ]; then
+            echo "::error::the loaded $rel does not match the committed file"
+            exit 1
+          fi
+          echo "The loaded .node matches the committed prebuild."
+
+      - name: Live station tests
+        id: live
+        env:
+          MACULA_TS_LIVE_STATION: ${{ inputs.station }}
+          MACULA_TS_LIVE_OTHER_STATION: ${{ inputs.other_station }}
+          MACULA_TS_LIVE_WAITS: ${{ runner.temp }}/live-waits.log
+        run: npm run test:live
+
+      - name: Registration waits
+        if: ${{ !cancelled() && steps.live.conclusion != 'skipped' }}
+        env:
+          MACULA_TS_LIVE_WAITS: ${{ runner.temp }}/live-waits.log
+        run: |
+          if [ -s "$MACULA_TS_LIVE_WAITS" ]; then
+            sort "$MACULA_TS_LIVE_WAITS"
+          else
+            echo "No registration waits were recorded."
+          fi

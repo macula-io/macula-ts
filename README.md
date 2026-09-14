@@ -344,9 +344,10 @@ explicitly, gated behind `MACULA_TS_LIVE`. Same convention as macula-go's
 `live` build tag, macula-rust's `#[ignore]`, and macula-dotnet's
 `[Trait("Category","Live")]`: real-network tests are written and
 runnable, just excluded from the default/CI run so a station outage doesn't
-make ordinary CI flaky. `.github/workflows/ci.yml` exposes this as a
-manually-triggered (`workflow_dispatch`) job, never run automatically on
-push/PR.
+make ordinary CI flaky. `.github/workflows/live.yml` runs them when dispatched
+by hand (`workflow_dispatch`), never on push or PR. Its two required inputs name
+the stations, and it loads the committed linux-x64 prebuild, the same `.node`
+file the npm package ships, after checking its sha256 against the commit.
 
 A live run names its stations: `MACULA_TS_LIVE_STATION` is the host every live
 test uses, and `MACULA_TS_LIVE_OTHER_STATION` is the second station the pool's
