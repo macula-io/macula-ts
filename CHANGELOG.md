@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Breaking
+
+- **On the macula 12 wire, over macula-go's pool.** Releases before this one
+  speak the retired 10.x wire and cannot reach the current fleet. The API is
+  rebuilt around it, with no compatibility layer:
+  - `NodeKey` replaces `Identity`: `generate`, `load`, `loadOrCreate`, `save`,
+    `nodeId`, `publicKey`, `profile`, `sign`, `free`.
+  - `Pool` replaces `Session` and the old pool: `Pool.connect(key, seeds,
+    { realmTrust })` with every seed pinned by its `nodeId`; `call` (by direct
+    dial), `providers`, `publish`, `subscribe`, `serve`, `serveStream`,
+    `openStream`, `findRecord`, `findRecords`, `findRecordsByType`,
+    `putRecord`, `status`, `close`.
+  - `Stream` (new): `send`, `sendValue`, `closeSend`, `close`, `reply`,
+    `abort`, `recv`, async iteration.
+  - Errors: `ProviderError` (`code`, `detail`), `RelayError` (`code`),
+    `StreamError` (`code`, `detail`, `relay`) replace `MaculaCallError`.
+  - Removed until macula 12 has them: content transfer (node-served content,
+    macula#35), UCAN minting and gated calls (post-quantum UCANs,
+    macula-go#2), `putProcedureAdvertisement` and `putContentAnnouncement`
+    (`serve` advertises, and `putRecord` puts any signed record).
+- **New identities: re-join your realms and re-trust your agents.** A macula
+  12 node_id derives from an ML-DSA-87 key (or the LAMPS composite in
+  `pq_hybrid`), so no Ed25519 identity carries over. `NodeKey.loadOrCreate`
+  makes a new key file at the path you give; old seed files are left
+  untouched. Anything that named your old node_id (trust lists, petnames,
+  realm memberships, device admissions) must be redone with the new one.
+
+### Added
+
+- `npm test` runs the API against two in-process macula 12 stations
+  (`cabi/cmd/teststation`, over macula-go's `teststation`): keys, calls and
+  their errors, providers, server and client streams (and that none is left
+  unreleased), pubsub and the DHT. No network needed.
+- `src/fleet.live.test.ts` and `live.yml` take a station pinned by node_id
+  and a realm key.
+
 ## [0.17.0] - 2026-09-14
 
 ### Breaking

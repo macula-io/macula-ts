@@ -1,18 +1,11 @@
-// Loads the compiled N-API addon (addon/binding.cc) and re-exports its
-// typed functions. Unlike the koffi-era version of this file, there is
-// no runtime signature declaration here -- the addon's C++ glue already
-// knows its own shapes, throws real JS errors on failure (no more
-// manual errOut-array/checkErr dance), and is a single self-contained
-// .node file (cabi/'s Go code is statically linked in via
-// -buildmode=c-archive, not loaded separately at runtime).
+// Loads the compiled N-API addon (addon/binding.cc) and types its functions.
+// cabi/'s Go code is linked into the addon statically, so it is one
+// self-contained .node file. node-gyp-build picks, at require time, a local
+// build (build/Release/*.node) or the published prebuild for this platform
+// (prebuilds/<platform>-<arch>/*.node), so a consumer installing from npm
+// never runs a compiler.
 //
-// node-gyp-build picks, at require time, whichever of these exists:
-// build/Release/*.node (a local dev build via `npm run build:addon:dev`)
-// or prebuilds/<platform>-<arch>/*.node (baked in by `npm run
-// build:prebuilds` / prebuildify, and published as part of the npm
-// package) -- this is the whole point: a consumer installing this
-// package from npm never runs a compiler or fetches anything, because
-// the matching prebuild is already sitting in the downloaded tarball.
+// Internal to the package: the public API is key.ts, pool.ts and stream.ts.
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -20,408 +13,62 @@ import { dirname, join } from "node:path";
 const require = createRequire(import.meta.url);
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+/** An opaque Go value's handle (runtime/cgo.Handle), as the addon returns it. */
+export type Handle = bigint;
+
+/** What a listener (a subscription, a served procedure, a served stream
+ * procedure) is handed, on the event loop: an event or closed notice with its
+ * JSON, or a request with the pending call's or stream's handle. */
+export interface Delivery {
+  readonly kind: "event" | "closed" | "request";
+  readonly json: string;
+  readonly handle: Handle;
+}
+
+export type Listener = (delivery: Delivery) => void;
+
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const addon = require("node-gyp-build")(repoRoot) as {
-  identityGenerate(): bigint;
-  identityFromSeedBytes(seed32: Uint8Array): bigint;
-  identityNodeId(handle: Handle): Uint8Array;
-  identityPrivateBytes(handle: Handle): Uint8Array;
-  identityFree(handle: Handle): void;
-  // A generic Ed25519 signing primitive (identity.KeyPair.Sign) -- no
-  // application-specific message format baked in anywhere on this path;
-  // data is signed exactly as given. Pure local computation, no network
-  // I/O -- synchronous, like identityNodeId above.
-  identitySign(handle: Handle, data: Uint8Array): Uint8Array;
-  // sessionConnect/sessionClose are backed by Napi::AsyncWorker on the
-  // C++ side (see addon/binding.cc) specifically because they're real
-  // network I/O -- a synchronous FFI call here would block the whole
-  // Node event loop for the duration of a QUIC dial + handshake (up to
-  // ~30s) or a close's drain sleep. They genuinely return Promises,
-  // not a sync call wrapped in Promise.resolve().
-  sessionConnect(host: string, port: number, identityHandle: Handle): Promise<bigint>;
-  sessionRemoteAddr(handle: Handle): string;
-  sessionStationNodeId(handle: Handle): Uint8Array;
-  sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void>;
-  // Unary RPC. All six are real network I/O (see addon/binding.cc's
-  // own comments on each worker) except pendingCallProcedure/
-  // pendingCallPayloadJson, which only read fields already sitting in
-  // a pendingCall handle -- no wire activity, so those two stay
-  // synchronous like identityNodeId/sessionRemoteAddr above.
-  sessionCall(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    procedure: string,
-    realm: Uint8Array | undefined,
-    payloadJson: string,
-    timeoutMs: number,
-    bytesMode: number,
-  ): Promise<string>;
-  // UCAN (cabi/ucan.go). ucanMint/ucanDecode are pure local operations
-  // (no network I/O) -- unlike every other function in this section they
-  // are plain synchronous calls, not Promises, the same convention
-  // identityGenerate/identityNodeId use above. sessionCallWithUcan IS
-  // real network I/O (a signed CALL carrying the attached token, same
-  // round trip as sessionCall) -- Promise-returning, backed by
-  // Napi::AsyncWorker, same as sessionCall itself.
-  ucanMint(
-    identityHandle: Handle,
-    issuer: string,
-    audience: string,
-    capabilitiesJson: string,
-    expiresAt: number | undefined,
-    notBefore: number | undefined,
-    nonce: string,
-    factsJson: string | undefined,
-    proofsJson: string | undefined,
-  ): string;
-  ucanDecode(token: string): string;
-  sessionCallWithUcan(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    procedure: string,
-    realm: Uint8Array | undefined,
-    payloadJson: string,
-    timeoutMs: number,
-    ucanToken: string,
-    bytesMode: number,
-  ): Promise<string>;
-  sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
-  sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
-  // Resolves with a pendingCall Handle once a matching CALL arrives, or
-  // `null` if nothing did within timeoutMs (or a foreign CALL got
-  // auto-refused on our behalf -- see cabi/serve.go's own doc) -- the
-  // caller's cue to just call this again.
-  serveWaitForCall(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    procedure: string,
-    timeoutMs: number,
-  ): Promise<Handle | null>;
-  pendingCallProcedure(pendingHandle: Handle): string;
-  pendingCallPayloadJson(pendingHandle: Handle, bytesMode: number): string;
-  pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void>;
-  pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void>;
-  // DHT records (cabi/dht.go). All five are real network I/O (a signed
-  // CALL under the hood, same as sessionCall) -- backed by
-  // Napi::AsyncWorker on the C++ side, same reasoning as sessionCall.
-  // Each resolves with JSON text (a DhtRecord or DhtRecord[], per
-  // dht.ts), except dhtFindRecord, which resolves `null` for
-  // macula-go's dht.ErrNotFound specifically (an expected, common
-  // outcome, not an error) rather than rejecting. dhtPutProcedureAdvertisement/
-  // _ContentAnnouncement wrap macula-go's REAL constructors -- see
-  // cabi/dht.go's own doc for why there is no single generic "put any
-  // record type with an arbitrary JSON payload" function.
-  dhtFindRecordsByType(sessionHandle: Handle, identityHandle: Handle, recordType: number): Promise<string>;
-  dhtFindRecords(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string>;
-  dhtFindRecord(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string | null>;
-  dhtPutProcedureAdvertisement(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    procedure: string,
-    servingStation32: Uint8Array,
-    ttlMs: number,
-  ): Promise<string>;
-  dhtPutContentAnnouncement(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    mcid34: Uint8Array,
-    endpoint: string,
-    ttlMs: number,
-  ): Promise<string>;
-  // Pubsub (cabi/pubsub.go). sessionPublish is real network I/O (one
-  // signed frame write), same worker shape as sessionAdvertise.
-  // sessionSubscribeStart/_Stop are this addon's first request/response
-  // pair that ALSO carries a third, ongoing channel: onEvent is called
-  // by the addon (via a Napi::ThreadSafeFunction wired to the Go-side
-  // background reader goroutine, see addon/binding.cc) once per
-  // delivered EVENT, for as long as the subscription stays open --
-  // asynchronously, on its own schedule, not just once when the
-  // returned Promise resolves. It's also called (with kind: "closed",
-  // exactly once) if that goroutine ever exits on its own -- the
-  // connection died, or some other transport error -- rather than via
-  // sessionSubscribeStop; see session.ts's subscribe() for how that's
-  // handled (a real bug this SDK had and fixed: without this signal,
-  // such a subscription went silent forever). sessionSubscribeStart's
-  // Promise resolves once the initial SUBSCRIBE has been sent and the
-  // reader goroutine started; sessionSubscribeStop's Promise resolves
-  // only once that goroutine has actually exited (UNSUBSCRIBE sent, no
-  // further onEvent call possible) -- not merely once a stop was
-  // requested.
-  sessionPublish(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    topic: string,
-    payloadJson: string,
-    ttlMs: number,
-  ): Promise<void>;
-  sessionSubscribeStart(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    topic: string,
-    onEvent: (
-      msg:
-        | { kind: "event"; topic: string; publisher: Uint8Array; seq: number; payloadJson: string }
-        | { kind: "closed"; error: string },
-    ) => void,
-    bytesMode: number,
-  ): Promise<bigint>;
-  sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
-  // Content transfer (cabi/content.go). Each opens its OWN dedicated
-  // QUIC stream on the Go side (content.Put/Get -> Session.
-  // OpenDedicatedStream), separate from the control stream every other
-  // network-touching function above uses -- so, unlike
-  // sessionCall/serveWaitForCall/the DHT methods/sessionSubscribeStart,
-  // neither of these is subject to the one-role rule session.ts applies
-  // to those. Real network I/O either way (one or
-  // more signed CALLs on the new stream) -- backed by Napi::AsyncWorker
-  // on the C++ side, same as sessionCall. contentGet resolves `null`
-  // for macula-go's content.ErrNotFound specifically (an expected,
-  // routine outcome for a transfer mechanism with no durability
-  // guarantee), the same convention dhtFindRecord uses for its own
-  // "not found" case.
-  contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string>;
-  contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null>;
-  // Direct-dial (cabi/directdial.go). All four are real network I/O --
-  // one or more signed CALLs, plus, for directdialCall/
-  // directdialCallWithUcan, a fresh one-hop QUIC dial macula-go opens/
-  // pins/closes entirely internally -- backed by Napi::AsyncWorker, same
-  // as sessionCall/the DHT methods. directdialResolve resolves with JSON
-  // text (a DirectDialTarget, per directdial.ts); directdialCall/
-  // directdialCallWithUcan resolve with the SAME callEnvelope JSON shape
-  // sessionCall/sessionCallWithUcan do (rpc.ts's CallEnvelope).
-  directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, timeoutMs: number): Promise<string>;
-  directdialCall(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    procedure: string,
-    realm: Uint8Array | undefined,
-    payloadJson: string,
-    timeoutMs: number,
-    bytesMode: number,
-  ): Promise<string>;
-  directdialCallWithUcan(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    procedure: string,
-    realm: Uint8Array | undefined,
-    payloadJson: string,
-    timeoutMs: number,
-    ucanToken: string,
-    bytesMode: number,
-  ): Promise<string>;
-  directdialAdvertise(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    procedure: string,
-    ttlMs: number,
-  ): Promise<void>;
-};
+export const native = require("node-gyp-build")(repoRoot) as {
+  keyGenerate(profile: string): Promise<Handle>;
+  keyLoad(path: string, profile: string): Promise<Handle>;
+  keySave(key: Handle, path: string): Promise<void>;
+  keyNodeId(key: Handle): Uint8Array;
+  keyPublicKey(key: Handle): Uint8Array;
+  keyProfile(key: Handle): string;
+  keySign(key: Handle, data: Uint8Array): Promise<Uint8Array>;
+  keyFree(key: Handle): void;
 
-// The addon always returns BigInt (see addon/binding.cc's comment on
-// why: a JS `number` loses precision above 2^53 and nothing guarantees
-// a cgo.Handle value stays under that forever), but accepts either
-// shape back for convenience.
-export type Handle = number | bigint;
+  poolConnect(key: Handle, seedsJson: string, optionsJson: string): Promise<Handle>;
+  poolClose(pool: Handle): Promise<void>;
+  poolNodeId(pool: Handle): Uint8Array;
+  poolStatus(pool: Handle): string;
+  poolCall(pool: Handle, realm: Uint8Array, procedure: string, payloadJson: string, provider: Uint8Array | null,
+    timeoutMs: number, bytesMode: number): Promise<string>;
+  poolProviders(pool: Handle, realm: Uint8Array, procedure: string, timeoutMs: number): Promise<string>;
+  poolPublish(pool: Handle, realm: Uint8Array, topic: string, payloadJson: string, ttlMs: number): Promise<void>;
+  poolSubscribe(pool: Handle, realm: Uint8Array, topic: string, bytesMode: number, listener: Listener): Promise<Handle>;
+  subscriptionStop(subscription: Handle): Promise<void>;
+  poolFindRecord(pool: Handle, key: Uint8Array, timeoutMs: number, bytesMode: number): Promise<string>;
+  poolFindRecords(pool: Handle, key: Uint8Array, timeoutMs: number, bytesMode: number): Promise<string>;
+  poolFindRecordsByType(pool: Handle, type: number, timeoutMs: number, bytesMode: number): Promise<string>;
+  poolPutRecord(pool: Handle, wire: Uint8Array, timeoutMs: number): Promise<void>;
 
-export const native = {
-  identityGenerate(): bigint {
-    return addon.identityGenerate();
-  },
-  identityFromSeedBytes(seed32: Uint8Array): bigint {
-    if (seed32.length !== 32) {
-      throw new Error(`macula-ts: seed must be exactly 32 bytes, got ${seed32.length}`);
-    }
-    return addon.identityFromSeedBytes(seed32);
-  },
-  identityNodeId(handle: Handle): Uint8Array {
-    return addon.identityNodeId(handle);
-  },
-  identityPrivateBytes(handle: Handle): Uint8Array {
-    return addon.identityPrivateBytes(handle);
-  },
-  identityFree(handle: Handle): void {
-    addon.identityFree(handle);
-  },
-  identitySign(handle: Handle, data: Uint8Array): Uint8Array {
-    return addon.identitySign(handle, data);
-  },
-  sessionConnect(host: string, port: number, identityHandle: Handle): Promise<bigint> {
-    return addon.sessionConnect(host, port, identityHandle);
-  },
-  sessionRemoteAddr(handle: Handle): string {
-    return addon.sessionRemoteAddr(handle);
-  },
-  sessionStationNodeId(handle: Handle): Uint8Array {
-    return addon.sessionStationNodeId(handle);
-  },
-  sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void> {
-    return addon.sessionClose(handle, identityHandle, reason);
-  },
-  sessionCall(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    procedure: string,
-    realm: Uint8Array | undefined,
-    payloadJson: string,
-    timeoutMs: number,
-    bytesMode: number,
-  ): Promise<string> {
-    return addon.sessionCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode);
-  },
-  ucanMint(
-    identityHandle: Handle,
-    issuer: string,
-    audience: string,
-    capabilitiesJson: string,
-    expiresAt: number | undefined,
-    notBefore: number | undefined,
-    nonce: string,
-    factsJson: string | undefined,
-    proofsJson: string | undefined,
-  ): string {
-    return addon.ucanMint(identityHandle, issuer, audience, capabilitiesJson, expiresAt, notBefore, nonce, factsJson, proofsJson);
-  },
-  ucanDecode(token: string): string {
-    return addon.ucanDecode(token);
-  },
-  sessionCallWithUcan(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    procedure: string,
-    realm: Uint8Array | undefined,
-    payloadJson: string,
-    timeoutMs: number,
-    ucanToken: string,
-    bytesMode: number,
-  ): Promise<string> {
-    return addon.sessionCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken, bytesMode);
-  },
-  sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void> {
-    return addon.sessionAdvertise(sessionHandle, identityHandle, realm, procedure);
-  },
-  sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void> {
-    return addon.sessionUnadvertise(sessionHandle, identityHandle, realm, procedure);
-  },
-  serveWaitForCall(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    procedure: string,
-    timeoutMs: number,
-  ): Promise<Handle | null> {
-    return addon.serveWaitForCall(sessionHandle, identityHandle, realm, procedure, timeoutMs);
-  },
-  pendingCallProcedure(pendingHandle: Handle): string {
-    return addon.pendingCallProcedure(pendingHandle);
-  },
-  pendingCallPayloadJson(pendingHandle: Handle, bytesMode: number): string {
-    return addon.pendingCallPayloadJson(pendingHandle, bytesMode);
-  },
-  pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void> {
-    return addon.pendingCallReplyResult(pendingHandle, resultJson);
-  },
-  pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void> {
-    return addon.pendingCallReplyError(pendingHandle, detail);
-  },
-  dhtFindRecordsByType(sessionHandle: Handle, identityHandle: Handle, recordType: number): Promise<string> {
-    return addon.dhtFindRecordsByType(sessionHandle, identityHandle, recordType);
-  },
-  dhtFindRecords(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string> {
-    return addon.dhtFindRecords(sessionHandle, identityHandle, key32);
-  },
-  dhtFindRecord(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string | null> {
-    return addon.dhtFindRecord(sessionHandle, identityHandle, key32);
-  },
-  dhtPutProcedureAdvertisement(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    procedure: string,
-    servingStation32: Uint8Array,
-    ttlMs: number,
-  ): Promise<string> {
-    return addon.dhtPutProcedureAdvertisement(sessionHandle, identityHandle, realm, procedure, servingStation32, ttlMs);
-  },
-  dhtPutContentAnnouncement(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    mcid34: Uint8Array,
-    endpoint: string,
-    ttlMs: number,
-  ): Promise<string> {
-    return addon.dhtPutContentAnnouncement(sessionHandle, identityHandle, mcid34, endpoint, ttlMs);
-  },
-  sessionPublish(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    topic: string,
-    payloadJson: string,
-    ttlMs: number,
-  ): Promise<void> {
-    return addon.sessionPublish(sessionHandle, identityHandle, realm, topic, payloadJson, ttlMs);
-  },
-  sessionSubscribeStart(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    topic: string,
-    onEvent: (
-      msg:
-        | { kind: "event"; topic: string; publisher: Uint8Array; seq: number; payloadJson: string }
-        | { kind: "closed"; error: string },
-    ) => void,
-    bytesMode: number,
-  ): Promise<bigint> {
-    return addon.sessionSubscribeStart(sessionHandle, identityHandle, realm, topic, onEvent, bytesMode);
-  },
-  sessionSubscribeStop(subscriptionHandle: Handle): Promise<void> {
-    return addon.sessionSubscribeStop(subscriptionHandle);
-  },
-  contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string> {
-    return addon.contentPut(sessionHandle, identityHandle, data, name);
-  },
-  contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null> {
-    return addon.contentGet(sessionHandle, identityHandle, mcidHex);
-  },
-  directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, timeoutMs: number): Promise<string> {
-    return addon.directdialResolve(sessionHandle, identityHandle, realm, procedure, timeoutMs);
-  },
-  directdialCall(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    procedure: string,
-    realm: Uint8Array | undefined,
-    payloadJson: string,
-    timeoutMs: number,
-    bytesMode: number,
-  ): Promise<string> {
-    return addon.directdialCall(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, bytesMode);
-  },
-  directdialCallWithUcan(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    procedure: string,
-    realm: Uint8Array | undefined,
-    payloadJson: string,
-    timeoutMs: number,
-    ucanToken: string,
-    bytesMode: number,
-  ): Promise<string> {
-    return addon.directdialCallWithUcan(sessionHandle, identityHandle, procedure, realm, payloadJson, timeoutMs, ucanToken, bytesMode);
-  },
-  directdialAdvertise(
-    sessionHandle: Handle,
-    identityHandle: Handle,
-    realm: Uint8Array | undefined,
-    procedure: string,
-    ttlMs: number,
-  ): Promise<void> {
-    return addon.directdialAdvertise(sessionHandle, identityHandle, realm, procedure, ttlMs);
-  },
+  poolServe(pool: Handle, realm: Uint8Array, procedure: string, bytesMode: number, listener: Listener): Promise<Handle>;
+  poolServeStream(pool: Handle, realm: Uint8Array, procedure: string, mode: number, bytesMode: number,
+    listener: Listener): Promise<Handle>;
+  pendingReply(pending: Handle, resultJson: string): void;
+  pendingError(pending: Handle, message: string): void;
+  servedStop(served: Handle): Promise<void>;
+
+  poolOpenStream(pool: Handle, realm: Uint8Array, procedure: string, mode: number, payloadJson: string,
+    provider: Uint8Array | null, deadlineMs: number, timeoutMs: number): Promise<Handle>;
+  streamSendBytes(stream: Handle, data: Uint8Array): Promise<void>;
+  streamSendJson(stream: Handle, valueJson: string): Promise<void>;
+  streamCloseSend(stream: Handle): Promise<void>;
+  streamClose(stream: Handle): Promise<void>;
+  streamReply(stream: Handle, payloadJson: string): Promise<void>;
+  streamAbort(stream: Handle, code: string, message: string): Promise<void>;
+  streamRecv(stream: Handle, timeoutMs: number, bytesMode: number): Promise<string>;
+  streamRequest(stream: Handle, bytesMode: number): string;
+  streamFree(stream: Handle): Promise<void>;
 };

@@ -1,43 +1,25 @@
-// Package main is macula-ts's C ABI layer: a thin cgo export wrapping
-// macula-go's existing public API, built as a shared library
-// (`go build -buildmode=c-shared`) for Node.js FFI to load directly.
-// macula-go itself needs zero changes for this -- this file is an
-// ordinary consumer of its public API, same as any Go program
-// importing the module.
+// Package main is macula-ts's C ABI over macula-go's macula 12 API: node keys,
+// a pool of station links, calls and streams by direct dial, serving,
+// publish/subscribe and the DHT. It is built as a C archive
+// (-buildmode=c-archive) and linked into the N-API addon (addon/binding.cc).
 //
-// Handles: every Go value that crosses the boundary (identities) is
-// wrapped as a `runtime/cgo.Handle` -- an opaque uintptr safe to pass
-// through C and back, the standard Go mechanism for exactly this.
-// The TypeScript side holds the uintptr, never touches the Go value
-// directly, and must call the matching `_free` function when done --
-// there is no GC coordination across this boundary. This convention
-// (and the error/output-buffer conventions below) is copied directly
-// from macula-io/macula-php's cabi/main.go, which already proved it
-// against a real station -- not reinvented here.
+// Handles: every Go value that crosses the boundary (a key, a pool, a
+// subscription, a served procedure, a pending call, a stream) is a
+// runtime/cgo.Handle, an opaque uintptr the TypeScript side holds and gives
+// back, and frees with the matching _free or _stop when done. A handle this
+// process never issued, or already freed, is refused as invalid rather than
+// panicking (cgo.Handle.Value panics on one).
 //
-// Errors: any function that can fail takes a `char** err_out`. On
-// failure it mallocs a C string into `*err_out` (via C.CString) and
-// returns a zero/negative sentinel; the caller must free it with
-// macula_free_string. On success `*err_out` is left untouched.
+// Errors: a function that can fail takes a char** err_out. On failure it
+// mallocs a C string into *err_out and returns a zero value; the caller frees
+// it with macula_free_string. On success *err_out is untouched.
 //
-// Scope so far: identity generation/accessors, transport + handshake
-// (Session connect/close), unary RPC (both roles: Session.Call as
-// caller, Session.Advertise + Session.ServeOneCall as provider -- see
-// rpc.go and serve.go), DHT record client operations (dht.go:
-// FindRecord/FindRecords/FindRecordsByType, plus PutRecord via two
-// type-specific builders), pubsub (pubsub.go: Publish, and a
-// Subscribe/Unsubscribe pair backed by a background reader goroutine),
-// content transfer (content.go: Put/Get, each on its own dedicated QUIC
-// stream), and UCAN mint/inspect/attach-to-call (ucan.go). No streaming
-// RPC or direct-dial yet -- those are separate, later work (see
-// README.md's status section).
+// Payloads cross as JSON text, converted to and from cbor.Value by
+// wirevalue.go: no booleans, and bytes as {"$bytes": "<base64>"} going in and
+// either "0x..." hex or the tagged form coming out, as the caller asks.
 //
-// RPC payloads cross this boundary as JSON text, not a bespoke
-// kind/value accessor scheme (contrast macula-php's cabi, which has no
-// JSON on the PHP side and so uses one) -- converted to/from
-// macula-go's cbor.Value by wirevalue.go, ported from macula-cli's
-// internal/wirevalue package (already proven against the same no-bool
-// rule this boundary needs; the bytes rules are wirevalue.go's own doc).
+// Every function that does network I/O blocks the calling thread; the addon
+// runs each on a worker thread (Napi::AsyncWorker), never on the event loop.
 package main
 
 /*
@@ -47,21 +29,15 @@ package main
 import "C"
 
 import (
-	"context"
 	"errors"
 	"runtime/cgo"
 	"unsafe"
 
-	"github.com/macula-io/macula-go/connection"
 	"github.com/macula-io/macula-go/identity"
-	"github.com/macula-io/macula-go/transport"
+	"github.com/macula-io/macula-go/profile"
 )
 
-var (
-	errInvalidIdentityHandle    = errors.New("macula-ts/cabi: invalid identity handle")
-	errInvalidSessionHandle     = errors.New("macula-ts/cabi: invalid session handle")
-	errInvalidPendingCallHandle = errors.New("macula-ts/cabi: invalid pending-call handle")
-)
+var errInvalidHandle = errors.New("macula-ts/cabi: invalid handle")
 
 func setErr(errOut **C.char, err error) {
 	if errOut == nil || err == nil {
@@ -70,228 +46,182 @@ func setErr(errOut **C.char, err error) {
 	*errOut = C.CString(err.Error())
 }
 
-// identityFromHandle resolves a caller-supplied uintptr_t against
-// runtime/cgo's handle table, returning ok=false for any handle this
-// process never issued (or already freed) instead of propagating a
-// panic. This matters specifically at this boundary: cgo.Handle.Value
-// panics -- it does not return an error -- on an unregistered handle
-// (verified directly: a garbage uintptr_t from the TypeScript side
-// took the whole process down with "misuse of an invalid Handle"
-// before this guard existed). Every exported function that takes an
-// identityHandle must resolve it through this helper, never through
-// cgo.Handle(h).Value() directly.
-func identityFromHandle(h C.uintptr_t) (id identity.KeyPair, ok bool) {
+// valueOf resolves a handle to a value of type T, or ok false for a handle
+// this process never issued, one already freed, or one of another type.
+func valueOf[T any](h C.uintptr_t) (v T, ok bool) {
 	defer func() {
 		if recover() != nil {
 			ok = false
 		}
 	}()
-	id, ok = cgo.Handle(h).Value().(identity.KeyPair)
-	return
-}
-
-// deleteHandle is identityFromHandle's counterpart for freeing: Delete
-// panics on an invalid/already-freed handle the same way Value does,
-// so macula_identity_free must not call cgo.Handle(h).Delete()
-// directly either.
-func deleteHandle(h C.uintptr_t) {
-	defer func() { recover() }()
-	cgo.Handle(h).Delete()
-}
-
-// sessionFromHandle is identityFromHandle's counterpart for
-// *connection.Session -- same guard, same reason: cgo.Handle.Value
-// panics on a handle this process never issued (or already freed)
-// instead of returning an error.
-func sessionFromHandle(h C.uintptr_t) (s *connection.Session, ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
-		}
-	}()
-	s, ok = cgo.Handle(h).Value().(*connection.Session)
-	return
-}
-
-// bytes32FromC reads a fixed 32-byte C buffer into a Go []byte.
-func bytes32FromC(src *C.uchar) []byte {
-	return append([]byte(nil), unsafe.Slice((*byte)(unsafe.Pointer(src)), 32)...)
-}
-
-// realm32OrZero is bytes32FromC's nil-tolerant counterpart for realm
-// fields specifically: rpc.go and serve.go's exports all take realm32
-// as an optional 32-byte buffer, with a nil pointer meaning "use the
-// all-zero realm" -- the same default macula-go's own quickstart
-// example (examples/quickstart/main.go) and this project's live tests
-// use, not invented here.
-func realm32OrZero(src *C.uchar) []byte {
-	if src == nil {
-		return make([]byte, 32)
+	if h == 0 {
+		return v, false
 	}
-	return bytes32FromC(src)
+	v, ok = cgo.Handle(h).Value().(T)
+	return v, ok
 }
 
-// pendingCallFromHandle is identityFromHandle's counterpart for
-// *pendingCall (see serve.go) -- same guard, same reason.
-func pendingCallFromHandle(h C.uintptr_t) (pc *pendingCall, ok bool) {
-	defer func() {
-		if recover() != nil {
-			ok = false
-		}
-	}()
-	pc, ok = cgo.Handle(h).Value().(*pendingCall)
-	return
+func newHandle(v any) C.uintptr_t { return C.uintptr_t(cgo.NewHandle(v)) }
+
+// release frees a handle, ignoring one already freed or never issued.
+func release(h C.uintptr_t) {
+	defer func() { _ = recover() }()
+	if h != 0 {
+		cgo.Handle(h).Delete()
+	}
+}
+
+func goBytes(p *C.uchar, n C.size_t) []byte {
+	if p == nil || n == 0 {
+		return nil
+	}
+	return C.GoBytes(unsafe.Pointer(p), C.int(n))
+}
+
+func id32(p *C.uchar) ([32]byte, bool) {
+	var out [32]byte
+	if p == nil {
+		return out, false
+	}
+	copy(out[:], C.GoBytes(unsafe.Pointer(p), 32))
+	return out, true
+}
+
+// cBytes mallocs a copy of b for the caller, who frees it with
+// macula_free_bytes, and stores its length in *outLen.
+func cBytes(b []byte, outLen *C.size_t) *C.uchar {
+	*outLen = C.size_t(len(b))
+	if len(b) == 0 {
+		return nil
+	}
+	return (*C.uchar)(C.CBytes(b))
 }
 
 //export macula_free_string
-func macula_free_string(s *C.char) {
-	C.free(unsafe.Pointer(s))
+func macula_free_string(s *C.char) { C.free(unsafe.Pointer(s)) }
+
+//export macula_free_bytes
+func macula_free_bytes(b *C.uchar) { C.free(unsafe.Pointer(b)) }
+
+func parseProfile(name *C.char) (profile.Profile, error) {
+	if name == nil {
+		return profile.PQHybrid, nil
+	}
+	return profile.Parse(C.GoString(name))
 }
 
-// macula_identity_generate mints a fresh, S/Kademlia puzzle-hardened
-// Ed25519 identity via identity.Generate() -- the real, non-trivial
-// operation this whole walking skeleton exists to prove reaches
-// across the FFI boundary correctly (see README.md and
-// src/identity.test.ts, which assert the puzzle property on the
-// returned NodeID, not just that a call returns).
+// macula_key_generate makes a node identity key in profile ("pq_hybrid" or
+// "pq_pure", pq_hybrid when NULL) whose node_id solves the admission puzzle.
+// It takes a second or so: call it off the event loop.
 //
-//export macula_identity_generate
-func macula_identity_generate(errOut **C.char) C.uintptr_t {
-	id, err := identity.Generate()
+//export macula_key_generate
+func macula_key_generate(profileName *C.char, errOut **C.char) C.uintptr_t {
+	p, err := parseProfile(profileName)
 	if err != nil {
 		setErr(errOut, err)
 		return 0
 	}
-	return C.uintptr_t(cgo.NewHandle(id))
-}
-
-// macula_identity_from_seed_bytes reconstructs an identity from a
-// 32-byte Ed25519 seed (no re-grinding -- see identity.FromSeed's own
-// doc: a valid seed's derived key already satisfies whatever puzzle
-// difficulty it was originally minted for).
-//
-//export macula_identity_from_seed_bytes
-func macula_identity_from_seed_bytes(seed32 *C.uchar, errOut **C.char) C.uintptr_t {
-	id, err := identity.FromSeed(bytes32FromC(seed32))
+	key, err := identity.GenerateIdentityKey(p, identity.PuzzleDifficulty)
 	if err != nil {
 		setErr(errOut, err)
 		return 0
 	}
-	return C.uintptr_t(cgo.NewHandle(id))
+	return newHandle(key)
 }
 
-//export macula_identity_node_id
-func macula_identity_node_id(identityHandle C.uintptr_t, out32 *C.uchar) C.int {
-	id, ok := identityFromHandle(identityHandle)
-	if !ok {
-		return -1
-	}
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(out32)), 32)
-	copy(dst, id.NodeID())
-	return 0
-}
-
-//export macula_identity_private_bytes
-func macula_identity_private_bytes(identityHandle C.uintptr_t, out32 *C.uchar) C.int {
-	id, ok := identityFromHandle(identityHandle)
-	if !ok {
-		return -1
-	}
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(out32)), 32)
-	copy(dst, id.Private.Seed())
-	return 0
-}
-
-//export macula_identity_free
-func macula_identity_free(identityHandle C.uintptr_t) {
-	deleteHandle(identityHandle)
-}
-
-// macula_session_connect dials host:port and completes the full
-// CONNECT/HELLO handshake via connection.Connect, using WebPKI trust
-// (standard CA-bundle validation -- what the real production fleet
-// presents; Pinned/Insecure trust modes are not exposed yet, future
-// work). This is a real network round trip and can take up to
-// connection.HandshakeTimeout (30s, enforced internally by macula-go,
-// not duplicated here) -- like every export in this file, it has no
-// async awareness of its own; running it off the Node main thread is
-// addon/binding.cc's job (see ConnectWorker there), not cabi's.
+// macula_key_load reads the identity key file at path in profile. A file the
+// user's group or others can read, or that holds a key of another purpose or
+// profile, is refused.
 //
-//export macula_session_connect
-func macula_session_connect(host *C.char, port C.uint16_t, identityHandle C.uintptr_t, errOut **C.char) C.uintptr_t {
-	id, ok := identityFromHandle(identityHandle)
-	if !ok {
-		setErr(errOut, errInvalidIdentityHandle)
-		return 0
-	}
-	session, err := connection.Connect(context.Background(), C.GoString(host), uint16(port), transport.WebPKI{}, id)
+//export macula_key_load
+func macula_key_load(path, profileName *C.char, errOut **C.char) C.uintptr_t {
+	p, err := parseProfile(profileName)
 	if err != nil {
 		setErr(errOut, err)
 		return 0
 	}
-	return C.uintptr_t(cgo.NewHandle(session))
+	key, err := identity.LoadKey(C.GoString(path), identity.PurposeIdentity, p)
+	if err != nil {
+		setErr(errOut, err)
+		return 0
+	}
+	return newHandle(key)
 }
 
-// macula_session_remote_addr returns the session's remote address as a
-// newly-allocated C string; the caller must free it via
-// macula_free_string.
+// macula_key_save writes the key to path, readable by its owner only.
 //
-//export macula_session_remote_addr
-func macula_session_remote_addr(sessionHandle C.uintptr_t, errOut **C.char) *C.char {
-	s, ok := sessionFromHandle(sessionHandle)
+//export macula_key_save
+func macula_key_save(h C.uintptr_t, path *C.char, errOut **C.char) {
+	key, ok := valueOf[*identity.NodeKey](h)
 	if !ok {
-		setErr(errOut, errInvalidSessionHandle)
+		setErr(errOut, errInvalidHandle)
+		return
+	}
+	setErr(errOut, key.Save(C.GoString(path)))
+}
+
+// macula_key_node_id writes the key's 32-byte node_id to out32.
+//
+//export macula_key_node_id
+func macula_key_node_id(h C.uintptr_t, out32 *C.uchar, errOut **C.char) {
+	key, ok := valueOf[*identity.NodeKey](h)
+	if !ok {
+		setErr(errOut, errInvalidHandle)
+		return
+	}
+	id, err := key.NodeID()
+	if err != nil {
+		setErr(errOut, err)
+		return
+	}
+	copy(unsafe.Slice((*byte)(unsafe.Pointer(out32)), 32), id[:])
+}
+
+// macula_key_public_key is the key as carried on the wire.
+//
+//export macula_key_public_key
+func macula_key_public_key(h C.uintptr_t, outLen *C.size_t, errOut **C.char) *C.uchar {
+	key, ok := valueOf[*identity.NodeKey](h)
+	if !ok {
+		setErr(errOut, errInvalidHandle)
 		return nil
 	}
-	return C.CString(s.RemoteAddr())
+	return cBytes(key.PublicKey(), outLen)
 }
 
-// macula_session_station_node_id copies the station's HELLO-verified
-// 32-byte NodeID (Ed25519 public key) into out32 -- proof, beyond "no
-// error was thrown", that this is a real, application-layer-verified
-// session: frame.Verify already checked this NodeID's signature over
-// the HELLO frame inside connection.Connect: this just surfaces it.
+// macula_key_profile is the key's profile name, freed with
+// macula_free_string.
 //
-//export macula_session_station_node_id
-func macula_session_station_node_id(sessionHandle C.uintptr_t, out32 *C.uchar) C.int {
-	s, ok := sessionFromHandle(sessionHandle)
+//export macula_key_profile
+func macula_key_profile(h C.uintptr_t, errOut **C.char) *C.char {
+	key, ok := valueOf[*identity.NodeKey](h)
 	if !ok {
-		return -1
+		setErr(errOut, errInvalidHandle)
+		return nil
 	}
-	dst := unsafe.Slice((*byte)(unsafe.Pointer(out32)), 32)
-	copy(dst, s.Station.NodeID)
-	return 0
+	return C.CString(string(key.Profile()))
 }
 
-// macula_session_close sends a signed GOODBYE and closes the
-// underlying QUIC connection (connection.Session.Close), then frees
-// the session handle -- a session is not meant to be reused after
-// this, closed or not. Requires identityHandle to still be a valid,
-// non-freed identity (Close signs GOODBYE with it): callers must not
-// dispose an Identity before closing every Session opened with it.
-// Close has an internal 250ms drain sleep plus a network write, so
-// like Connect this must run off the Node main thread (see
-// addon/binding.cc's CloseWorker).
+// macula_key_sign signs data with the key, as it is given.
 //
-//export macula_session_close
-func macula_session_close(sessionHandle C.uintptr_t, identityHandle C.uintptr_t, reason *C.char, errOut **C.char) C.int {
-	s, ok := sessionFromHandle(sessionHandle)
+//export macula_key_sign
+func macula_key_sign(h C.uintptr_t, data *C.uchar, dataLen C.size_t, outLen *C.size_t, errOut **C.char) *C.uchar {
+	key, ok := valueOf[*identity.NodeKey](h)
 	if !ok {
-		setErr(errOut, errInvalidSessionHandle)
-		return -1
+		setErr(errOut, errInvalidHandle)
+		return nil
 	}
-	id, ok := identityFromHandle(identityHandle)
-	if !ok {
-		setErr(errOut, errInvalidIdentityHandle)
-		return -1
-	}
-	err := s.Close(C.GoString(reason), nil, id)
-	deleteHandle(sessionHandle) // the Go-side connection is gone either way
+	signature, err := key.Sign(goBytes(data, dataLen))
 	if err != nil {
 		setErr(errOut, err)
-		return -1
+		return nil
 	}
-	return 0
+	return cBytes(signature, outLen)
 }
 
-func main() {} // required by -buildmode=c-shared, never actually run
+// macula_key_free frees the key's handle.
+//
+//export macula_key_free
+func macula_key_free(h C.uintptr_t) { release(h) }
+
+func main() {}

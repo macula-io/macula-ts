@@ -1,616 +1,226 @@
-// Resilient multi-station client -- ports macula/src/client/macula_client.erl's
-// pool design (N live links, monitor + respawn-with-backoff, subscription
-// replay on reconnect) into this SDK. `Session` (session.ts) and
-// `connectWithFallback`/`withSession` (this SDK's consumers, e.g.
-// macula-mcp's macula_ts_client.ts) are both dial-one-then-use primitives --
-// correct for a one-shot operation, wrong for anything that needs to stay
-// reachable across a station's own outage. A Pool holds live connections to
-// every configured seed concurrently, not one-then-fallback-on-first-failure;
-// a seed that never connects and a link whose connection later dies are the
-// same condition (backoff, retry forever) rather than two different code
-// paths.
-//
-// == Why this isn't "one Session per seed" ==
-//
-// Erlang's macula_client can put N tracked (Realm, Topic) subscriptions
-// (plus Call, plus Advertise) on ONE gen_server-owned link, because a BEAM
-// mailbox demuxes every message type for that one process regardless of how
-// many concerns it's juggling. This SDK's Session has no equivalent: its
-// underlying control stream supports exactly one concurrent reader --
-// `subscribe()` throws outright if called twice on the same Session
-// ("a second concurrent subscribe() on the same Session races; open a
-// second Session instead"), and `call()`/`serve()` are mutually exclusive
-// with an active subscribe on the same Session for the identical reason
-// (macula-go's FrameStream does a raw sequential read into a shared buffer,
-// no per-caller demux). Confirmed live 2026-09-04 while porting the Go side
-// of this same design: this is a wire-level constraint, not a TS-specific
-// gap -- macula-mcp already works around it today by giving lobby_observer.ts
-// a dedicated identity+Session PER ROOM TOPIC rather than multiplexing one
-// connection.
-//
-// So a "link" to one station here is a small SET of role-scoped sessions,
-// not one session:
-//   - one "control" session (this pool's own caller-supplied identity),
-//     used for publish() and call() and NEVER subscribed on -- publish() is
-//     write-only (explicitly unguarded by the exclusivity rule) and call()'s
-//     own internal queue already serialises concurrent calls safely, so one
-//     control session per station is enough regardless of call volume.
-//   - one additional session PER CURRENTLY-TRACKED TOPIC, under an identity
-//     derived from that topic (shared across every station's copy of that
-//     topic's session -- reused across stations is safe, since a station's
-//     own per-identity dedupe only kicks a SECOND connection to THAT SAME
-//     station, never across different stations). Each does exactly one
-//     subscribe() and nothing else.
-// Every one of these sessions is independently monitored and respawned with
-// backoff; a topic session dying just re-subscribes its own one topic on
-// respawn (no "replay N subscriptions onto a survivor" step needed, since
-// each session only ever carried one). A control link can't also carry a
-// liveness-only subscribe without reintroducing the exclusivity problem it
-// exists to avoid, and a failed call() genuinely does surface a dead
-// connection -- but publish() does not: found live 2026-09-04 that a
-// publish() attempt on a session the station had already kicked can still
-// locally "succeed" (the frame is handed off before the QUIC stack notices
-// its own connection is gone), so a publish-only workload could go
-// arbitrarily long without ever discovering a dead control link. Every
-// live control link is therefore also health-checked on a timer
-// (#armHealthCheck's own doc has the mechanism) -- a periodic call() to a
-// procedure name guaranteed never to be advertised, whose failure is
-// inspected to tell "a real BOLT#4 unknown_next_peer came back" (alive)
-// apart from "this never reached anyone at all" (dead, reconnect).
-//
-// == Deliberate deviation from the Erlang reference ==
-//
-// macula_client's own inbound-event dedup keys on (Realm, Publisher, Seq)
-// alone, with no Topic. That is the exact shape of a real bug found and
-// fixed on the station side 2026-09-04 (macula-station's event_dedup): an
-// identity's own auto-published facts and its application-level publishes
-// can share one seq-counter space, and two different topics publishing the
-// same seq collide under a topic-blind key. This pool's own dedup includes
-// Topic from the start.
-import { Identity } from "./identity.js";
-import { bytesModeFor, MaculaCallError } from "./rpc.js";
-import { realmBytesFromHex, Session } from "./session.js";
-/** Thrown by publish()/call() when the pool has zero live control links
- * to try -- a distinct, identifiable condition from any one link's own
- * transient error, matching macula_client:publish/5's own `{error,
- * {transient, no_healthy_station}}`. */
-export class NoHealthyStationError extends Error {
-    constructor() {
-        super("macula-ts: pool has no currently-live links");
-        this.name = "NoHealthyStationError";
+// A node's pool of station links on the macula 12 mesh, as macula-go's pool
+// keeps it: every seed pinned by its node_id, the realms whose keys the node
+// trusts, and one identity for every link. Calls and streams reach a provider
+// by direct dial: its advertisements from the DHT, trusted only when the
+// realm's key authorizes them, and the station it serves from dialed pinned.
+import { native } from "./binding.js";
+import { Stream } from "./stream.js";
+import { DEFAULT_CALL_TIMEOUT_MS, bytesModeFor, callError, hex, id32, } from "./wire.js";
+/** macula 12's record types. */
+export var RecordType;
+(function (RecordType) {
+    RecordType[RecordType["NodeRecord"] = 1] = "NodeRecord";
+    RecordType[RecordType["ProcedureAdvertisement"] = 6] = "ProcedureAdvertisement";
+    RecordType[RecordType["Tombstone"] = 12] = "Tombstone";
+    RecordType[RecordType["ContentAnnouncement"] = 17] = "ContentAnnouncement";
+    RecordType[RecordType["StationEndpoint"] = 18] = "StationEndpoint";
+    RecordType[RecordType["OrgDirectory"] = 21] = "OrgDirectory";
+    RecordType[RecordType["ProcedureDelegation"] = 22] = "ProcedureDelegation";
+})(RecordType || (RecordType = {}));
+/** A subscription, until stop() or the pool closes. */
+export class Subscription {
+    handle;
+    closed;
+    /** @internal */
+    constructor(handle, closed) {
+        this.handle = handle;
+        this.closed = closed;
+    }
+    /** Ends the subscription on every link. */
+    async stop() {
+        await native.subscriptionStop(this.handle);
     }
 }
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 30_000;
-/** How often a LIVE control link is health-checked (see #armHealthCheck's
- * own doc for why publish() alone can't be trusted to ever notice a dead
- * connection). Topic-role links need no equivalent -- their own
- * subscribe() already gives them a real, immediate onClosed signal. */
-const HEALTH_CHECK_INTERVAL_MS = 10_000;
-function subKey(realm, topic) {
-    return `${realm ?? ""}\0${topic}`;
+/** A served procedure, until stop(). */
+export class Served {
+    handle;
+    stopped = false;
+    /** @internal */
+    constructor(handle) {
+        this.handle = handle;
+    }
+    /** Withdraws the procedure on every link. */
+    async stop() {
+        if (this.stopped)
+            return;
+        this.stopped = true;
+        await native.servedStop(this.handle);
+    }
 }
-function dedupKey(realm, publisher, seq, topic) {
-    return `${realm ?? ""}\0${Buffer.from(publisher).toString("hex")}\0${seq}\0${topic}`;
-}
-/**
- * A resilient multi-station client: live connections to every configured
- * seed held concurrently, each independently monitored and respawned
- * with backoff on disconnect, every tracked subscription re-established
- * automatically when its own link reconnects. See this module's own
- * header doc for the full design, why a "link" is a small role-scoped
- * session set rather than one Session, and its one deliberate deviation
- * from the Erlang reference (topic-scoped dedup).
- */
 export class Pool {
-    #controlIdentity;
-    #controlLinks;
-    #seeds;
-    #subscriptions = new Map();
-    #dedup = new Map();
-    #sweepTimer;
-    #replicationFactor;
-    #dedupWindowMs;
-    #healthCheckIntervalMs;
-    #closed = false;
-    constructor(controlIdentity, seeds, opts) {
-        this.#controlIdentity = controlIdentity;
-        this.#seeds = seeds;
-        const requestedReplication = opts.replicationFactor ?? 1;
-        if (requestedReplication !== 1) {
-            console.error(`macula-ts pool: replicationFactor ${requestedReplication} is not yet supported (each replica would publish ` +
-                "a distinct seq, so a receiver's dedup can't collapse them into one event) -- clamping to 1.");
-        }
-        this.#replicationFactor = 1;
-        this.#dedupWindowMs = opts.dedupWindowMs ?? 60_000;
-        this.#healthCheckIntervalMs = opts.healthCheckIntervalMs ?? HEALTH_CHECK_INTERVAL_MS;
-        this.#controlLinks = seeds.map((seed) => this.#newRoleLink(seed, controlIdentity, undefined));
-        const sweepMs = opts.dedupSweepMs ?? 30_000;
-        this.#sweepTimer = setInterval(() => this.#sweepDedup(), sweepMs);
-        this.#sweepTimer.unref?.();
+    handle;
+    closed = false;
+    constructor(handle) {
+        this.handle = handle;
     }
-    #newRoleLink(seed, identity, onConnected) {
-        return {
-            seed,
-            identity,
-            session: undefined,
-            status: "connecting",
-            reconnectAttempt: 0,
-            retryTimer: undefined,
-            healthCheckTimer: undefined,
-            closing: false,
-            inFlight: undefined,
-            pendingClose: undefined,
-            onConnected,
-            closedDuringConnect: false,
+    /** Links the key's node to every seed, and resolves once one link is up. */
+    static async connect(key, seeds, options = {}) {
+        const seedJson = seeds.map((s) => ({ host: s.host, port: s.port, node_id: hex(id32(s.nodeId, "a seed's nodeId")) }));
+        const realmTrust = {};
+        for (const t of options.realmTrust ?? []) {
+            realmTrust[hex(id32(t.realm, "a realm id"))] = typeof t.key === "string" ? t.key : hex(t.key);
+        }
+        const opts = {
+            realm_trust: realmTrust,
+            replication_factor: options.replicationFactor ?? 0,
+            max_direct_links: options.maxDirectLinks ?? 0,
+            respawn_delay_ms: options.respawnDelayMs ?? 0,
+            timeout_ms: options.timeoutMs ?? 0,
         };
+        return new Pool(await native.poolConnect(key.live(), JSON.stringify(seedJson), JSON.stringify(opts)));
     }
-    /** Dials the control role against every seed concurrently under
-     * `controlIdentity` (the caller's own identity -- publish()/call()
-     * are attributed to it on the wire) and resolves once every seed's
-     * FIRST connect attempt has settled (success or a logged failure
-     * headed into backoff) -- matches tapRoom()'s own "await the first
-     * attempt, not the eventual outcome" reasoning (macula-mcp's
-     * lobby_observer.ts): a caller that publishes/calls immediately
-     * after connect() must not race links still mid-handshake. */
-    static async connect(seeds, controlIdentity, opts = {}) {
-        if (seeds.length === 0)
-            throw new Error("macula-ts: Pool.connect() needs at least one seed");
-        const seen = new Set();
-        for (const seed of seeds) {
-            const seedKey = `${seed.host}:${seed.port}`;
-            if (seen.has(seedKey))
-                throw new Error(`macula-ts: Pool.connect() given duplicate seed ${seedKey} -- each seed must be a distinct station`);
-            seen.add(seedKey);
-        }
-        const pool = new Pool(controlIdentity, seeds, opts);
-        await Promise.all(pool.#controlLinks.map((link) => pool.#attach(link)));
-        return pool;
+    /** The node_id the pool links as. */
+    nodeId() {
+        return hex(native.poolNodeId(this.live()));
     }
-    async #attach(link) {
-        const attempt = this.#attachOnce(link);
-        link.inFlight = attempt.finally(() => {
-            if (link.inFlight === attempt)
-                link.inFlight = undefined;
-        });
-        await link.inFlight;
-    }
-    /** (Re)connects one role link and, for a topic role, re-subscribes it.
-     * Never throws -- a failure logs and schedules a backoff retry, the
-     * same self-healing shape every persistent connection in this
-     * ecosystem already uses. */
-    async #attachOnce(link) {
-        if (link.closing)
-            return;
-        // Defensive: a redundant call on an already-live link must never
-        // overwrite its session with a second connection under the same
-        // identity to the same station (exactly the collision this whole
-        // design exists to avoid). #scheduleReconnect's own idempotency
-        // guard is what should prevent this from ever being reachable in
-        // practice; this is the belt-and-suspenders backstop.
-        if (link.session)
-            return;
-        link.status = "connecting";
-        let session;
-        try {
-            session = await Session.connect(link.seed.host, link.seed.port, link.identity);
-        }
-        catch (err) {
-            console.error(`macula-ts pool: connect to ${link.seed.host}:${link.seed.port} failed:`, err);
-            this.#scheduleReconnect(link);
-            return;
-        }
-        if (link.closing) {
-            await session.close(link.identity).catch(() => { });
-            return;
-        }
-        if (link.onConnected) {
-            link.closedDuringConnect = false;
-            try {
-                await link.onConnected(link, session);
-            }
-            catch (err) {
-                console.error(`macula-ts pool: subscribe on ${link.seed.host}:${link.seed.port} failed:`, err);
-                await session.close(link.identity).catch(() => { });
-                this.#scheduleReconnect(link);
-                return;
-            }
-            if (link.closedDuringConnect) {
-                console.error(`macula-ts pool: ${link.seed.host}:${link.seed.port}'s subscription closed before it could be marked live -- retrying`);
-                await session.close(link.identity).catch(() => { });
-                this.#scheduleReconnect(link);
-                return;
-            }
-        }
-        link.session = session;
-        link.status = "live";
-        link.reconnectAttempt = 0;
-        if (!link.onConnected)
-            this.#armHealthCheck(link);
-    }
-    /** Control-role links only (topic roles have their own subscribe()
-     * onClosed and never reach here -- `!link.onConnected` is what
-     * distinguishes them). publish() is fire-and-forget: found live
-     * 2026-09-04 that a publish() attempt on a session the station had
-     * already kicked can still locally "succeed" (the frame is handed off
-     * before the QUIC stack notices its own connection is gone), so a
-     * publish-only caller could go arbitrarily long without this pool
-     * ever discovering a dead control link. Every HEALTH_CHECK_INTERVAL_MS
-     * while the link is live, this calls a procedure name that is
-     * guaranteed never to be advertised (a fresh UUID-shaped string) and
-     * inspects the failure: a clean MaculaCallError means a real BOLT#4
-     * response came back over the wire (unknown_next_peer, as expected) --
-     * the connection is genuinely alive, nothing to do. Any OTHER
-     * thrown error means the call never got a wire-level answer at all --
-     * the same signal call()'s own doc uses to distinguish a real BOLT#4
-     * answer from "this never reached anyone" -- so it's treated exactly
-     * like a real operation failure and schedules a reconnect. */
-    #armHealthCheck(link) {
-        if (link.healthCheckTimer)
-            clearInterval(link.healthCheckTimer);
-        const timer = setInterval(() => {
-            const session = link.session;
-            if (!session)
-                return;
-            this.#probeLiveness(session).then((alive) => {
-                if (alive)
-                    return;
-                if (link.session !== session)
-                    return; // already superseded by a reconnect
-                console.error(`macula-ts pool: health check on ${link.seed.host}:${link.seed.port} failed`);
-                this.#scheduleReconnect(link);
-            });
-        }, this.#healthCheckIntervalMs);
-        timer.unref?.();
-        link.healthCheckTimer = timer;
-    }
-    /** Calls a procedure name guaranteed never to be advertised and
-     * classifies the outcome: true if a real BOLT#4 answer came back
-     * (the connection is alive, whatever else provoked this probe), false
-     * if the call never got a wire-level answer at all (the connection is
-     * genuinely dead). Shared by #armHealthCheck's own timer and call()'s
-     * handling of an ambiguous failure (see call()'s own doc) -- a plain
-     * Error from session.call() means "no wire answer", but that is also
-     * exactly what a timed-out call against an otherwise-healthy but
-     * momentarily slow provider looks like. Found live 2026-09-05: without
-     * this second opinion, call() tore down every live control link in
-     * turn on nothing more than one slow provider response. */
-    async #probeLiveness(session) {
-        const probe = `_pool.healthcheck.${Math.random().toString(36).slice(2)}`;
-        try {
-            await session.call(probe, null, { deadlineMs: this.#healthCheckIntervalMs });
-            return true; // a real provider somehow answering a random UUID-shaped name is astronomically unlikely either way
-        }
-        catch (err) {
-            return err instanceof MaculaCallError; // alive iff a real wire answer came back
-        }
-    }
-    /** Marks `link` for backoff and schedules its next reconnect attempt.
-     * Closes whatever session it currently holds first (fire-and-forget,
-     * not awaited -- the retry timer must not wait on a graceful close
-     * round trip) so a still-alive session from an OPERATION failure
-     * (publish()/call() throwing for a reason that doesn't mean the
-     * connection itself already died, unlike a subscribe onClosed) is
-     * never simply orphaned. Found live 2026-09-04: without this, a
-     * publish/call failure left the old session's native handle both
-     * leaked AND, worse, still open under this link's identity -- the
-     * NEXT connect attempt for this SAME station under that SAME
-     * identity then races the still-live old one for the station's own
-     * per-identity dedupe kick, with no guarantee which one loses. The
-     * close is fired here, before scheduling, so it has the full backoff
-     * delay (at least RECONNECT_BASE_MS) to land before a new connect
-     * attempt begins.
-     *
-     * Idempotent per backoff episode: a no-op once `link.status` is
-     * already "backoff". Found live in review 2026-09-05: concurrent
-     * operations queued on one session (e.g. several call()s serialised
-     * by Session's own internal queue) can ALL fail once that session
-     * dies, and each one's catch handler calls this -- without this
-     * guard, every failure past the first would re-close an
-     * already-`undefined` `link.session` (harmless) but ALSO arm a
-     * second, third, ... retryTimer, each bumping reconnectAttempt
-     * independently, leaving multiple redundant reconnects racing each
-     * other. Deliberately NOT guarded against "connecting" -- this is
-     * also called from `#attachOnce`'s own failure paths, while status
-     * is still "connecting" from the top of that same function, and
-     * that path must proceed normally. */
-    #scheduleReconnect(link) {
-        if (link.closing)
-            return;
-        if (link.status === "backoff")
-            return;
-        if (link.healthCheckTimer) {
-            clearInterval(link.healthCheckTimer);
-            link.healthCheckTimer = undefined;
-        }
-        const stale = link.session;
-        link.status = "backoff";
-        link.session = undefined;
-        if (stale) {
-            const closing = stale.close(link.identity).catch(() => { });
-            link.pendingClose = closing;
-            void closing.finally(() => {
-                if (link.pendingClose === closing)
-                    link.pendingClose = undefined;
-            });
-        }
-        const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** link.reconnectAttempt);
-        link.reconnectAttempt += 1;
-        const timer = setTimeout(() => {
-            const attempt = this.#attachOnce(link);
-            link.inFlight = attempt.finally(() => {
-                if (link.inFlight === attempt)
-                    link.inFlight = undefined;
-            });
-        }, delay);
-        // Deliberately NOT unref()'d, unlike healthCheckTimer/sweepTimer --
-        // this pool's own documented contract is "retry forever" for a
-        // link in backoff. Found live in review 2026-09-05: a pure
-        // subscribe()-only process (no other keep-alive handle: no HTTP
-        // listener, no stdio transport) would otherwise exit cleanly the
-        // moment its last live connection drops, silently breaking that
-        // promise instead of actually retrying through the outage.
-        link.retryTimer = timer;
-    }
-    #sweepDedup() {
-        const cutoff = Date.now() - this.#dedupWindowMs;
-        for (const [key, at] of this.#dedup) {
-            if (at < cutoff)
-                this.#dedup.delete(key);
-        }
-    }
-    #liveControlLinks() {
-        return this.#controlLinks.filter((l) => l.status === "live" && l.session);
-    }
-    /** Refuses an `identity` that would double-connect to the same
-     * station as the control role or another already-tracked
-     * subscription -- the station kicks the OLDER of the two, this pool
-     * reconnects it, which gets IT kicked in turn: a perpetual ping-pong
-     * with no error naming the cause. Compares raw node-id bytes, not
-     * object identity, so two separately-loaded Identity instances over
-     * the SAME underlying keypair are still caught. */
-    #assertIdentityNotAlreadyUsed(identity) {
-        const nodeIdHex = Buffer.from(identity.nodeId).toString("hex");
-        if (nodeIdHex === Buffer.from(this.#controlIdentity.nodeId).toString("hex")) {
-            throw new Error("macula-ts pool: this identity is already the pool's own control identity -- reusing it for a subscription would double-connect one identity to one station");
-        }
-        for (const sub of this.#subscriptions.values()) {
-            if (Buffer.from(sub.identity.nodeId).toString("hex") === nodeIdHex) {
-                throw new Error(`macula-ts pool: this identity is already used by the "${sub.topic}" subscription -- reusing it here would double-connect one identity to one station`);
-            }
-        }
-    }
-    /** Publishes to `replicationFactor` currently-live control links
-     * (default 1); partial success counts as success. A link whose
-     * publish attempt fails is marked for respawn immediately -- this is
-     * this v1's only liveness signal for the control role, since it
-     * cannot also carry a liveness-only subscribe (see this module's own
-     * header doc). Throws NoHealthyStationError if zero links are live.
-     *
-     * `realm`/`payload` are validated before any link is touched. Found
-     * live 2026-09-05: a malformed realm or an unserializable payload
-     * throws inside session.publish() itself, well before any wire I/O --
-     * treating that throw as evidence of a dead connection (the pre-fix
-     * behavior) tore down a perfectly healthy link over a caller-side
-     * argument bug. */
-    async publish(realm, topic, payload, opts = {}) {
-        if (this.#closed)
-            throw new Error("macula-ts pool: used after close()");
-        realmBytesFromHex(realm);
-        JSON.stringify(payload ?? null);
-        const targets = this.#liveControlLinks().slice(0, this.#replicationFactor);
-        if (targets.length === 0)
-            throw new NoHealthyStationError();
-        const results = await Promise.allSettled(targets.map(async (link) => {
-            const session = link.session;
-            if (link.status !== "live" || !session)
-                throw new NoHealthyStationError(); // superseded since targets was captured
-            try {
-                await session.publish(topic, payload, { realm, ttlMs: opts.ttlMs });
-            }
-            catch (err) {
-                if (link.session === session)
-                    this.#scheduleReconnect(link);
-                throw err;
-            }
-        }));
-        if (!results.some((r) => r.status === "fulfilled")) {
-            const first = results.find((r) => r.status === "rejected");
-            throw first ? first.reason : new Error("macula-ts pool: publish failed on every targeted link");
-        }
-    }
-    /** Calls `procedure` against the pool's live control links in order
-     * until one succeeds or all have been tried. Throws
-     * NoHealthyStationError if zero links are live.
-     *
-     * `realm`/`payload`/`opts.bytes` are validated before any link is
-     * touched, for the
-     * same reason as publish() -- a malformed realm is a caller bug, not
-     * evidence of a dead connection, and must never be attributed to one.
-     *
-     * A `MaculaCallError` (a real BOLT#4 response -- e.g.
-     * unknown_next_peer, unauthorized, a procedure nobody serves, a gated
-     * call this identity isn't authorized for) does NOT mark its link for
-     * respawn: the connection plainly worked, it answered. call() still
-     * falls through to the next link either way, matching the Erlang
-     * reference's own keep_or_next (macula_client.erl) -- a non-idempotent
-     * provider handler genuinely can be re-invoked on each live link this
-     * reaches; that is parity with the reference, not a bug this fixes.
-     *
-     * Any OTHER thrown error (never a wire-level answer at all) is
-     * ambiguous, not automatically a dead link: session.call()'s own
-     * deadlineMs elapsing looks identical to a genuinely severed
-     * connection, but means the far end is merely slow, not gone. Found
-     * live 2026-09-05: treating every such error as a dead link meant one
-     * slow provider response tore down and reconnected EVERY live control
-     * link in turn as call() moved through them re-trying the same call.
-     * #probeLiveness's own dedicated liveness call is the tiebreaker --
-     * only a link that ALSO fails to get a wire-level answer on that
-     * fresh probe is scheduled for reconnect. Each link's own `session`
-     * reference is re-checked both before probing and before scheduling a
-     * reconnect, in case a concurrent operation already superseded it. */
-    async call(realm, procedure, payload, opts = {}) {
-        if (this.#closed)
-            throw new Error("macula-ts pool: used after close()");
-        realmBytesFromHex(realm);
-        JSON.stringify(payload ?? null);
-        bytesModeFor(opts.bytes);
-        const targets = this.#liveControlLinks();
-        if (targets.length === 0)
-            throw new NoHealthyStationError();
-        let lastErr;
-        for (const link of targets) {
-            const session = link.session;
-            if (link.status !== "live" || !session)
-                continue; // superseded since `targets` was captured
-            try {
-                return await session.call(procedure, payload, { realm, deadlineMs: opts.deadlineMs, bytes: opts.bytes });
-            }
-            catch (err) {
-                lastErr = err;
-                if (!(err instanceof MaculaCallError) && link.session === session && !(await this.#probeLiveness(session))) {
-                    if (link.session === session)
-                        this.#scheduleReconnect(link);
-                }
-            }
-        }
-        throw lastErr;
-    }
-    /** Subscribes `handler` to `(realm, topic)`: opens one subscribe-only
-     * session against every configured seed, replayed automatically on
-     * every future respawn. Mints a dedicated identity for this topic by
-     * default (disposed on unsubscribe); pass `identity` to supply the
-     * pool's own instead (e.g. for a stable, caller-controlled identity
-     * across restarts, matching macula-mcp's own observeRoomIdentityPath
-     * pattern) -- the pool never disposes an identity it didn't mint.
-     * `opts.bytes` picks how bytes in each event's payload reach `handler`
-     * (rpc.ts's BytesOutput), on every seed and after every respawn.
-     * Returns an unsubscribe function. */
-    async subscribe(realm, topic, handler, identity, opts = {}) {
-        if (this.#closed)
-            throw new Error("macula-ts pool: used after close()");
-        bytesModeFor(opts.bytes);
-        const key = subKey(realm, topic);
-        if (this.#subscriptions.has(key))
-            throw new Error(`macula-ts pool: already subscribed to ${topic}${realm ? ` (realm ${realm})` : ""}`);
-        if (identity)
-            this.#assertIdentityNotAlreadyUsed(identity);
-        const ownsIdentity = identity === undefined;
-        const subIdentity = identity ?? Identity.generate();
-        const sub = { realm, topic, handler, identity: subIdentity, ownsIdentity, links: [] };
-        const onConnected = async (link, session) => {
-            await session.subscribe(topic, (evt) => {
-                const dkey = dedupKey(realm, evt.publisher, evt.seq, topic);
-                if (this.#dedup.has(dkey))
-                    return;
-                this.#dedup.set(dkey, Date.now());
-                // A caller's handler throwing must not take down the native
-                // callback that invoked it -- found live 2026-09-05: an
-                // uncaught exception here crosses back into the N-API
-                // callback with no pending-exception handling on the addon
-                // side, which Node only warns about today (DEP0168) but is
-                // documented to become a fatal, unrecoverable crash under
-                // --force-node-api-uncaught-exceptions-policy once that
-                // policy's default flips.
-                try {
-                    sub.handler(evt);
-                }
-                catch (err) {
-                    console.error(`macula-ts pool: subscription handler for ${topic} threw:`, err);
-                }
-            }, {
-                realm,
-                bytes: opts.bytes,
-                onClosed: (err) => {
-                    if (link.closing)
-                        return; // already tearing down -- #scheduleReconnect would bail anyway, don't log a misleading "reconnecting"
-                    if (link.session === session) {
-                        console.error(`macula-ts pool: subscription to ${topic} on ${link.seed.host}:${link.seed.port} dropped (${err.message}) -- reconnecting`);
-                        this.#scheduleReconnect(link);
-                    }
-                    else {
-                        // subscribe-start hasn't resolved on this side yet (or
-                        // this link has already moved on) -- flag it so
-                        // #attachOnce notices once `onConnected` itself returns,
-                        // rather than marking a link live with a subscription
-                        // that already silently died. See closedDuringConnect's
-                        // own doc.
-                        link.closedDuringConnect = true;
-                    }
-                },
-            });
-        };
-        sub.links = this.#seeds.map((seed) => this.#newRoleLink(seed, subIdentity, onConnected));
-        this.#subscriptions.set(key, sub);
-        await Promise.all(sub.links.map((link) => this.#attach(link)));
-        return async () => {
-            // Guards against a stale unsubscribe() firing (possibly a second
-            // time, which this SDK's own convention elsewhere treats as safe)
-            // after a newer subscription has since taken this same (realm,
-            // topic) key -- found live 2026-09-05: without this check, an
-            // old unsubscribe() tore down a DIFFERENT, newer subscription's
-            // links and deleted it from #subscriptions, silently stopping its
-            // handler with no error anywhere.
-            if (this.#subscriptions.get(key) !== sub)
-                return;
-            const tracked = sub;
-            this.#subscriptions.delete(key);
-            await Promise.all(tracked.links.map(async (link) => {
-                link.closing = true;
-                if (link.retryTimer)
-                    clearTimeout(link.retryTimer);
-                if (link.inFlight)
-                    await link.inFlight.catch(() => { });
-                if (link.pendingClose)
-                    await link.pendingClose;
-                if (link.session)
-                    await link.session.close(link.identity).catch(() => { });
-            }));
-            if (tracked.ownsIdentity)
-                tracked.identity.dispose();
-        };
-    }
-    /** Live/backing-off CONTROL link counts (publish/call reachability).
-     * Every configured seed is exactly one or the other. Per-topic
-     * subscription link health is not reflected here -- inspect a
-     * specific subscription's own behavior (events arriving or not)
-     * instead; exposing N independent per-topic health vectors here
-     * would not simplify what a caller actually needs to know. */
+    /** Every link the pool holds. */
     status() {
-        const healthy = this.#liveControlLinks().length;
-        return { healthyLinks: healthy, failedLinks: this.#controlLinks.length - healthy };
+        return JSON.parse(native.poolStatus(this.live())) ?? [];
     }
-    /** Closes every control and subscription link and disposes every
-     * identity this pool owns (the caller-supplied control identity
-     * included). Awaits each link's in-flight connect/reconnect first,
-     * so a still-connecting link never has its identity yanked out from
-     * under it. */
+    /** Calls procedure in realm at a provider (any trusted one unless
+     * `provider` names one) by direct dial. A provider's ERROR is thrown as a
+     * ProviderError, a station's relay error as a RelayError. */
+    async call(realm, procedure, payload = {}, options = {}) {
+        try {
+            const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes));
+            return JSON.parse(result);
+        }
+        catch (e) {
+            throw callError(e);
+        }
+    }
+    /** The procedure's trusted providers, freshest first. */
+    async providers(realm, procedure, options = {}) {
+        return JSON.parse(await native.poolProviders(this.live(), id32(realm, "realm"), procedure, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)) ?? [];
+    }
+    /** Publishes payload on topic in realm. Topics name a kind of fact; ids go
+     * in the payload. */
+    async publish(realm, topic, payload, options = {}) {
+        await native.poolPublish(this.live(), id32(realm, "realm"), topic, JSON.stringify(payload), options.ttlMs ?? 0);
+    }
+    /** Subscribes to topic in realm: onEvent hears each verified event once,
+     * however many links deliver it. `closed` resolves when the subscription
+     * ends, with why or null. */
+    async subscribe(realm, topic, onEvent, options = {}) {
+        let settle = () => { };
+        const closed = new Promise((resolve) => (settle = resolve));
+        const handle = await native.poolSubscribe(this.live(), id32(realm, "realm"), topic, bytesModeFor(options.bytes), (d) => {
+            if (d.kind === "closed") {
+                settle(d.json === "" ? null : d.json);
+                return;
+            }
+            const e = JSON.parse(d.json);
+            onEvent({ publisher: e.publisher, realm: e.realm, topic: e.topic, seq: e.seq, publishedAt: e.published_at,
+                payload: e.payload, deliveredVia: e.delivered_via });
+        });
+        return new Subscription(handle, closed);
+    }
+    /** Serves procedure in realm: handler answers each call, and its thrown
+     * error goes back as a handler_error with its message. Serving needs the
+     * realm's key pinned and, for an org procedure, the org's delegation to
+     * this node in the DHT. */
+    async serve(realm, procedure, handler, options = {}) {
+        const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, bytesModeFor(options.bytes), (d) => {
+            if (d.kind !== "request")
+                return;
+            void answer(d, handler);
+        });
+        return new Served(handle);
+    }
+    /** Serves procedure in realm as a stream of mode: handler drives each
+     * session. The stream is closed when the handler returns without ending
+     * it, aborted with code error when it throws, and released either way. */
+    async serveStream(realm, procedure, mode, handler, options = {}) {
+        const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode, bytesModeFor(options.bytes), (d) => {
+            if (d.kind !== "request")
+                return;
+            void runStream(new Stream(d.handle, options.bytes), handler);
+        });
+        return new Served(handle);
+    }
+    /** Opens a stream of mode on procedure in realm at a provider, by direct
+     * dial. A refusal arrives on its first recv(). */
+    async openStream(realm, procedure, mode, payload = {}, options = {}) {
+        try {
+            const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode, JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"), options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+            return new Stream(handle, options.bytes);
+        }
+        catch (e) {
+            throw callError(e);
+        }
+    }
+    /** The verified record under key, or null when there is none. */
+    async findRecord(key, options = {}) {
+        try {
+            return toRecord(JSON.parse(await native.poolFindRecord(this.live(), id32(key, "key"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+        }
+        catch (e) {
+            if (e instanceof Error && e.message === "not_found")
+                return null;
+            throw e;
+        }
+    }
+    /** Every verified record under key, and how many did not verify. */
+    async findRecords(key, options = {}) {
+        return toRecords(JSON.parse(await native.poolFindRecords(this.live(), id32(key, "key"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+    }
+    /** Every verified record of type the station holds, and how many did not
+     * verify. */
+    async findRecordsByType(type, options = {}) {
+        return toRecords(JSON.parse(await native.poolFindRecordsByType(this.live(), type, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+    }
+    /** Puts a signed record's wire bytes in the DHT. */
+    async putRecord(wire, options = {}) {
+        await native.poolPutRecord(this.live(), wire, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+    }
+    /** Closes every link and subscription. */
     async close() {
-        if (this.#closed)
+        if (this.closed)
             return;
-        this.#closed = true;
-        clearInterval(this.#sweepTimer);
-        const allLinks = [...this.#controlLinks, ...[...this.#subscriptions.values()].flatMap((s) => s.links)];
-        await Promise.all(allLinks.map(async (link) => {
-            link.closing = true;
-            if (link.retryTimer)
-                clearTimeout(link.retryTimer);
-            if (link.healthCheckTimer)
-                clearInterval(link.healthCheckTimer);
-            if (link.inFlight)
-                await link.inFlight.catch(() => { });
-            if (link.pendingClose)
-                await link.pendingClose;
-            if (link.session)
-                await link.session.close(link.identity).catch(() => { });
-            link.session = undefined;
-            link.status = "backoff"; // reflects reality for status()/#liveControlLinks() if either is called after close()
-        }));
-        for (const sub of this.#subscriptions.values())
-            if (sub.ownsIdentity)
-                sub.identity.dispose();
-        this.#subscriptions.clear();
-        this.#controlIdentity.dispose();
+        this.closed = true;
+        await native.poolClose(this.handle);
     }
+    live() {
+        if (this.closed)
+            throw new Error("macula-ts: this Pool is closed");
+        return this.handle;
+    }
+}
+/** Answers one served call with the handler's result or its error, once. */
+async function answer(d, handler) {
+    const r = JSON.parse(d.json);
+    const request = { caller: r.caller, realm: r.realm, procedure: r.procedure, payload: r.payload,
+        deadlineMs: r.deadline_ms };
+    try {
+        native.pendingReply(d.handle, JSON.stringify(await handler(request)));
+    }
+    catch (e) {
+        try {
+            native.pendingError(d.handle, e instanceof Error ? e.message : String(e));
+        }
+        catch {
+            // Answered already, or its deadline passed: nothing is waiting.
+        }
+    }
+}
+/** Runs a stream handler, ends the stream as it leaves it, and releases it. */
+async function runStream(stream, handler) {
+    try {
+        await handler(stream, stream.request());
+        await stream.close().catch(() => { });
+    }
+    catch (e) {
+        await stream.abort("error", e instanceof Error ? e.message : String(e)).catch(() => { });
+    }
+    finally {
+        await stream.free();
+    }
+}
+function toRecord(r) {
+    return { type: r.type, keyId: r.key_id, createdAt: r.created_at, expiresAt: r.expires_at, payload: r.payload,
+        wire: r.wire };
+}
+function toRecords(out) {
+    return { records: (out.records ?? []).map(toRecord), dropped: out.dropped ?? 0 };
 }
 //# sourceMappingURL=pool.js.map

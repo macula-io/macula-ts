@@ -1,15 +1,25 @@
-export { Identity } from "./identity.js";
-export { Session, type CallOptions, type ServeOptions } from "./session.js";
-export { Pool, NoHealthyStationError, type Seed, type PoolOptions, type PoolStatus } from "./pool.js";
-export { MaculaCallError, type JsonValue, type Bolt4ErrorInfo, type BytesOutput } from "./rpc.js";
-export { DhtRecordType, DHT_DEFAULT_TTL_MS, type DhtRecord } from "./dht.js";
-export type { PublishOptions, PubsubEvent, SubscribeOptions } from "./pubsub.js";
-export { ContentNotFoundError } from "./content.js";
-export { Ucan, type UcanCapability, type UcanFactValue, type UcanMintOptions } from "./ucan.js";
+// @macula-io/ts: the macula 12 mesh from TypeScript, over macula-go.
+export { NodeKey, type Profile } from "./key.js";
 export {
-  keepAdvertisedDirect,
-  KEEP_ADVERTISED_DIRECT_INTERVAL_MS,
-  type DirectDialTarget,
-  type AdvertiseDirectOptions,
-  type KeepAdvertisedDirectOptions,
-} from "./directdial.js";
+  Pool,
+  Subscription,
+  Served,
+  RecordType,
+  type Seed,
+  type PoolOptions,
+  type LinkStatus,
+  type Provider,
+  type Event,
+  type Request,
+  type DhtRecord,
+} from "./pool.js";
+export { Stream, StreamMode, type StreamEvent, type StreamRequest } from "./stream.js";
+export {
+  ProviderError,
+  RelayError,
+  StreamError,
+  DEFAULT_CALL_TIMEOUT_MS,
+  type JsonValue,
+  type BytesOutput,
+  type Id,
+} from "./wire.js";

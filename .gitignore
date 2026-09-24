@@ -18,3 +18,7 @@ cabi/build/
 
 # OS
 .DS_Store
+
+# A local go.work points cabi at a macula-go checkout during development.
+go.work
+go.work.sum

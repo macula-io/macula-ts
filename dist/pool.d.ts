@@ -1,146 +1,177 @@
-import { Identity } from "./identity.js";
-import type { PubsubEvent } from "./pubsub.js";
-import { type BytesOutput, type JsonValue } from "./rpc.js";
-/** One configured connection target. */
+import { type Handle } from "./binding.js";
+import { NodeKey } from "./key.js";
+import { Stream, StreamMode, type StreamRequest } from "./stream.js";
+import { type BytesOutput, type Id, type JsonValue } from "./wire.js";
+/** A station to link to, pinned by the node_id it must prove. */
 export interface Seed {
-    host: string;
-    port: number;
+    readonly host: string;
+    readonly port: number;
+    readonly nodeId: Id;
 }
 export interface PoolOptions {
-    /** How many currently-live control links a publish() fans out to
-     * before resolving -- partial success counts as success, matching
-     * macula_client:publish/5's own documented semantics. Default 1.
-     * NOT YET FULLY AT PARITY above 1: the Erlang reference stamps ONE
-     * seq across every replica specifically so a receiver's own
-     * (publisher, seq, topic) dedup collapses the redundant copies into
-     * one event. This SDK's Session.publish() has no caller-supplied-seq
-     * parameter to do the same (each call mints its own fresh seq), so
-     * setting this above 1 would deliver N distinct, non-deduplicable
-     * copies to every subscriber -- clamped to 1 until that's fixed. */
-    replicationFactor?: number;
-    /** How long a recorded (realm, publisher, seq, topic) key is treated
-     * as a duplicate before it ages out. Default 60_000, matching the
-     * Erlang reference's own `dedup_window_ms` default. */
-    dedupWindowMs?: number;
-    /** How often the dedup table is swept for expired entries. Default
-     * 30_000, matching the Erlang reference's own `dedup_sweep_ms`. */
-    dedupSweepMs?: number;
-    /** How often a live control link is health-checked (see
-     * #armHealthCheck's own doc for why publish() alone can't be trusted
-     * to ever notice a dead connection). Default 10_000. */
-    healthCheckIntervalMs?: number;
+    /** Each realm's key as carried (hex or bytes), by realm id: an
+     * advertisement in a realm is trusted only when its authorization verifies
+     * against it, and a procedure is served only in a realm it names. */
+    readonly realmTrust?: ReadonlyArray<{
+        readonly realm: Id;
+        readonly key: string | Uint8Array;
+    }>;
+    readonly replicationFactor?: number;
+    readonly maxDirectLinks?: number;
+    readonly respawnDelayMs?: number;
+    /** How long connect waits for a first link, 30 s by default. */
+    readonly timeoutMs?: number;
 }
-export interface PoolStatus {
-    /** Seeds whose control link is currently connected. */
-    healthyLinks: number;
-    /** Seeds whose control link is not currently connected (connecting
-     * or backing off). Every configured seed is exactly one or the
-     * other -- a link backs off and retries forever, it is never given
-     * up on and dropped from the pool, same as the Erlang reference. */
-    failedLinks: number;
+/** One of the pool's links. */
+export interface LinkStatus {
+    readonly station: string;
+    readonly host: string;
+    readonly port: number;
+    readonly direct: boolean;
+    readonly up: boolean;
 }
-/** Thrown by publish()/call() when the pool has zero live control links
- * to try -- a distinct, identifiable condition from any one link's own
- * transient error, matching macula_client:publish/5's own `{error,
- * {transient, no_healthy_station}}`. */
-export declare class NoHealthyStationError extends Error {
-    constructor();
+/** A trusted provider of a procedure and the station it serves from. */
+export interface Provider {
+    readonly node: string;
+    readonly station: string;
 }
-/**
- * A resilient multi-station client: live connections to every configured
- * seed held concurrently, each independently monitored and respawned
- * with backoff on disconnect, every tracked subscription re-established
- * automatically when its own link reconnects. See this module's own
- * header doc for the full design, why a "link" is a small role-scoped
- * session set rather than one Session, and its one deliberate deviation
- * from the Erlang reference (topic-scoped dedup).
- */
+/** An event a subscription heard, verified. */
+export interface Event {
+    readonly publisher: string;
+    readonly realm: string;
+    readonly topic: string;
+    readonly seq: number;
+    readonly publishedAt: number;
+    readonly payload: JsonValue;
+    readonly deliveredVia: string;
+}
+/** A served call's request. */
+export interface Request {
+    readonly caller: string;
+    readonly realm: string;
+    readonly procedure: string;
+    readonly payload: JsonValue;
+    readonly deadlineMs: number;
+}
+/** A verified DHT record: its type, signer's key id, times, payload, and wire
+ * bytes (tagged). */
+export interface DhtRecord {
+    readonly type: number;
+    readonly keyId: string;
+    readonly createdAt: number;
+    readonly expiresAt: number;
+    readonly payload: JsonValue;
+    readonly wire: JsonValue;
+}
+/** macula 12's record types. */
+export declare enum RecordType {
+    NodeRecord = 1,
+    ProcedureAdvertisement = 6,
+    Tombstone = 12,
+    ContentAnnouncement = 17,
+    StationEndpoint = 18,
+    OrgDirectory = 21,
+    ProcedureDelegation = 22
+}
+/** A subscription, until stop() or the pool closes. */
+export declare class Subscription {
+    private readonly handle;
+    readonly closed: Promise<string | null>;
+    /** @internal */
+    constructor(handle: Handle, closed: Promise<string | null>);
+    /** Ends the subscription on every link. */
+    stop(): Promise<void>;
+}
+/** A served procedure, until stop(). */
+export declare class Served {
+    private readonly handle;
+    private stopped;
+    /** @internal */
+    constructor(handle: Handle);
+    /** Withdraws the procedure on every link. */
+    stop(): Promise<void>;
+}
 export declare class Pool {
-    #private;
+    private readonly handle;
+    private closed;
     private constructor();
-    /** Dials the control role against every seed concurrently under
-     * `controlIdentity` (the caller's own identity -- publish()/call()
-     * are attributed to it on the wire) and resolves once every seed's
-     * FIRST connect attempt has settled (success or a logged failure
-     * headed into backoff) -- matches tapRoom()'s own "await the first
-     * attempt, not the eventual outcome" reasoning (macula-mcp's
-     * lobby_observer.ts): a caller that publishes/calls immediately
-     * after connect() must not race links still mid-handshake. */
-    static connect(seeds: Seed[], controlIdentity: Identity, opts?: PoolOptions): Promise<Pool>;
-    /** Publishes to `replicationFactor` currently-live control links
-     * (default 1); partial success counts as success. A link whose
-     * publish attempt fails is marked for respawn immediately -- this is
-     * this v1's only liveness signal for the control role, since it
-     * cannot also carry a liveness-only subscribe (see this module's own
-     * header doc). Throws NoHealthyStationError if zero links are live.
-     *
-     * `realm`/`payload` are validated before any link is touched. Found
-     * live 2026-09-05: a malformed realm or an unserializable payload
-     * throws inside session.publish() itself, well before any wire I/O --
-     * treating that throw as evidence of a dead connection (the pre-fix
-     * behavior) tore down a perfectly healthy link over a caller-side
-     * argument bug. */
-    publish(realm: string | undefined, topic: string, payload: JsonValue, opts?: {
-        ttlMs?: number;
-    }): Promise<void>;
-    /** Calls `procedure` against the pool's live control links in order
-     * until one succeeds or all have been tried. Throws
-     * NoHealthyStationError if zero links are live.
-     *
-     * `realm`/`payload`/`opts.bytes` are validated before any link is
-     * touched, for the
-     * same reason as publish() -- a malformed realm is a caller bug, not
-     * evidence of a dead connection, and must never be attributed to one.
-     *
-     * A `MaculaCallError` (a real BOLT#4 response -- e.g.
-     * unknown_next_peer, unauthorized, a procedure nobody serves, a gated
-     * call this identity isn't authorized for) does NOT mark its link for
-     * respawn: the connection plainly worked, it answered. call() still
-     * falls through to the next link either way, matching the Erlang
-     * reference's own keep_or_next (macula_client.erl) -- a non-idempotent
-     * provider handler genuinely can be re-invoked on each live link this
-     * reaches; that is parity with the reference, not a bug this fixes.
-     *
-     * Any OTHER thrown error (never a wire-level answer at all) is
-     * ambiguous, not automatically a dead link: session.call()'s own
-     * deadlineMs elapsing looks identical to a genuinely severed
-     * connection, but means the far end is merely slow, not gone. Found
-     * live 2026-09-05: treating every such error as a dead link meant one
-     * slow provider response tore down and reconnected EVERY live control
-     * link in turn as call() moved through them re-trying the same call.
-     * #probeLiveness's own dedicated liveness call is the tiebreaker --
-     * only a link that ALSO fails to get a wire-level answer on that
-     * fresh probe is scheduled for reconnect. Each link's own `session`
-     * reference is re-checked both before probing and before scheduling a
-     * reconnect, in case a concurrent operation already superseded it. */
-    call(realm: string | undefined, procedure: string, payload: JsonValue, opts?: {
-        deadlineMs?: number;
+    /** Links the key's node to every seed, and resolves once one link is up. */
+    static connect(key: NodeKey, seeds: readonly Seed[], options?: PoolOptions): Promise<Pool>;
+    /** The node_id the pool links as. */
+    nodeId(): string;
+    /** Every link the pool holds. */
+    status(): LinkStatus[];
+    /** Calls procedure in realm at a provider (any trusted one unless
+     * `provider` names one) by direct dial. A provider's ERROR is thrown as a
+     * ProviderError, a station's relay error as a RelayError. */
+    call(realm: Id, procedure: string, payload?: JsonValue, options?: {
+        provider?: Id;
+        timeoutMs?: number;
         bytes?: BytesOutput;
     }): Promise<JsonValue>;
-    /** Subscribes `handler` to `(realm, topic)`: opens one subscribe-only
-     * session against every configured seed, replayed automatically on
-     * every future respawn. Mints a dedicated identity for this topic by
-     * default (disposed on unsubscribe); pass `identity` to supply the
-     * pool's own instead (e.g. for a stable, caller-controlled identity
-     * across restarts, matching macula-mcp's own observeRoomIdentityPath
-     * pattern) -- the pool never disposes an identity it didn't mint.
-     * `opts.bytes` picks how bytes in each event's payload reach `handler`
-     * (rpc.ts's BytesOutput), on every seed and after every respawn.
-     * Returns an unsubscribe function. */
-    subscribe(realm: string | undefined, topic: string, handler: (evt: PubsubEvent) => void, identity?: Identity, opts?: {
+    /** The procedure's trusted providers, freshest first. */
+    providers(realm: Id, procedure: string, options?: {
+        timeoutMs?: number;
+    }): Promise<Provider[]>;
+    /** Publishes payload on topic in realm. Topics name a kind of fact; ids go
+     * in the payload. */
+    publish(realm: Id, topic: string, payload: JsonValue, options?: {
+        ttlMs?: number;
+    }): Promise<void>;
+    /** Subscribes to topic in realm: onEvent hears each verified event once,
+     * however many links deliver it. `closed` resolves when the subscription
+     * ends, with why or null. */
+    subscribe(realm: Id, topic: string, onEvent: (event: Event) => void, options?: {
         bytes?: BytesOutput;
-    }): Promise<() => Promise<void>>;
-    /** Live/backing-off CONTROL link counts (publish/call reachability).
-     * Every configured seed is exactly one or the other. Per-topic
-     * subscription link health is not reflected here -- inspect a
-     * specific subscription's own behavior (events arriving or not)
-     * instead; exposing N independent per-topic health vectors here
-     * would not simplify what a caller actually needs to know. */
-    status(): PoolStatus;
-    /** Closes every control and subscription link and disposes every
-     * identity this pool owns (the caller-supplied control identity
-     * included). Awaits each link's in-flight connect/reconnect first,
-     * so a still-connecting link never has its identity yanked out from
-     * under it. */
+    }): Promise<Subscription>;
+    /** Serves procedure in realm: handler answers each call, and its thrown
+     * error goes back as a handler_error with its message. Serving needs the
+     * realm's key pinned and, for an org procedure, the org's delegation to
+     * this node in the DHT. */
+    serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>, options?: {
+        bytes?: BytesOutput;
+    }): Promise<Served>;
+    /** Serves procedure in realm as a stream of mode: handler drives each
+     * session. The stream is closed when the handler returns without ending
+     * it, aborted with code error when it throws, and released either way. */
+    serveStream(realm: Id, procedure: string, mode: StreamMode, handler: (stream: Stream, request: StreamRequest) => void | Promise<void>, options?: {
+        bytes?: BytesOutput;
+    }): Promise<Served>;
+    /** Opens a stream of mode on procedure in realm at a provider, by direct
+     * dial. A refusal arrives on its first recv(). */
+    openStream(realm: Id, procedure: string, mode: StreamMode, payload?: JsonValue, options?: {
+        provider?: Id;
+        deadlineMs?: number;
+        timeoutMs?: number;
+        bytes?: BytesOutput;
+    }): Promise<Stream>;
+    /** The verified record under key, or null when there is none. */
+    findRecord(key: Id, options?: {
+        timeoutMs?: number;
+        bytes?: BytesOutput;
+    }): Promise<DhtRecord | null>;
+    /** Every verified record under key, and how many did not verify. */
+    findRecords(key: Id, options?: {
+        timeoutMs?: number;
+        bytes?: BytesOutput;
+    }): Promise<{
+        records: DhtRecord[];
+        dropped: number;
+    }>;
+    /** Every verified record of type the station holds, and how many did not
+     * verify. */
+    findRecordsByType(type: RecordType | number, options?: {
+        timeoutMs?: number;
+        bytes?: BytesOutput;
+    }): Promise<{
+        records: DhtRecord[];
+        dropped: number;
+    }>;
+    /** Puts a signed record's wire bytes in the DHT. */
+    putRecord(wire: Uint8Array, options?: {
+        timeoutMs?: number;
+    }): Promise<void>;
+    /** Closes every link and subscription. */
     close(): Promise<void>;
+    private live;
 }

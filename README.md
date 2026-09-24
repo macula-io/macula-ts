@@ -19,28 +19,21 @@
 
 ---
 
-> **Status, 2026-09-04:** identity generation, a real transport +
-> CONNECT/HELLO handshake, unary RPC (both roles), DHT record
-> lookups/publication, pubsub, content transfer, UCAN minting/inspection
-> + UCAN-gated calling, and direct-dial (both roles) are all
-> **live-verified against the real production fleet**
-> (`station-de-frankfurt.macula.io`). Streaming RPC, streaming/content
-> direct-dial, cert-chain-authorized direct-dial, and provider-side UCAN
-> policy gating don't exist yet — see [What's explicitly not yet
-> implemented](#whats-explicitly-not-yet-implemented). Published to npm
-> as `@macula-io/ts` with zero install-time scripts — see
-> [Packaging](#packaging-genuinely-zero-install-time-scripts). Full
-> development history, including every bug found and fixed along the
-> way, lives in [CHANGELOG.md](CHANGELOG.md), not here.
+> **Status, 2026-09-24:** on the **macula 12** wire (post-quantum: ML-DSA-87
+> identities, ML-KEM hybrid key exchange, signed requests), over macula-go's
+> pool. Calls and streams by direct dial, serving, publish/subscribe and the
+> DHT are tested against in-process macula 12 stations on every `npm test`.
+> Content transfer and UCAN-gated calls are not here yet; see [Not yet
+> implemented](#not-yet-implemented). Releases before 0.18.0 speak the retired
+> 10.x wire and cannot reach the current fleet.
 
 ## What is this?
 
-A TypeScript SDK for the Macula mesh protocol — real QUIC-based mesh
-connectivity from Node.js: identity, sessions, unary RPC, pub/sub,
-content transfer, UCAN capability tokens, and direct-dial, all reaching
-the real production fleet today. Built as an FFI binding over
-[macula-go](https://github.com/macula-io/macula-go) rather than a native
-reimplementation — see below for why.
+A TypeScript SDK for the Macula mesh: a node's key, a pool of links to
+stations it pins by node_id, calls and streams that reach a provider by direct
+dial, serving procedures, publish/subscribe and the DHT, from Node.js. Built as
+an FFI binding over [macula-go](https://github.com/macula-io/macula-go) rather
+than a native reimplementation; see below for why.
 
 ## Why FFI over macula-go, not a native TypeScript reimplementation
 
@@ -66,7 +59,7 @@ that's actually usable for this today:
 
 macula-go, macula-rust, macula-dotnet, and macula-php have all already
 proven this protocol works and are actively maintained. Rather than
-reimplement QUIC + deterministic CBOR + Ed25519 framing a fifth time in a
+reimplement QUIC, post-quantum TLS, deterministic CBOR and signed frames a fifth time in a
 language with no mature QUIC story of its own, macula-ts reuses macula-go's
 already-proven implementation through FFI — the same tradeoff
 [macula-php](https://github.com/macula-io/macula-php) already made
@@ -89,273 +82,113 @@ convention).
 
 ## Quick start
 
-Also lives as a runnable example -- `npm run build && node
-examples/01_quickstart.ts`. Advertises and calls its own trivial echo
-procedure (two identities, a provider and a caller, since a station kicks
-a connection the instant a second one arrives under the same identity)
-rather than depending on any particular procedure already being
-advertised on the fleet:
-
-```typescript
-// Connects to a real macula-station, advertises a trivial echo procedure,
-// and calls it. Dials the real production fleet, so this isn't run by
-// CI -- see README.md's "Quick start" section, which this file backs.
-// Run: npm run build && node examples/01_quickstart.ts
-//
-// Two identities are used (a provider and a caller) because a station
-// kicks a connection the instant a second one arrives under the same
-// identity.
-import { Identity, Session } from "../dist/index.js";
-
-const providerId = Identity.generate();
-const callerId = Identity.generate();
-
-const provider = await Session.connect("station-de-frankfurt.macula.io", 4433, providerId);
-const caller = await Session.connect("station-de-frankfurt.macula.io", 4433, callerId);
-
-// Unique per run -- reusing a fixed procedure name across rapid repeated
-// runs can hit stale DHT routing state from the prior run's now-dead
-// advertiser.
-const procedure = `macula_ts.quickstart_echo.${Date.now()}`;
-
-const stop = await provider.serve(procedure, (payload) => payload);
-await new Promise((resolve) => setTimeout(resolve, 500)); // ADVERTISE is fire-and-forget; give it a moment to land
-
-const response = await caller.call(procedure, "hello");
-console.log("call response:", response);
-
-await stop();
-await provider.close(providerId);
-await caller.close(callerId);
-providerId.dispose();
-callerId.dispose();
-console.log("OK");
+```bash
+npm install @macula-io/ts
 ```
+
+A node needs a station to link to, **pinned by its node_id**, and the key of
+each realm it trusts, which the realm publishes. Its own key is created on
+first use and kept in a file readable by its owner only.
+
+```ts
+import { NodeKey, Pool, StreamMode } from "@macula-io/ts";
+
+const key = await NodeKey.loadOrCreate("node.key");
+const pool = await Pool.connect(key, [{ host: "2600:3c0e::2000:c2ff:fed0:f20b", port: 4433, nodeId: stationId }], {
+  realmTrust: [{ realm, key: realmKeyHex }],
+});
+
+// A call reaches a provider by direct dial: its advertisement from the DHT,
+// trusted only when the realm key authorizes it, and its station dialed.
+const answer = await pool.call(realm, "mcl-echo/echo", "hello");
+
+// Publish and subscribe; topics name a kind of fact, ids go in the payload.
+const sub = await pool.subscribe(realm, "acme/demo/greeting_sent_v1", (e) => console.log(e.payload));
+await pool.publish(realm, "acme/demo/greeting_sent_v1", { text: "hi" });
+
+// Streams: a server stream's chunks arrive until its end.
+const stream = await pool.openStream(realm, "mcl-tube/watch", StreamMode.Server);
+for await (const event of stream) if (event.kind === "end") break;
+await stream.free();
+
+await pool.close();
+```
+
+Runnable versions are in [`examples/`](examples).
+
+### Coming from 0.17 and earlier
+
+Everything moved to the macula 12 wire, and the API with it. There is no
+compatibility layer.
+
+- **New identities.** A macula 12 node_id derives from an ML-DSA-87 key (or the
+  LAMPS composite in `pq_hybrid`), so no Ed25519 identity carries over.
+  `NodeKey.loadOrCreate(path)` makes a new key file; your old seed files are
+  left untouched. **Re-join your realms and re-trust your agents**: anything
+  that named your old node_id (trust lists, petnames, realm memberships) must
+  be redone with the new one.
+- `Identity` is now `NodeKey`; `Session` and `Pool` are one `Pool`, whose seeds
+  carry the station's `nodeId` and whose `realmTrust` pins realm keys;
+  `callDirect` is simply `call`; `resolveDirect` is `providers`.
+- Serving an org procedure needs the realm's org directory and the org's
+  delegation to your node in the DHT: a realm admits orgs through a human.
 
 ## Architecture
 
 ```
-src/*.ts  --(node-gyp-build)-->  addon/binding.cc (N-API)  --(static link)-->  cabi/  --(cgo)-->  macula-go
+src/ (TypeScript API)  ──  addon/binding.cc (N-API)  ──  cabi/ (Go, C archive)  ──  macula-go pool
 ```
 
-`cabi/` is a Go module that imports `macula-go` and builds with
-`go build -buildmode=c-archive` into a C ABI static archive (`libmacula.a`
-+ `libmacula.h`) — not a shared library. `addon/binding.cc` is a small,
-purpose-built [node-addon-api](https://github.com/nodejs/node-addon-api)
-N-API addon (not a generic FFI bridge) that links `libmacula.a` in
-statically, so the resulting `.node` file is self-contained: nothing to
-locate or `dlopen` at runtime, no separate shared library to ship
-alongside it. `src/binding.ts` loads that addon via
-[`node-gyp-build`](https://github.com/prebuild/node-gyp-build) (a
-zero-dependency runtime loader) and re-exports its typed functions;
-`src/identity.ts` (and everything built on top of it) is the actual
-public TypeScript API, never touching the addon directly.
-
-**Memory ownership**, copied from macula-php's `cabi/` rather than
-reinvented: every opaque Go value (an identity keypair, a session, or an
-inbound "pending call" awaiting a `serve()` handler's reply) crosses the
-boundary as a `uintptr_t` from `runtime/cgo.Handle`. Hold it, pass it
-back for every operation on that value, and free it exactly once
-(`Identity#dispose()` on the TS side; a pending-call handle is freed
-automatically by whichever of `macula_pending_call_reply_result`/`_error`
-answers it). Fixed-length fields (a 32-byte NodeID or seed) are written
-directly into a caller-supplied output buffer. Every exported function
-resolves handles through a `recover()`-guarded lookup, never a raw
-`cgo.Handle(h)` — `cgo.Handle`'s own `.Value()`/`.Delete()` panic, not
-return an error, on a handle this process never issued or already freed.
-
-**RPC payloads cross this boundary as JSON text**, not another handle —
-`cabi/wirevalue.go` converts to/from macula-go's `cbor.Value`, ported from
-[macula-cli](https://github.com/macula-io/macula-cli)'s
-`internal/wirevalue` package (already proven against the same no-bool
-rule) rather than reinvented, plus a reserved `{"$bytes": base64}` object
-for bytes (see the RPC caller role below). `Session.serve()`
-cannot hand a Go closure across the FFI boundary the way `ServeOneCall`
-expects, since the actual answer has to come from arbitrary, possibly-
-async TypeScript — so `cabi/serve.go` splits that one blocking Go call
-into three cgo exports instead (wait-for-call, read the pending call's
-procedure/payload, reply), the same split
-[macula-php](https://github.com/macula-io/macula-php)'s `cabi/serve.go`
-already proved for the identical problem.
-
-Development history (every bug found while building this, and how it was
-fixed) is in [CHANGELOG.md](CHANGELOG.md).
+`cabi/` exports C functions over macula-go's `pool` (and `stationlink`
+streams). Every Go value crosses as a `runtime/cgo.Handle`; payloads cross as
+JSON with no booleans and bytes as `{"$bytes": "<base64>"}` going in. Every call
+that does network I/O runs on a worker thread (`Napi::AsyncWorker`) and returns
+a Promise; events, served calls and served streams reach JavaScript through a
+`ThreadSafeFunction`.
 
 ## What's implemented
 
-- **Identity** — `Identity.generate()` (a fresh, S/Kademlia
-  puzzle-hardened Ed25519 identity), `Identity.fromSeedBytes()`
-  (deterministic reconstruction from a saved 32-byte seed),
-  `identity.nodeId`/`.privateSeedBytes`/`.dispose()`, and
-  `identity.sign(data)` — a generic Ed25519 primitive (no
-  application-specific message format baked in; `data` is signed exactly
-  as given). Using a disposed `Identity` throws instead of signing with a
-  freed handle.
-- **Session** — `Session.connect(host, port, identity)` dials a real
-  macula-station and completes the CONNECT/HELLO handshake (WebPKI
-  trust). `session.remoteAddr`, `session.stationNodeId` (the
-  HELLO-verified station identity), `session.close(identity, reason?)`
-  (idempotent). Using a session's accessors after `close()` throws
-  cleanly rather than crashing.
-- **RPC, caller role** — `session.call(procedure, payload, opts?)` sends
-  a signed CALL and waits for the matching RESULT/ERROR.
-  `payload`/the return value are `JsonValue` (string/number/null/array/
-  object — **no boolean**, since macula's wire CBOR has no bool type;
-  encode `true`/`false` as `1`/`0` yourself). **Bytes** go in as an
-  object whose only key is `$bytes`, holding standard padded base64:
-  `{"$bytes": "AQID"}` is the bytes `01 02 03`. Any other value under
-  that sole key is an error, an object with more keys stays a map, and a
-  plain string is always text. Bytes come back as `"0x"`-prefixed hex by
-  default; `opts.bytes: "tagged"` returns them in the same `$bytes` form,
-  so a returned id can be passed straight back. A BOLT#4 ERROR frame (e.g.
-  `unknown_next_peer`) rejects with a `MaculaCallError` carrying the
-  numeric `code`, `bolt4Name`, `retryable`, and `detail`. `opts.realm` (a
-  64-character hex string) scopes the call to a realm other than the
-  all-zero default; `callWithUcan()`/`publish()`/`subscribe()` take the
-  identical option.
-- **RPC, provider role** — `session.serve(procedure, handler, opts?)` advertises
-  `procedure` and answers inbound CALLs against it forever, invoking
-  `handler(payload)` for each (sync or async; `opts.bytes` as for
-  `call()`). Resolves with an async
-  `stop()` that unadvertises and waits for the current poll tick to
-  finish. Only one `serve()` per `Session` at a time, since a second would
-  answer CALLs meant for the first, and a `Session` takes one role at a
-  time: `call()` refuses while a `serve()` or `subscribe()` is active on
-  it. Open a second `Session` for the other role.
-- **DHT** — `session.findRecordsByType(recordType)`,
-  `session.findRecords(key)`, `session.findRecord(key)`, and
-  `session.putProcedureAdvertisement(procedure, servingStation, opts?)`/
-  `session.putContentAnnouncement(mcid, endpoint, ttlMs?)` — typed
-  builders wrapping macula-go's own `dht.NewProcedureAdvertisement`/
-  `NewContentAnnouncement` (signed via `dht.Sign`, stored via
-  `dht.PutRecord`). There is deliberately no generic
-  `putRecord(type, arbitraryPayload)` — a procedure_advertisement/
-  content_announcement payload carries raw pubkey/MCID fields that must
-  be actual CBOR byte strings, which only the typed builders guarantee.
-- **Pubsub** — `session.publish(topic, payload, opts?)` (fire-and-forget,
-  no ack on the wire) and `session.subscribe(topic, handler, opts?)`
-  (`opts.bytes` as for `call()`).
-  `subscribe()` resolves with an async `stop()` that sends UNSUBSCRIBE
-  and does not resolve until the underlying reader goroutine has
-  genuinely exited. Only one `subscribe()` (and no active `serve()`) per
-  `Session` at a time — `publish()` itself is exempt, since it only ever
-  writes, so a `Session` can safely `publish()` on the same topic it's
-  `subscribe()`d to.
-- **Content transfer** — `session.putContent(data, name?)` /
-  `session.getContent(mcid)`, sent on their own dedicated QUIC stream
-  (not the control stream, and outside the one-role rule, so they run
-  alongside an active `serve()`/`subscribe()`). Data above 256 KiB is chunked and reassembled
-  automatically. `mcid` crosses the boundary as a lowercase hex string.
-  **This is a one-time TRANSFER mechanism, not durable object storage** —
-  a station may forget content after serving it, and there is no
-  list/delete operation.
-- **UCAN** — `Ucan.mint(issuer, audience, capabilities?, opts?)` (a
-  JWT-shaped, EdDSA-signed capability token, UCAN spec `"0.10.0"`) and
-  `Ucan.decode(token)` (parses claims WITHOUT verifying signature or
-  expiry — `Ucan#isExpired` mirrors macula-go's own semantics). Both are
-  pure local operations, no network I/O. `issuer` is written as
-  `did:macula:<hex NodeID>` and `audience` as the audience NodeID in
-  lowercase hex. `session.callWithUcan(procedure, payload, ucanToken,
-  opts?)` attaches a token to an outgoing CALL, for invoking a procedure
-  gated behind a provider-side `ucan.Policy.Required` policy. A gated
-  provider accepts a token only from the caller its `aud` names, so mint
-  it for the identity that will present it; `callWithUcan` attaches
-  whatever token it is given. This SDK does **not**
-  expose `ucan.Verify` or `ucan.Policy` — only minting, inspecting, and
-  attaching a token are implemented; enforcing one is provider-side, out
-  of scope here.
-- **Direct-dial** — `session.resolveDirect(procedure, opts?)`,
-  `session.callDirect(procedure, payload, opts?)`,
-  `session.callDirectWithUcan(procedure, payload, ucanToken, opts?)`
-  (caller side) and `session.advertiseDirect(procedure, opts?)` plus a
-  standalone `keepAdvertisedDirect(session, procedure, opts?)` helper
-  (provider side). Resolves a signed `procedure_advertisement` DHT record
-  to its serving station's own signed `station_endpoint`, then dials that
-  station directly in one hop instead of depending on advertise-gossip
-  having reached whichever station the caller happens to already be
-  connected to. Every advertisement that verifies is a candidate:
-  `resolveDirect()` asks the DHT again until one's station endpoint
-  resolves, within `opts.deadlineMs` (10 s when unset), and `callDirect()`
-  moves on to the next candidate when a dial fails, within its own
-  `deadlineMs`. Trust is enforced at the application layer: the freshly
-  connected peer's HELLO-proven identity is checked against the exact
-  pubkey the signed DHT chain resolved. `advertiseDirect()` issues both a
-  plain ADVERTISE and the signed DHT record on the same call — both are
-  required for `resolveDirect()`+`callDirect()` to actually reach a live
-  route. `resolveDirect`/`callDirect`/`callDirectWithUcan`/
-  `advertiseDirect` follow the same one-role rule as `call()`/the DHT
-  methods; a long-lived provider that also serves the
-  same procedure needs a separate `Session` (and identity — this fleet
-  enforces one connection per identity) to keep re-advertising on, which
-  is why `keepAdvertisedDirect()` is a standalone function rather than a
-  `Session` method.
+| Primitive | Caller | Provider | Notes |
+|---|---|---|---|
+| Node keys (`NodeKey`) | ✅ | ✅ | `pq_hybrid` (the fleet's) or `pq_pure`; key files readable by the owner only |
+| Pool of station links (`Pool.connect`) | ✅ | ✅ | Seeds pinned by node_id; realm keys pinned; links redialed with subscriptions and served procedures replayed |
+| Calls by direct dial (`call`, `providers`) | ✅ | ✅ | `serve`: a thrown error goes back as `handler_error`; errors arrive as `ProviderError` / `RelayError` |
+| Streams (`openStream`, `serveStream`) | ✅ | ✅ | Server, client and bidi; a QUIC stream per session, released on every path |
+| Publish/subscribe | ✅ | ✅ | Signed publications, delivered once across links |
+| DHT (`findRecord`, `findRecords`, `findRecordsByType`, `putRecord`) | ✅ | — | Records verified before they are handed on |
 
-- **Pool** — `Pool.connect(seeds, controlIdentity, opts)` holds live
-  connections to every configured seed concurrently (not
-  dial-one-then-fallback-on-failure), each independently monitored and
-  respawned with backoff on disconnect; `publish()`/`call()` fan out
-  over live links, `subscribe()` re-establishes automatically on
-  reconnect; `call()` and `subscribe()` take the same `bytes` option. Ports `macula/src/client/macula_client.erl`'s pool design;
-  see `pool.ts`'s own module doc for why it's a set of role-scoped
-  `Session`s per seed rather than one, given the single-reader
-  constraint below.
+## Not yet implemented
 
-Every item above is live-verified against the real production fleet
-(`station-de-frankfurt.macula.io`), including negative/error paths and,
-where applicable, the actual packaged npm tarball rather than only the
-dev build — see [CHANGELOG.md](CHANGELOG.md) for the specific
-assertions, bugs found, and fixes for each.
-
-## What's explicitly not yet implemented
-
-Streaming RPC, streaming/content direct-dial (`OpenStreamDirect`,
-`PutDirect`/`GetDirect` — plain `Session.call`/`serve` direct-dial is
-implemented, see above), cert-chain-authorized direct-dial
-(`ResolveWithCertChain`/`CallWithCertChain`/`AdvertiseDirectWithCertChain`
-— opt-in even in macula-go itself), provider-side UCAN policy gating
-(`ucan.Policy`/`ServeOneCallGated` — this SDK can mint/attach a token but
-not enforce one on a served procedure), per-realm `serve`/`advertise`
-(these two still only ever use the all-zero realm — `call`/`callWithUcan`/
-`publish`/`subscribe`, and DHT's `putProcedureAdvertisement`, all DO now
-take an optional realm), a generic "put any DHT record type with an
-arbitrary payload" function (see above for why), a `station_endpoint`
-record builder (macula-go has none either — stations publish those
-themselves, not clients), and `Pinned`/`Insecure` trust modes (`WebPKI`
-only so far). Multiple concurrent `subscribe()` topics on one `Session`
-still isn't supported at the `Session` level itself — one `subscribe()`
-(like one `serve()`) per `Session` at a time; open a second `Session`
-for a second topic (`Pool`, above, does exactly this internally to give
-each tracked topic its own session). Each of these is a separate, later
-slice of work built on top of a working `Session`.
+- **Content transfer.** In macula 12 a station keeps no content; the node
+  that shares it serves it. That protocol is being defined in macula
+  (macula#35) and comes here with macula-go.
+- **UCAN-gated calls and serving.** macula 12 uses post-quantum UCANs
+  (macula-go#2). Calls carry no token yet, and a gated procedure cannot be
+  served.
+- **Serving without an org.** Self-named procedures (`~<node id>/<name>`),
+  decided for macula 12, are not in macula or the stations yet.
 
 ## Testing
 
 ```bash
-npx vitest run    # default suite, no network
-MACULA_TS_LIVE_STATION=<station host> MACULA_TS_LIVE_OTHER_STATION=<another station host> npm run test:live
+npm test          # builds build/teststation, then the offline suite
+npm run test:live # one live station, see below
 ```
 
-`src/session.live.test.ts`, `src/rpc.live.test.ts`, `src/dht.live.test.ts`,
-`src/pubsub.live.test.ts`, `src/content.live.test.ts`,
-`src/ucan.live.test.ts`, `src/directdial.live.test.ts`, and
-`src/pool.live.test.ts` hit the real
-production fleet and are **not** part of default `npm test`/CI — opt in
-explicitly, gated behind `MACULA_TS_LIVE`. Same convention as macula-go's
-`live` build tag, macula-rust's `#[ignore]`, and macula-dotnet's
-`[Trait("Category","Live")]`: real-network tests are written and
-runnable, just excluded from the default/CI run so a station outage doesn't
-make ordinary CI flaky. `.github/workflows/live.yml` runs them when dispatched
-by hand (`workflow_dispatch`), never on push or PR. Its two required inputs name
-the stations, and it loads the committed linux-x64 prebuild, the same `.node`
-file the npm package ships, after checking its sha256 against the commit.
+`npm test` runs `src/pool.test.ts` against `cabi/cmd/teststation`, a helper
+that runs two in-process macula 12 stations (macula-go's `teststation`) sharing
+a DHT, with a test realm that admits the test's provider nodes. It exercises
+keys, calls by direct dial and their errors, providers, server and client
+streams (and that no stream is left unreleased), pubsub and the DHT, through
+the real addon. No network is needed.
 
-A live run names its stations: `MACULA_TS_LIVE_STATION` is the host every live
-test uses, and `MACULA_TS_LIVE_OTHER_STATION` is the second station the pool's
-multi-station test connects to. Neither has a default. With `MACULA_TS_LIVE`
-set, a station that isn't set, or that no session can be opened to, fails the
-tests with a message naming its variable instead of skipping them. When
-`MACULA_TS_LIVE_WAITS` names a file, each wait for a station to register an
-ADVERTISE or SUBSCRIBE is also recorded there.
+`src/fleet.live.test.ts` runs against one real station and is not part of
+`npm test`. It needs `MACULA_TS_LIVE_SEED` (host:port), `MACULA_TS_LIVE_STATION_ID`
+(the station's node_id), `MACULA_TS_LIVE_REALM` and `MACULA_TS_LIVE_REALM_KEY`;
+an unset one fails the run naming it. It reads the DHT, calls `mcl-echo/echo`
+by direct dial and hears its own publication.
+`.github/workflows/live.yml` runs it when dispatched by hand, on the committed
+linux-x64 prebuild.
 
 ## Packaging: genuinely zero install-time scripts
 
@@ -403,7 +236,7 @@ npm run build:go   # builds cabi/build/libmacula.a -- must run BEFORE
 npm install         # builds the native addon (via the implicit node-gyp
                     # rebuild above) and installs JS deps
 npm run typecheck
-npm test
+npm test            # builds build/teststation (Go) first
 npm run build:prebuilds   # regenerate prebuilds/ after touching addon/ or cabi/ -- commit the result
 npm run build             # local dev build: addon + tsc
 ```

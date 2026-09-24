@@ -1,9 +1,10 @@
 name: Live
 
-# Runs the live station tests (src/*.live.test.ts) against real stations. It is
-# dispatched by hand and never runs on push or PR, because a station outage or
-# a network hiccup must not make ordinary CI flaky. Both stations are required
-# inputs with no default, so every run names the stations it used.
+# Runs the live station test (src/fleet.live.test.ts) against one real macula
+# 12 station. It is dispatched by hand and never runs on push or PR, because a
+# station outage or a network hiccup must not make ordinary CI flaky. The
+# station is pinned by its node_id and the realm by its key, all required
+# inputs with no default, so every run names what it trusted.
 #
 # The tests load the committed linux-x64 prebuild, the same .node file the npm
 # package ships. Nothing here builds Go or the addon. On the same commit,
@@ -13,12 +14,20 @@ name: Live
 on:
   workflow_dispatch:
     inputs:
-      station:
-        description: "Host name of the station every live test uses (MACULA_TS_LIVE_STATION)"
+      seed:
+        description: "The station, host:port, [v6]:port for IPv6 (MACULA_TS_LIVE_SEED)"
         required: true
         type: string
-      other_station:
-        description: "Host name of a second station, for the pool's multi-station test (MACULA_TS_LIVE_OTHER_STATION)"
+      station_id:
+        description: "The station's node_id, 64 hex (MACULA_TS_LIVE_STATION_ID)"
+        required: true
+        type: string
+      realm:
+        description: "The realm id, 64 hex, whose mcl-echo/echo the test calls (MACULA_TS_LIVE_REALM)"
+        required: true
+        type: string
+      realm_key:
+        description: "The realm's key as carried, hex (MACULA_TS_LIVE_REALM_KEY)"
         required: true
         type: string
 
@@ -81,21 +90,10 @@ jobs:
           fi
           echo "The loaded .node matches the committed prebuild."
 
-      - name: Live station tests
-        id: live
+      - name: Live station test
         env:
-          MACULA_TS_LIVE_STATION: ${{ inputs.station }}
-          MACULA_TS_LIVE_OTHER_STATION: ${{ inputs.other_station }}
-          MACULA_TS_LIVE_WAITS: ${{ runner.temp }}/live-waits.log
+          MACULA_TS_LIVE_SEED: ${{ inputs.seed }}
+          MACULA_TS_LIVE_STATION_ID: ${{ inputs.station_id }}
+          MACULA_TS_LIVE_REALM: ${{ inputs.realm }}
+          MACULA_TS_LIVE_REALM_KEY: ${{ inputs.realm_key }}
         run: npm run test:live
-
-      - name: Registration waits
-        if: ${{ !cancelled() && steps.live.conclusion != 'skipped' }}
-        env:
-          MACULA_TS_LIVE_WAITS: ${{ runner.temp }}/live-waits.log
-        run: |
-          if [ -s "$MACULA_TS_LIVE_WAITS" ]; then
-            sort "$MACULA_TS_LIVE_WAITS"
-          else
-            echo "No registration waits were recorded."
-          fi

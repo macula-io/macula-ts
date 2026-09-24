@@ -1,47 +1,49 @@
-export type Handle = number | bigint;
+/** An opaque Go value's handle (runtime/cgo.Handle), as the addon returns it. */
+export type Handle = bigint;
+/** What a listener (a subscription, a served procedure, a served stream
+ * procedure) is handed, on the event loop: an event or closed notice with its
+ * JSON, or a request with the pending call's or stream's handle. */
+export interface Delivery {
+    readonly kind: "event" | "closed" | "request";
+    readonly json: string;
+    readonly handle: Handle;
+}
+export type Listener = (delivery: Delivery) => void;
 export declare const native: {
-    identityGenerate(): bigint;
-    identityFromSeedBytes(seed32: Uint8Array): bigint;
-    identityNodeId(handle: Handle): Uint8Array;
-    identityPrivateBytes(handle: Handle): Uint8Array;
-    identityFree(handle: Handle): void;
-    identitySign(handle: Handle, data: Uint8Array): Uint8Array;
-    sessionConnect(host: string, port: number, identityHandle: Handle): Promise<bigint>;
-    sessionRemoteAddr(handle: Handle): string;
-    sessionStationNodeId(handle: Handle): Uint8Array;
-    sessionClose(handle: Handle, identityHandle: Handle, reason: string): Promise<void>;
-    sessionCall(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, bytesMode: number): Promise<string>;
-    ucanMint(identityHandle: Handle, issuer: string, audience: string, capabilitiesJson: string, expiresAt: number | undefined, notBefore: number | undefined, nonce: string, factsJson: string | undefined, proofsJson: string | undefined): string;
-    ucanDecode(token: string): string;
-    sessionCallWithUcan(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, ucanToken: string, bytesMode: number): Promise<string>;
-    sessionAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
-    sessionUnadvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string): Promise<void>;
-    serveWaitForCall(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, timeoutMs: number): Promise<Handle | null>;
-    pendingCallProcedure(pendingHandle: Handle): string;
-    pendingCallPayloadJson(pendingHandle: Handle, bytesMode: number): string;
-    pendingCallReplyResult(pendingHandle: Handle, resultJson: string): Promise<void>;
-    pendingCallReplyError(pendingHandle: Handle, detail: string): Promise<void>;
-    dhtFindRecordsByType(sessionHandle: Handle, identityHandle: Handle, recordType: number): Promise<string>;
-    dhtFindRecords(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string>;
-    dhtFindRecord(sessionHandle: Handle, identityHandle: Handle, key32: Uint8Array): Promise<string | null>;
-    dhtPutProcedureAdvertisement(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, servingStation32: Uint8Array, ttlMs: number): Promise<string>;
-    dhtPutContentAnnouncement(sessionHandle: Handle, identityHandle: Handle, mcid34: Uint8Array, endpoint: string, ttlMs: number): Promise<string>;
-    sessionPublish(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, topic: string, payloadJson: string, ttlMs: number): Promise<void>;
-    sessionSubscribeStart(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, topic: string, onEvent: (msg: {
-        kind: "event";
-        topic: string;
-        publisher: Uint8Array;
-        seq: number;
-        payloadJson: string;
-    } | {
-        kind: "closed";
-        error: string;
-    }) => void, bytesMode: number): Promise<bigint>;
-    sessionSubscribeStop(subscriptionHandle: Handle): Promise<void>;
-    contentPut(sessionHandle: Handle, identityHandle: Handle, data: Uint8Array, name: string): Promise<string>;
-    contentGet(sessionHandle: Handle, identityHandle: Handle, mcidHex: string): Promise<Uint8Array | null>;
-    directdialResolve(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, timeoutMs: number): Promise<string>;
-    directdialCall(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, bytesMode: number): Promise<string>;
-    directdialCallWithUcan(sessionHandle: Handle, identityHandle: Handle, procedure: string, realm: Uint8Array | undefined, payloadJson: string, timeoutMs: number, ucanToken: string, bytesMode: number): Promise<string>;
-    directdialAdvertise(sessionHandle: Handle, identityHandle: Handle, realm: Uint8Array | undefined, procedure: string, ttlMs: number): Promise<void>;
+    keyGenerate(profile: string): Promise<Handle>;
+    keyLoad(path: string, profile: string): Promise<Handle>;
+    keySave(key: Handle, path: string): Promise<void>;
+    keyNodeId(key: Handle): Uint8Array;
+    keyPublicKey(key: Handle): Uint8Array;
+    keyProfile(key: Handle): string;
+    keySign(key: Handle, data: Uint8Array): Promise<Uint8Array>;
+    keyFree(key: Handle): void;
+    poolConnect(key: Handle, seedsJson: string, optionsJson: string): Promise<Handle>;
+    poolClose(pool: Handle): Promise<void>;
+    poolNodeId(pool: Handle): Uint8Array;
+    poolStatus(pool: Handle): string;
+    poolCall(pool: Handle, realm: Uint8Array, procedure: string, payloadJson: string, provider: Uint8Array | null, timeoutMs: number, bytesMode: number): Promise<string>;
+    poolProviders(pool: Handle, realm: Uint8Array, procedure: string, timeoutMs: number): Promise<string>;
+    poolPublish(pool: Handle, realm: Uint8Array, topic: string, payloadJson: string, ttlMs: number): Promise<void>;
+    poolSubscribe(pool: Handle, realm: Uint8Array, topic: string, bytesMode: number, listener: Listener): Promise<Handle>;
+    subscriptionStop(subscription: Handle): Promise<void>;
+    poolFindRecord(pool: Handle, key: Uint8Array, timeoutMs: number, bytesMode: number): Promise<string>;
+    poolFindRecords(pool: Handle, key: Uint8Array, timeoutMs: number, bytesMode: number): Promise<string>;
+    poolFindRecordsByType(pool: Handle, type: number, timeoutMs: number, bytesMode: number): Promise<string>;
+    poolPutRecord(pool: Handle, wire: Uint8Array, timeoutMs: number): Promise<void>;
+    poolServe(pool: Handle, realm: Uint8Array, procedure: string, bytesMode: number, listener: Listener): Promise<Handle>;
+    poolServeStream(pool: Handle, realm: Uint8Array, procedure: string, mode: number, bytesMode: number, listener: Listener): Promise<Handle>;
+    pendingReply(pending: Handle, resultJson: string): void;
+    pendingError(pending: Handle, message: string): void;
+    servedStop(served: Handle): Promise<void>;
+    poolOpenStream(pool: Handle, realm: Uint8Array, procedure: string, mode: number, payloadJson: string, provider: Uint8Array | null, deadlineMs: number, timeoutMs: number): Promise<Handle>;
+    streamSendBytes(stream: Handle, data: Uint8Array): Promise<void>;
+    streamSendJson(stream: Handle, valueJson: string): Promise<void>;
+    streamCloseSend(stream: Handle): Promise<void>;
+    streamClose(stream: Handle): Promise<void>;
+    streamReply(stream: Handle, payloadJson: string): Promise<void>;
+    streamAbort(stream: Handle, code: string, message: string): Promise<void>;
+    streamRecv(stream: Handle, timeoutMs: number, bytesMode: number): Promise<string>;
+    streamRequest(stream: Handle, bytesMode: number): string;
+    streamFree(stream: Handle): Promise<void>;
 };

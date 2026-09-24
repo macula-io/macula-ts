@@ -1,34 +1,25 @@
 # Examples
 
-Real, runnable scripts against the real production fleet
-(`station-de-frankfurt.macula.io`) — no mocks. Numbered per primitive,
-matching the convention macula-php's `examples/` already established for
-this SDK's own structural precedent.
-
-Build the package first, then run any example directly with Node (24.18+,
-native TypeScript support — no compile step needed for the examples
-themselves):
+Runnable scripts against a real macula 12 station. Build the package first,
+then run an example with Node (24.18+, native TypeScript: no compile step for
+the examples). Each reads where to connect from the environment, through
+[`mesh.ts`](mesh.ts):
 
 ```bash
+export MACULA_SEED='[2600:3c0e::2000:c2ff:fed0:f20b]:4433'   # the station, host:port
+export MACULA_STATION_ID=<its node_id, 64 hex>              # it must prove it
+export MACULA_REALM=<realm id, 64 hex>
+export MACULA_REALM_KEY=<the realm's key as carried, hex>   # the realm publishes it
 npm run build
 node examples/01_quickstart.ts
-node examples/02_call.ts
-node examples/03_publish_subscribe.ts
-node examples/04_content.ts
-node examples/05_direct_dial.ts
-node examples/06_ucan.ts
 ```
 
-| File | Covers |
-|---|---|
-| [01_quickstart.ts](01_quickstart.ts) | `Identity.generate()`, `Session.connect()`, `session.close()` |
-| [02_call.ts](02_call.ts) | `session.serve()` (provider) + `session.call()` (caller), two Sessions in one process |
-| [03_publish_subscribe.ts](03_publish_subscribe.ts) | `session.subscribe()` + `session.publish()`, self-delivery |
-| [04_content.ts](04_content.ts) | `session.putContent()` / `session.getContent()` |
-| [05_direct_dial.ts](05_direct_dial.ts) | `session.advertiseDirect()` + `session.resolveDirect()` + `session.callDirect()` |
-| [06_ucan.ts](06_ucan.ts) | `Ucan.mint()` + `session.callWithUcan()` |
+The node's key is created in `node.key` on first use (or `MACULA_KEY`),
+readable by its owner only.
 
-Not covered yet — not implemented in this SDK (see the main
-[README](../README.md#whats-explicitly-not-yet-implemented)): streaming
-RPC, streaming/content direct-dial, cert-chain-authorized direct-dial,
-provider-side UCAN policy gating.
+| File | Covers | Needs |
+|---|---|---|
+| [01_quickstart.ts](01_quickstart.ts) | `NodeKey.loadOrCreate`, `Pool.connect`, `providers`, `call` by direct dial | nothing more |
+| [02_serve.ts](02_serve.ts) | `serve`, `Served.stop` | an org the realm admitted, delegated to this node |
+| [03_publish_subscribe.ts](03_publish_subscribe.ts) | `subscribe`, `publish`, `Subscription.stop` | nothing more |
+| [04_stream.ts](04_stream.ts) | `serveStream`, `openStream`, reading a stream | as 02 |

@@ -77,9 +77,9 @@ jobs:
             exit 1
           fi
           node --input-type=module -e "
-            import { Identity } from '@macula-io/ts';
-            const id = Identity.generate();
-            if (id.nodeId.length !== 32) throw new Error('bad nodeId length');
-            id.dispose();
+            import { NodeKey } from '@macula-io/ts';
+            const key = await NodeKey.generate('pq_pure');
+            if (key.nodeId().length !== 32) throw new Error('bad nodeId length');
+            key.free();
             console.log('consumer-side install verified end to end, zero build steps');
           "

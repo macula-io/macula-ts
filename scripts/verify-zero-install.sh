@@ -77,17 +77,17 @@ if grep -Eiq "$COMPILE_SIGNAL_PATTERN" "$INSTALL_LOG"; then
 fi
 echo "OK: no compiler/node-gyp invocation in the install log ($INSTALL_LOG)"
 
-echo "==> Loading the installed package and calling a real native export (identityGenerate)"
+echo "==> Loading the installed package and calling a real native export (keyGenerate)"
 # Dynamic import() (not require()) deliberately: the installed package is
 # ESM ("type": "module", dist/index.js), and this throwaway directory's
 # own package.json (from `npm init -y`) defaults to CommonJS -- import()
 # works from either module type, require() of an ESM package would not.
 node -e "
-import('@macula-io/ts').then(({ Identity }) => {
-  const id = Identity.generate();
-  if (id.nodeId.length !== 32) throw new Error('nodeId not 32 bytes');
-  id.dispose();
-  console.log('OK: Identity.generate()/dispose() worked from the installed tarball, nodeId is 32 bytes');
+import('@macula-io/ts').then(async ({ NodeKey }) => {
+  const key = await NodeKey.generate('pq_pure');
+  if (key.nodeId().length !== 32) throw new Error('nodeId not 32 bytes');
+  key.free();
+  console.log('OK: NodeKey.generate()/free() worked from the installed tarball, nodeId is 32 bytes');
 }).catch((err) => { console.error(err); process.exit(1); });
 "
 
