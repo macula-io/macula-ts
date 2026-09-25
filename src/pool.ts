@@ -2,7 +2,9 @@
 // keeps it: every seed pinned by its node_id, the realms whose keys the node
 // trusts, and one identity for every link. Calls and streams reach a provider
 // by direct dial: its advertisements from the DHT, trusted only when the
-// realm's key authorizes them, and the station it serves from dialed pinned.
+// realm's key authorizes them (or, in a node's own namespace `~<node_id>/`,
+// only when that node signed them), and the station it serves from dialed
+// pinned.
 import { native, type Delivery, type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
@@ -146,6 +148,13 @@ export class Pool {
     return hex(native.poolNodeId(this.live()));
   }
 
+  /** name in this node's own namespace, `~<node_id>/<name>`: a procedure it
+   * serves with no org and no realm key, authorized by its advertisement's
+   * signature alone, and that any node calls with no realm key pinned. */
+  ownProcedure(name: string): string {
+    return `~${this.nodeId()}/${name}`;
+  }
+
   /** Every link the pool holds. */
   status(): LinkStatus[] {
     return JSON.parse(native.poolStatus(this.live())) ?? [];
@@ -199,9 +208,10 @@ export class Pool {
   }
 
   /** Serves procedure in realm: handler answers each call, and its thrown
-   * error goes back as a handler_error with its message. Serving needs the
-   * realm's key pinned and, for an org procedure, the org's delegation to
-   * this node in the DHT. */
+   * error goes back as a handler_error with its message. An org procedure
+   * needs the realm's key pinned and the org's delegation to this node in the
+   * DHT; a procedure in this node's own namespace (ownProcedure) needs
+   * neither, and another node's namespace is refused. */
   async serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>,
     options: { bytes?: BytesOutput } = {}): Promise<Served> {
     const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, bytesModeFor(options.bytes),

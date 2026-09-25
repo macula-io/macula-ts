@@ -33,6 +33,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Serving in a node's own namespace, `~<node_id>/<name>` (macula 12.5.0):
+  `Pool.ownProcedure(name)` names one; `serve` and `serveStream` serve it with
+  no org and no realm key, and `call`, `providers` and `openStream` reach it
+  with no realm key pinned, since the advertisement's signature by that node
+  authorizes it. Another node's namespace is refused.
 - `npm test` runs the API against two in-process macula 12 stations
   (`cabi/cmd/teststation`, over macula-go's `teststation`): keys, calls and
   their errors, providers, server and client streams (and that none is left

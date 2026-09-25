@@ -99,6 +99,10 @@ export declare class Pool {
     static connect(key: NodeKey, seeds: readonly Seed[], options?: PoolOptions): Promise<Pool>;
     /** The node_id the pool links as. */
     nodeId(): string;
+    /** name in this node's own namespace, `~<node_id>/<name>`: a procedure it
+     * serves with no org and no realm key, authorized by its advertisement's
+     * signature alone, and that any node calls with no realm key pinned. */
+    ownProcedure(name: string): string;
     /** Every link the pool holds. */
     status(): LinkStatus[];
     /** Calls procedure in realm at a provider (any trusted one unless
@@ -125,9 +129,10 @@ export declare class Pool {
         bytes?: BytesOutput;
     }): Promise<Subscription>;
     /** Serves procedure in realm: handler answers each call, and its thrown
-     * error goes back as a handler_error with its message. Serving needs the
-     * realm's key pinned and, for an org procedure, the org's delegation to
-     * this node in the DHT. */
+     * error goes back as a handler_error with its message. An org procedure
+     * needs the realm's key pinned and the org's delegation to this node in the
+     * DHT; a procedure in this node's own namespace (ownProcedure) needs
+     * neither, and another node's namespace is refused. */
     serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>, options?: {
         bytes?: BytesOutput;
     }): Promise<Served>;

@@ -75,6 +75,27 @@ describe("calls", () => {
   });
 });
 
+describe("a node's own namespace", () => {
+  it("is served and called with no realm key pinned on either side", async () => {
+    const provider = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
+    const ring = provider.ownProcedure("ring");
+    expect(ring).toBe(`~${provider.nodeId()}/ring`);
+    const served = await provider.serve(env.realmId, ring, (r) => ({ rung_by: r.caller }));
+    const caller = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(1)]);
+    expect(await caller.call(env.realmId, ring, {})).toEqual({ rung_by: caller.nodeId() });
+    expect((await caller.providers(env.realmId, ring)).map((p) => p.node)).toEqual([provider.nodeId()]);
+    await served.stop();
+    await provider.close();
+    await caller.close();
+  });
+
+  it("refuses to serve in another node's namespace", async () => {
+    const node = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
+    await expect(node.serve(env.realmId, `~${"01".repeat(32)}/ring`, () => 1)).rejects.toThrow(/own namespace/);
+    await node.close();
+  });
+});
+
 describe("streams", () => {
   it("deliver a server stream's chunks and end, and leave nothing relayed", async () => {
     const provider = await node(0, true);

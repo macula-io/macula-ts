@@ -106,6 +106,9 @@ const answer = await pool.call(realm, "mcl-echo/echo", "hello");
 const sub = await pool.subscribe(realm, "acme/demo/greeting_sent_v1", (e) => console.log(e.payload));
 await pool.publish(realm, "acme/demo/greeting_sent_v1", { text: "hi" });
 
+// Serve in this node's own namespace, ~<node_id>/ring: no org, no realm key.
+const served = await pool.serve(realm, pool.ownProcedure("ring"), (r) => ({ answered: r.caller }));
+
 // Streams: a server stream's chunks arrive until its end.
 const stream = await pool.openStream(realm, "mcl-tube/watch", StreamMode.Server);
 for await (const event of stream) if (event.kind === "end") break;
@@ -153,6 +156,7 @@ a Promise; events, served calls and served streams reach JavaScript through a
 | Node keys (`NodeKey`) | ✅ | ✅ | `pq_hybrid` (the fleet's) or `pq_pure`; key files readable by the owner only |
 | Pool of station links (`Pool.connect`) | ✅ | ✅ | Seeds pinned by node_id; realm keys pinned; links redialed with subscriptions and served procedures replayed |
 | Calls by direct dial (`call`, `providers`) | ✅ | ✅ | `serve`: a thrown error goes back as `handler_error`; errors arrive as `ProviderError` / `RelayError` |
+| A node's own namespace (`ownProcedure`) | ✅ | ✅ | `~<node_id>/<name>`: served and called with no org and no realm key; the node's signature authorizes it |
 | Streams (`openStream`, `serveStream`) | ✅ | ✅ | Server, client and bidi; a QUIC stream per session, released on every path |
 | Publish/subscribe | ✅ | ✅ | Signed publications, delivered once across links |
 | DHT (`findRecord`, `findRecords`, `findRecordsByType`, `putRecord`) | ✅ | — | Records verified before they are handed on |
