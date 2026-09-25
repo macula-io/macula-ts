@@ -16,6 +16,14 @@ All notable changes to this project will be documented in this file.
   `NotSharedError` for content nobody shares, `ContentUnavailableError` when
   every sharer failed. Content ids are 100 hex characters or 50 bytes.
 
+### Fixed
+
+- The published 0.18.0 carried seven compiled modules of the retired 10.x
+  API in `dist/` (`session`, `rpc`, `dht`, `directdial`, `identity`,
+  `pubsub`, `ucan`) that no source builds and the index does not export.
+  They are gone; `npm run build:ts` clears `dist/` before compiling, and CI
+  refuses a committed `dist/` that is not exactly a fresh build of `src/`.
+
 ## [0.18.0] - 2026-09-25
 
 ### Breaking

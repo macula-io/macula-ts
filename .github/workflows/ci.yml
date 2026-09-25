@@ -50,8 +50,14 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Build TypeScript output
-        run: npx tsc
+      - name: Build TypeScript output, and confirm the committed dist/ is exactly it
+        run: |
+          npm run build:ts
+          if [ -n "$(git status --porcelain -- dist/)" ]; then
+            git status --short -- dist/
+            echo "::error::committed dist/ is not a fresh build of src/ (stale or extra files) -- run 'npm run build:ts' and commit the result"
+            exit 1
+          fi
 
       - name: Confirm the committed prebuild is not stale
         run: |

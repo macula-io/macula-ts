@@ -44,11 +44,12 @@
     "build:go": "go env -w CGO_ENABLED=1 && cd cabi && go mod tidy && go build -trimpath -buildvcs=false -buildmode=c-archive -o build/libmacula.a .",
     "build:addon:dev": "npm run build:go && node-gyp rebuild",
     "build:prebuilds": "npm run build:go && prebuildify --napi --strip && npm pkg delete scripts.install",
-    "build": "npm run build:addon:dev && tsc",
+    "build:ts": "rm -rf dist && tsc",
+    "build": "npm run build:addon:dev && npm run build:ts",
     "test": "npm run build:teststation && vitest run",
     "test:live": "MACULA_TS_LIVE=1 vitest run src/fleet.live.test.ts",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build:prebuilds && tsc",
+    "prepublishOnly": "npm run build:prebuilds && npm run build:ts",
     "build:teststation": "cd cabi && go build -trimpath -buildvcs=false -o ../build/teststation ./cmd/teststation"
   },
   "dependencies": {
