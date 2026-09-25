@@ -2,12 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.18.0] - 2026-09-25
 
 ### Breaking
 
-- **On the macula 12 wire, over macula-go's pool.** Releases before this one
-  speak the retired 10.x wire and cannot reach the current fleet. The API is
+- **On the macula 12 wire, over macula-go's pool** (macula-go v0.11.0).
+  Releases before this one speak the retired 10.x wire, and a macula 12
+  station refuses them `unsupported_version` (macula-io/macula#21). The API is
   rebuilt around it, with no compatibility layer:
   - `NodeKey` replaces `Identity`: `generate`, `load`, `loadOrCreate`, `save`,
     `nodeId`, `publicKey`, `profile`, `sign`, `free`.
