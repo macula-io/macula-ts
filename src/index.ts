@@ -13,6 +13,13 @@ export {
   type Request,
   type DhtRecord,
 } from "./pool.js";
+export {
+  NotSharedError,
+  ContentUnavailableError,
+  DEFAULT_CONTENT_TIMEOUT_MS,
+  type ContentOptions,
+  type Mcid,
+} from "./content.js";
 export { Stream, StreamMode, type StreamEvent, type StreamRequest } from "./stream.js";
 export {
   ProviderError,

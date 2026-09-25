@@ -525,6 +525,72 @@ Napi::Value PoolPutRecord(const Napi::CallbackInfo& info) {
   });
 }
 
+// --- content ------------------------------------------------------------
+
+// poolShareContent(pool, realm, data, name, timeoutMs) -> Promise<Buffer> (the
+// content id, 50 bytes).
+Napi::Value PoolShareContent(const Napi::CallbackInfo& info) {
+  bool ok = false;
+  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm;
+  if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
+  std::vector<uint8_t> data = ArgBytes(info, 2);
+  std::string name = ArgString(info, 3);
+  int64_t timeout = ArgInt(info, 4);
+  return Queue(info.Env(), Job::Result::kBytes, [=](Job& job) mutable {
+    size_t len = 0;
+    char* errOut = nullptr;
+    unsigned char* out = macula_pool_share_content(h, Ptr(realm), Ptr(data), data.size(),
+                                                   const_cast<char*>(name.c_str()), timeout, &len, &errOut);
+    if (out != nullptr) {
+      job.bytes.assign(out, out + len);
+      macula_free_bytes(out);
+    }
+    job.Fail(errOut);
+  });
+}
+
+// poolUnshareContent(pool, realm, mcid, timeoutMs)
+Napi::Value PoolUnshareContent(const Napi::CallbackInfo& info) {
+  bool ok = false;
+  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm;
+  if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
+  std::vector<uint8_t> mcid = ArgBytes(info, 2);
+  int64_t timeout = ArgInt(info, 3);
+  return Queue(info.Env(), Job::Result::kVoid, [=](Job& job) mutable {
+    char* errOut = nullptr;
+    macula_pool_unshare_content(h, Ptr(realm), Ptr(mcid), mcid.size(), timeout, &errOut);
+    job.Fail(errOut);
+  });
+}
+
+// poolGetContent(pool, realm, mcid, maxBytes, maxChunks, parallel,
+// chunkTimeoutMs, timeoutMs) -> Promise<Buffer>
+Napi::Value PoolGetContent(const Napi::CallbackInfo& info) {
+  bool ok = false;
+  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm;
+  if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
+  std::vector<uint8_t> mcid = ArgBytes(info, 2);
+  uint64_t maxBytes = static_cast<uint64_t>(ArgInt(info, 3));
+  int maxChunks = static_cast<int>(ArgInt(info, 4));
+  int parallel = static_cast<int>(ArgInt(info, 5));
+  int64_t chunkTimeout = ArgInt(info, 6);
+  int64_t timeout = ArgInt(info, 7);
+  return Queue(info.Env(), Job::Result::kBytes, [=](Job& job) mutable {
+    size_t len = 0;
+    char* errOut = nullptr;
+    unsigned char* out = macula_pool_get_content(h, Ptr(realm), Ptr(mcid), mcid.size(), maxBytes, maxChunks,
+                                                 parallel, chunkTimeout, timeout, &len, &errOut);
+    if (out != nullptr) {
+      job.bytes.assign(out, out + len);
+      macula_free_bytes(out);
+    }
+    job.Fail(errOut);
+  });
+}
+
 // --- serving ------------------------------------------------------------
 
 // poolServe(pool, realm, procedure, bytesMode, callback) -> Promise<handle>; the
@@ -767,6 +833,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("poolFindRecords", Napi::Function::New(env, PoolFindRecords));
   exports.Set("poolFindRecordsByType", Napi::Function::New(env, PoolFindRecordsByType));
   exports.Set("poolPutRecord", Napi::Function::New(env, PoolPutRecord));
+  exports.Set("poolShareContent", Napi::Function::New(env, PoolShareContent));
+  exports.Set("poolUnshareContent", Napi::Function::New(env, PoolUnshareContent));
+  exports.Set("poolGetContent", Napi::Function::New(env, PoolGetContent));
   exports.Set("poolServe", Napi::Function::New(env, PoolServe));
   exports.Set("poolServeStream", Napi::Function::New(env, PoolServeStream));
   exports.Set("pendingReply", Napi::Function::New(env, PendingReply));

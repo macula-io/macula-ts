@@ -1,6 +1,7 @@
 import { type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
+import { type ContentOptions, type Mcid } from "./content.js";
 import { type BytesOutput, type Id, type JsonValue } from "./wire.js";
 /** A station to link to, pinned by the node_id it must prove. */
 export interface Seed {
@@ -172,6 +173,23 @@ export declare class Pool {
         records: DhtRecord[];
         dropped: number;
     }>;
+    /** Shares data in realm: this node keeps it, serves it on its own
+     * `~<node_id>/content_v1` and announces it, renewing the announcement until
+     * unshareContent or close. Data of at most 256 KiB is one raw block; larger
+     * data a manifest over 256 KiB chunks, named name. Resolves to the content
+     * id as hex. Serving needs stations that admit a node's own namespace. */
+    shareContent(realm: Id, data: Uint8Array, name?: string, options?: {
+        timeoutMs?: number;
+    }): Promise<string>;
+    /** Stops sharing mcid in realm and withdraws its announcement. */
+    unshareContent(realm: Id, mcid: Mcid, options?: {
+        timeoutMs?: number;
+    }): Promise<void>;
+    /** Fetches the content mcid names in realm from a node that shares it,
+     * checked against mcid; no realm key is needed. Content nobody announces is
+     * a NotSharedError, content every sharer failed to give a
+     * ContentUnavailableError. */
+    getContent(realm: Id, mcid: Mcid, options?: ContentOptions): Promise<Uint8Array>;
     /** Puts a signed record's wire bytes in the DHT. */
     putRecord(wire: Uint8Array, options?: {
         timeoutMs?: number;

@@ -6,7 +6,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStations, type TestStations } from "../test/station.js";
-import { NodeKey, Pool, ProviderError, RecordType, StreamMode, type Seed } from "./index.js";
+import { ContentUnavailableError, NodeKey, NotSharedError, Pool, ProviderError, RecordType, StreamMode, type Seed } from "./index.js";
 
 let env: TestStations;
 const seed = (i: number): Seed => ({ host: env.stations[i]!.host, port: env.stations[i]!.port, nodeId: env.stations[i]!.node_id });
@@ -158,6 +158,37 @@ describe("pubsub", () => {
     expect(await sub.closed).toBeNull();
     await listener.close();
     await publisher.close();
+  });
+});
+
+describe("content", () => {
+  const pattern = (n: number) => Uint8Array.from({ length: n }, (_, i) => i % 251);
+
+  it("is shared by one node and fetched by another, with no realm key, until it is unshared", async () => {
+    const sharer = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
+    const fetcher = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(1)]);
+    for (const size of [10_000, 600_000]) {
+      const data = pattern(size);
+      const mcid = await sharer.shareContent(env.realmId, data, "blob.bin");
+      expect(mcid).toMatch(/^02(55|56)[0-9a-f]{96}$/);
+      expect(Buffer.from(await fetcher.getContent(env.realmId, mcid)).equals(Buffer.from(data))).toBe(true);
+      await sharer.unshareContent(env.realmId, mcid);
+      await expect(fetcher.getContent(env.realmId, mcid)).rejects.toBeInstanceOf(NotSharedError);
+    }
+    await sharer.close();
+    await fetcher.close();
+  });
+
+  it("refuses content over the bounds asked for, and a content id that is not one", async () => {
+    const sharer = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
+    const fetcher = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(1)]);
+    const mcid = await sharer.shareContent(env.realmId, pattern(600_000), "big.bin");
+    const over = fetcher.getContent(env.realmId, mcid, { maxBytes: 500_000 });
+    await expect(over).rejects.toBeInstanceOf(ContentUnavailableError);
+    await expect(over).rejects.toThrow(/over the bounds/);
+    await expect(fetcher.getContent(env.realmId, "02" + "55".repeat(10))).rejects.toThrow(/content id/);
+    await sharer.close();
+    await fetcher.close();
   });
 });
 

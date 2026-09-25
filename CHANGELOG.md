@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Node-served content (macula 12.6.0, D27), over macula-go v0.12.0:
+  `Pool.shareContent(realm, data, name)` keeps data, serves it on the node's
+  own `~<node_id>/content_v1` and announces it, resolving to the content id
+  as hex; `unshareContent` withdraws it; `getContent(realm, mcid, options)`
+  fetches it from a node that shares it, checking the block, the manifest and
+  every chunk against the content id, within `ContentOptions` (`maxBytes`,
+  `maxChunks`, `parallel`, `chunkTimeoutMs`, `timeoutMs`), with no realm key.
+  `NotSharedError` for content nobody shares, `ContentUnavailableError` when
+  every sharer failed. Content ids are 100 hex characters or 50 bytes.
+
 ## [0.18.0] - 2026-09-25
 
 ### Breaking

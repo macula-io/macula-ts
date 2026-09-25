@@ -19,11 +19,12 @@
 
 ---
 
-> **Status, 2026-09-24:** on the **macula 12** wire (post-quantum: ML-DSA-87
+> **Status, 2026-09-26:** on the **macula 12** wire (post-quantum: ML-DSA-87
 > identities, ML-KEM hybrid key exchange, signed requests), over macula-go's
-> pool. Calls and streams by direct dial, serving, publish/subscribe and the
-> DHT are tested against in-process macula 12 stations on every `npm test`.
-> Content transfer and UCAN-gated calls are not here yet; see [Not yet
+> pool. Calls and streams by direct dial, serving (under an org or in a node's
+> own namespace), publish/subscribe, the DHT and node-served content are
+> tested against in-process macula 12 stations on every `npm test`.
+> UCAN-gated calls are not here yet; see [Not yet
 > implemented](#not-yet-implemented). Releases before 0.18.0 speak the retired
 > 10.x wire and cannot reach the current fleet.
 
@@ -160,17 +161,13 @@ a Promise; events, served calls and served streams reach JavaScript through a
 | Streams (`openStream`, `serveStream`) | ✅ | ✅ | Server, client and bidi; a QUIC stream per session, released on every path |
 | Publish/subscribe | ✅ | ✅ | Signed publications, delivered once across links |
 | DHT (`findRecord`, `findRecords`, `findRecordsByType`, `putRecord`) | ✅ | — | Records verified before they are handed on |
+| Node-served content (`shareContent`, `unshareContent`, `getContent`) | ✅ | ✅ | macula 12.6.0 (D27): shared on the node's own `~<node_id>/content_v1` and announced; a fetch checks the block, the manifest and every chunk against the content id, bounded, with no realm key; `NotSharedError` / `ContentUnavailableError` |
 
 ## Not yet implemented
 
-- **Content transfer.** In macula 12 a station keeps no content; the node
-  that shares it serves it. That protocol is being defined in macula
-  (macula#35) and comes here with macula-go.
 - **UCAN-gated calls and serving.** macula 12 uses post-quantum UCANs
   (macula-go#2). Calls carry no token yet, and a gated procedure cannot be
   served.
-- **Serving without an org.** Self-named procedures (`~<node id>/<name>`),
-  decided for macula 12, are not in macula or the stations yet.
 
 ## Testing
 

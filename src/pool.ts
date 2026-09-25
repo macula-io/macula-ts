@@ -8,6 +8,7 @@
 import { native, type Delivery, type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
+import { DEFAULT_CONTENT_TIMEOUT_MS, contentError, mcid50, type ContentOptions, type Mcid } from "./content.js";
 import {
   DEFAULT_CALL_TIMEOUT_MS,
   bytesModeFor,
@@ -274,6 +275,35 @@ export class Pool {
     Promise<{ records: DhtRecord[]; dropped: number }> {
     return toRecords(JSON.parse(await native.poolFindRecordsByType(this.live(), type,
       options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+  }
+
+  /** Shares data in realm: this node keeps it, serves it on its own
+   * `~<node_id>/content_v1` and announces it, renewing the announcement until
+   * unshareContent or close. Data of at most 256 KiB is one raw block; larger
+   * data a manifest over 256 KiB chunks, named name. Resolves to the content
+   * id as hex. Serving needs stations that admit a node's own namespace. */
+  async shareContent(realm: Id, data: Uint8Array, name = "", options: { timeoutMs?: number } = {}): Promise<string> {
+    return hex(await native.poolShareContent(this.live(), id32(realm, "realm"), data, name,
+      options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS));
+  }
+
+  /** Stops sharing mcid in realm and withdraws its announcement. */
+  async unshareContent(realm: Id, mcid: Mcid, options: { timeoutMs?: number } = {}): Promise<void> {
+    await native.poolUnshareContent(this.live(), id32(realm, "realm"), mcid50(mcid), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+  }
+
+  /** Fetches the content mcid names in realm from a node that shares it,
+   * checked against mcid; no realm key is needed. Content nobody announces is
+   * a NotSharedError, content every sharer failed to give a
+   * ContentUnavailableError. */
+  async getContent(realm: Id, mcid: Mcid, options: ContentOptions = {}): Promise<Uint8Array> {
+    const asked = mcid50(mcid);
+    try {
+      return await native.poolGetContent(this.live(), id32(realm, "realm"), asked, options.maxBytes ?? 0,
+        options.maxChunks ?? 0, options.parallel ?? 0, options.chunkTimeoutMs ?? 0, options.timeoutMs ?? DEFAULT_CONTENT_TIMEOUT_MS);
+    } catch (e) {
+      throw contentError(e);
+    }
   }
 
   /** Puts a signed record's wire bytes in the DHT. */

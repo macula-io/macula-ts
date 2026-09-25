@@ -31,6 +31,9 @@ export declare const native: {
     poolFindRecords(pool: Handle, key: Uint8Array, timeoutMs: number, bytesMode: number): Promise<string>;
     poolFindRecordsByType(pool: Handle, type: number, timeoutMs: number, bytesMode: number): Promise<string>;
     poolPutRecord(pool: Handle, wire: Uint8Array, timeoutMs: number): Promise<void>;
+    poolShareContent(pool: Handle, realm: Uint8Array, data: Uint8Array, name: string, timeoutMs: number): Promise<Uint8Array>;
+    poolUnshareContent(pool: Handle, realm: Uint8Array, mcid: Uint8Array, timeoutMs: number): Promise<void>;
+    poolGetContent(pool: Handle, realm: Uint8Array, mcid: Uint8Array, maxBytes: number, maxChunks: number, parallel: number, chunkTimeoutMs: number, timeoutMs: number): Promise<Uint8Array>;
     poolServe(pool: Handle, realm: Uint8Array, procedure: string, bytesMode: number, listener: Listener): Promise<Handle>;
     poolServeStream(pool: Handle, realm: Uint8Array, procedure: string, mode: number, bytesMode: number, listener: Listener): Promise<Handle>;
     pendingReply(pending: Handle, resultJson: string): void;
