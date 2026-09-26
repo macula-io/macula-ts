@@ -87,8 +87,21 @@ interface Native {
   streamFree(stream: Handle): Promise<void>;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const addon = require("node-gyp-build")(repoRoot) as Native;
+/** The addon for this platform, or an error that says what failed to load. */
+function load(): Native {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require("node-gyp-build")(repoRoot) as Native;
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    const hint = process.platform === "win32"
+      ? " On Windows the addon needs macula-go's macula.dll beside its .node (prebuilds/win32-x64/)."
+      : "";
+    throw new Error(`macula-ts: the native addon did not load on ${process.platform}-${process.arch}: ${why}.${hint}`);
+  }
+}
+
+const addon = load();
 
 /** fn with the ABI's errors as their classes: a rejection or a throw. */
 function typed<F extends (...args: never[]) => unknown>(fn: F): F {

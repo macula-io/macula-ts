@@ -59,9 +59,18 @@ jobs:
 
   zero-install:
     # The package as npm would carry it, with the five prebuilds just built,
-    # installs and works with no compiler and no install script.
+    # installs and works with no compiler and no install script: on Linux, and
+    # on Windows from the installed layout, where the addon needs macula.dll
+    # beside it (and fails at once, naming it, without it).
     needs: prebuilds
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -84,18 +93,19 @@ jobs:
             cp prebuilds-in/prebuild-$plat/* "prebuilds/$plat/"
           done
           rm -f binding.gyp
-          npm pack --pack-destination /tmp
+          mkdir -p ../pack
+          npm pack --pack-destination ../pack
 
       - name: A consumer install needs zero compilation
         run: |
           set -euo pipefail
-          TARBALL=$(ls /tmp/macula-io-ts-*.tgz)
-          mkdir -p /tmp/consumer && cd /tmp/consumer
+          TARBALL=$(ls "$PWD"/../pack/macula-io-ts-*.tgz)
+          mkdir -p ../consumer && cd ../consumer
           npm init -y >/dev/null
           npm install --loglevel verbose "$TARBALL" > install.log 2>&1
           # Not a bare "node-gyp": node-gyp-build, the runtime loader, appears
           # in a verbose log as a package name. These are compile signals.
-          pattern='node-gyp rebuild|node-gyp configure|node-gyp build|gyp info|gyp ERR|CXX\(target\)|CC\(target\)|SOLINK_MODULE|make: Entering directory|prebuild-install|> node-gyp'
+          pattern='node-gyp rebuild|node-gyp configure|node-gyp build|gyp info|gyp ERR|CXX\(target\)|CC\(target\)|SOLINK_MODULE|make: Entering directory|prebuild-install|MSBuild|> node-gyp'
           if grep -Eiq "$pattern" install.log; then
             grep -Ein "$pattern" install.log
             echo "::error::installing the package ran a build step"
@@ -107,10 +117,29 @@ jobs:
               exit 1
             fi
           done
-          node --input-type=module -e "
+          timeout 120 node --input-type=module -e "
             import { NodeKey } from '@macula-io/ts';
             const key = await NodeKey.generate('pq_pure');
             if (key.nodeId().length !== 32) throw new Error('bad nodeId length');
             key.free();
             console.log('consumer install verified end to end, zero build steps');
           "
+
+      - name: Without macula.dll the addon fails at once, naming it (Windows)
+        if: runner.os == 'Windows'
+        working-directory: ../consumer
+        run: |
+          set -uo pipefail
+          test -f node_modules/@macula-io/ts/prebuilds/win32-x64/macula.dll
+          rm node_modules/@macula-io/ts/prebuilds/win32-x64/macula.dll
+          start=$(date +%s)
+          timeout 60 node --input-type=module -e "import('@macula-io/ts')" > out.log 2>&1
+          code=$?
+          took=$(( $(date +%s) - start ))
+          cat out.log
+          if [ "$code" -eq 0 ] || [ "$code" -eq 124 ]; then
+            echo "::error::without macula.dll the import exited $code after $took s: it must fail, not load or hang"
+            exit 1
+          fi
+          grep -q "macula.dll" out.log || { echo "::error::the failure does not name macula.dll"; exit 1; }
+          echo "failed as it must, in $took s, naming macula.dll"
