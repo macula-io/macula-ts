@@ -127,10 +127,12 @@ jobs:
 
       - name: Without macula.dll the addon fails at once, naming it (Windows)
         if: runner.os == 'Windows'
-        working-directory: ../consumer
         run: |
           set -uo pipefail
-          test -f node_modules/@macula-io/ts/prebuilds/win32-x64/macula.dll
+          cd ../consumer
+          echo "in $(pwd)"
+          ls -l node_modules/@macula-io/ts/prebuilds/win32-x64/
+          test -f node_modules/@macula-io/ts/prebuilds/win32-x64/macula.dll || { echo "::error::no macula.dll in the installed package"; exit 1; }
           rm node_modules/@macula-io/ts/prebuilds/win32-x64/macula.dll
           start=$(date +%s)
           timeout 60 node --input-type=module -e "import('@macula-io/ts')" > out.log 2>&1
