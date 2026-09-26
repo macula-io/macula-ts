@@ -94,15 +94,21 @@ jobs:
           PREBUILDS_ONLY: "1"
         run: |
           set -euo pipefail
+          # A bound from outside the process: a hang inside a native call
+          # blocks Node's own timers. macOS has no GNU timeout; perl's alarm
+          # kills the process the same way.
+          bound() {
+            if command -v timeout > /dev/null; then timeout "$@"; else perl -e 'alarm shift @ARGV; exec @ARGV' "$@"; fi
+          }
           test -f prebuilds/${{ matrix.platform }}/*.node
           rm -rf build
           echo "stage 1: load the addon"
-          timeout 120 node -e '
+          bound 120 node -e '
             const native = require("node-gyp-build")(process.cwd());
             console.log("loaded, C ABI " + native.abiVersion);
           '
           echo "stage 2: generate a key"
-          timeout 120 node --input-type=module -e "
+          bound 120 node --input-type=module -e "
             import { NodeKey } from './dist/index.js';
             const key = await NodeKey.generate('pq_pure');
             if (key.nodeId().length !== 32) throw new Error('bad nodeId length');
