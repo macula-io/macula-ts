@@ -162,6 +162,7 @@ a Promise; events, served calls and served streams reach JavaScript through a
 | Streams (`openStream`, `serveStream`) | ✅ | ✅ | Server, client and bidi; a QUIC stream per session, released on every path |
 | Publish/subscribe | ✅ | ✅ | Signed publications, delivered once across links |
 | DHT (`findRecord`, `findRecords`, `findRecordsByType`, `putRecord`) | ✅ | — | Records verified before they are handed on |
+| Realm proof v2 (`NodeKey.deviceRequestProof`) | ✅ | — | macula-realm#29: a join session over HTTP (`"http"`, the realm's JSON rule) or a membership UCAN over the mesh (`"mesh"`), with its device_info and ttl_seconds, the realm and the procedure signed, and a nonce; the realm's own vector reproduced through macula-go's encoder |
 | Node-served content (`shareContent`, `unshareContent`, `getContent`) | ✅ | ✅ | macula 12.6.0 (D27): shared on the node's own `~<node_id>/content_v1` and announced; a fetch checks the block, the manifest and every chunk against the content id, bounded, with no realm key; `NotSharedError` / `ContentUnavailableError` |
 
 ## Not yet implemented

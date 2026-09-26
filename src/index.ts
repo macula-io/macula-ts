@@ -1,5 +1,12 @@
 // @macula-io/ts: the macula 12 mesh from TypeScript, over macula-go.
-export { NodeKey, type Profile } from "./key.js";
+export {
+  NodeKey,
+  JOIN_SESSION_PROCEDURE,
+  MEMBERSHIP_UCAN_PROCEDURE,
+  type Profile,
+  type DeviceRequestRule,
+  type DeviceRequestProof,
+} from "./key.js";
 export {
   Pool,
   Subscription,

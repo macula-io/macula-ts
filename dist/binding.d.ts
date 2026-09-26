@@ -17,6 +17,8 @@ export declare const native: {
     keyPublicKey(key: Handle): Uint8Array;
     keyProfile(key: Handle): string;
     keySign(key: Handle, data: Uint8Array): Promise<Uint8Array>;
+    keyDeviceRequestProof(key: Handle, realm: Uint8Array, procedure: string, requestJson: string, rule: number): Promise<string>;
+    deviceRequestMessage(publicKey: Uint8Array, realm: Uint8Array, procedure: string, timestampMs: number, nonce: Uint8Array, requestJson: string, rule: number): Uint8Array;
     keyFree(key: Handle): void;
     verify(data: Uint8Array, signature: Uint8Array, publicKey: Uint8Array, profile: string): boolean;
     poolConnect(key: Handle, seedsJson: string, optionsJson: string): Promise<Handle>;

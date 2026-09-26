@@ -4,7 +4,12 @@
 // owner only.
 import { access } from "node:fs/promises";
 import { native } from "./binding.js";
-import { hex } from "./wire.js";
+import { hex, id32 } from "./wire.js";
+/** The procedure a join session over HTTP is signed for. */
+export const JOIN_SESSION_PROCEDURE = "macula_realm.join_session";
+/** The procedure a membership UCAN asked for over the mesh is signed for. */
+export const MEMBERSHIP_UCAN_PROCEDURE = "macula_realm.membership_ucan";
+const ruleNumber = (rule) => (rule === "http" ? 0 : 1);
 export class NodeKey {
     handle;
     constructor(handle) {
@@ -55,6 +60,21 @@ export class NodeKey {
     /** Signs data as given. */
     async sign(data) {
         return native.keySign(this.live(), data);
+    }
+    /**
+     * A realm proof v2 (macula-realm#29) that this key made request (every field
+     * of it except "proof") for procedure in realm, now and with a fresh nonce.
+     * The request's device_info and ttl_seconds, the realm and the procedure are
+     * all signed, so the realm refuses a request changed on the way.
+     */
+    async deviceRequestProof(realm, procedure, request, rule) {
+        const proof = await native.keyDeviceRequestProof(this.live(), id32(realm, "realm"), procedure, JSON.stringify(request), ruleNumber(rule));
+        return JSON.parse(proof);
+    }
+    /** The exact bytes a realm proof v2 signs, for a given timestamp and 16-byte
+     * nonce: what the realm's vector is checked against. */
+    static deviceRequestMessage(publicKey, realm, procedure, timestampMs, nonce, request, rule) {
+        return native.deviceRequestMessage(publicKey, id32(realm, "realm"), procedure, timestampMs, nonce, JSON.stringify(request), ruleNumber(rule));
     }
     /** Whether signature is valid over data for a public key as carried on the
      * wire (publicKey()), under profile: ML-DSA-87 in pq_pure, and in pq_hybrid

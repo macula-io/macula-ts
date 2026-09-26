@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `NodeKey.deviceRequestProof(realm, procedure, request, rule)`: realm proof
+  v2 (macula-realm#29), over macula-go v0.14.0's `devicerequest`. The key
+  signs the realm, the procedure, a timestamp, a fresh nonce and every field
+  of the request except its proof, so a relay cannot change the device_info
+  an admitter reads or the ttl_seconds a realm grants. `"http"` signs a
+  join-session body under the realm's JSON rule, `"mesh"` a call's payload as
+  this library sends it. `NodeKey.deviceRequestMessage` returns the signed
+  bytes, and reproduces the realm's own vector (`src/devicerequest.test.ts`).
+  `JOIN_SESSION_PROCEDURE` and `MEMBERSHIP_UCAN_PROCEDURE` name the two
+  procedures.
+
 ## [0.20.0] - 2026-09-26
 
 ### Added

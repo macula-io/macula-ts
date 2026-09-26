@@ -352,6 +352,48 @@ Napi::Value Verify(const Napi::CallbackInfo& info) {
   return Napi::Boolean::New(env, valid == 1);
 }
 
+// keyDeviceRequestProof(key, realm, procedure, requestJson, rule) ->
+// Promise<string>: a realm proof v2 (macula-realm#29), signed off the event
+// loop like keySign.
+Napi::Value KeyDeviceRequestProof(const Napi::CallbackInfo& info) {
+  bool ok = false;
+  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  if (!ok) return info.Env().Null();
+  std::vector<uint8_t> realm = ArgBytes(info, 1);
+  std::string procedure = ArgString(info, 2);
+  std::string request = ArgString(info, 3);
+  int rule = static_cast<int>(ArgInt(info, 4));
+  return Queue(info.Env(), Job::Result::kString, [=](Job& job) mutable {
+    char* errOut = nullptr;
+    char* proof = macula_key_device_request_proof(h, Ptr(realm), const_cast<char*>(procedure.c_str()),
+                                                  const_cast<char*>(request.c_str()), rule, &errOut);
+    if (proof != nullptr) job.text = TakeString(proof);
+    job.Fail(errOut);
+  });
+}
+
+// deviceRequestMessage(publicKey, realm, procedure, timestampMs, nonce,
+// requestJson, rule) -> Buffer: the bytes such a proof signs.
+Napi::Value DeviceRequestMessage(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::vector<uint8_t> publicKey = ArgBytes(info, 0);
+  std::vector<uint8_t> realm = ArgBytes(info, 1);
+  std::string procedure = ArgString(info, 2);
+  int64_t timestamp = ArgInt(info, 3);
+  std::vector<uint8_t> nonce = ArgBytes(info, 4);
+  std::string request = ArgString(info, 5);
+  int rule = static_cast<int>(ArgInt(info, 6));
+  size_t len = 0;
+  char* errOut = nullptr;
+  unsigned char* out = macula_device_request_message(Ptr(publicKey), publicKey.size(), Ptr(realm),
+                                                     const_cast<char*>(procedure.c_str()), timestamp, Ptr(nonce),
+                                                     const_cast<char*>(request.c_str()), rule, &len, &errOut);
+  if (ThrowIfErr(env, errOut)) return env.Null();
+  Napi::Buffer<uint8_t> result = Napi::Buffer<uint8_t>::Copy(env, out, len);
+  macula_free_bytes(out);
+  return result;
+}
+
 Napi::Value KeyFree(const Napi::CallbackInfo& info) {
   bool ok = false;
   uintptr_t h = ToHandle(info.Env(), info[0], &ok);
@@ -834,6 +876,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("keyPublicKey", Napi::Function::New(env, KeyPublicKey));
   exports.Set("keyProfile", Napi::Function::New(env, KeyProfile));
   exports.Set("keySign", Napi::Function::New(env, KeySign));
+  exports.Set("keyDeviceRequestProof", Napi::Function::New(env, KeyDeviceRequestProof));
+  exports.Set("deviceRequestMessage", Napi::Function::New(env, DeviceRequestMessage));
   exports.Set("verify", Napi::Function::New(env, Verify));
   exports.Set("keyFree", Napi::Function::New(env, KeyFree));
   exports.Set("poolConnect", Napi::Function::New(env, PoolConnect));
