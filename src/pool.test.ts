@@ -18,6 +18,14 @@ async function node(station: number, admitted = false): Promise<Pool> {
   return Pool.connect(key, [seed(station)], { realmTrust: trust() });
 }
 
+// A probe's stderr, less quic-go's notice that the host caps UDP buffers
+// below what it asks for (GitHub's runners do): anything else is a failure.
+function probeStderr(stderr: string): string {
+  return stderr.split("\n")
+    .filter((l) => !/failed to sufficiently increase (receive|send) buffer size/.test(l))
+    .join("\n").trim().slice(-400);
+}
+
 async function eventually(what: string, ok: () => Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -277,7 +285,7 @@ describe("listeners over the ABI's inboxes", () => {
     for (const mode of ["close", "stop", "close", "stop", "close", "stop"]) {
       const run = spawnSync(process.execPath, ["test/probes/exit_after_close.mjs", s.host, String(s.port), s.node_id, env.realmId],
         { encoding: "utf8", timeout: 60_000, env: { ...process.env, MODE: mode } });
-      expect({ mode, status: run.status, signal: run.signal, stderr: run.stderr.slice(-300) })
+      expect({ mode, status: run.status, signal: run.signal, stderr: probeStderr(run.stderr) })
         .toEqual({ mode, status: 0, signal: null, stderr: "" });
     }
   }, 120_000);
@@ -287,8 +295,8 @@ describe("listeners over the ABI's inboxes", () => {
     const s = env.stations[0]!;
     const run = spawnSync(process.execPath, ["test/probes/worker_backlog.mjs", s.host, String(s.port), s.node_id, env.realmId],
       { encoding: "utf8", timeout: 60_000 });
-    expect({ status: run.status, signal: run.signal, out: run.stdout.trim(), err: run.stderr.slice(-400) })
-      .toMatchObject({ status: 0, signal: null, out: "backlog teardown survived" });
+    expect({ status: run.status, signal: run.signal, out: run.stdout.trim(), err: probeStderr(run.stderr) })
+      .toEqual({ status: 0, signal: null, out: "backlog teardown survived", err: "" });
   }, 70_000);
 
   it("survives a worker torn down under a live listener", async () => {
