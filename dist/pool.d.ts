@@ -80,6 +80,9 @@ export declare class Subscription {
     readonly closed: Promise<string | null>;
     /** @internal */
     constructor(handle: Handle, closed: Promise<string | null>);
+    /** Events dropped because onEvent was behind: the inbox holds 256, and a
+     * full one drops the newest. */
+    dropped(): number;
     /** Ends the subscription on every link. */
     stop(): Promise<void>;
 }

@@ -101,6 +101,12 @@ export class Subscription {
   /** @internal */
   constructor(private readonly handle: Handle, readonly closed: Promise<string | null>) {}
 
+  /** Events dropped because onEvent was behind: the inbox holds 256, and a
+   * full one drops the newest. */
+  dropped(): number {
+    return native.subscriptionDropped(this.handle);
+  }
+
   /** Ends the subscription on every link. */
   async stop(): Promise<void> {
     await native.subscriptionStop(this.handle);
@@ -158,7 +164,10 @@ export class Pool {
 
   /** Every link the pool holds. */
   status(): LinkStatus[] {
-    return JSON.parse(native.poolStatus(this.live())) ?? [];
+    // The ABI carries flags as 0 or 1.
+    const links: Array<{ station: string; host: string; port: number; direct: number; up: number }> =
+      JSON.parse(native.poolStatus(this.live())) ?? [];
+    return links.map((l) => ({ station: l.station, host: l.host, port: l.port, direct: l.direct === 1, up: l.up === 1 }));
   }
 
   /** Calls procedure in realm at a provider (any trusted one unless

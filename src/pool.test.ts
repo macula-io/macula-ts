@@ -232,3 +232,48 @@ describe("the shared C ABI underneath", () => {
     await caller.close();
   });
 });
+
+describe("listeners over the ABI's inboxes", () => {
+  it("reports each link's flags as booleans", async () => {
+    const p = await node(0);
+    const links = p.status();
+    expect(links.length).toBeGreaterThan(0);
+    expect(typeof links[0]!.up).toBe("boolean");
+    expect(typeof links[0]!.direct).toBe("boolean");
+    expect(links.some((l) => l.up === true)).toBe(true);
+    await p.close();
+  });
+
+  it("lets the inbox drop, and count, what a listener behind on its events cannot take", async () => {
+    const listener = await node(0);
+    const publisher = await node(0);
+    const topic = "mcl-ts/tests/flood_sent_v1";
+    let heard = 0;
+    let blocked = false;
+    const sub = await listener.subscribe(env.realmId, topic, () => {
+      heard++;
+      if (!blocked) {
+        // Hold the event loop, as a slow consumer would, while the rest arrive.
+        blocked = true;
+        const until = Date.now() + 3000;
+        while (Date.now() < until) { /* busy */ }
+      }
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    await Promise.all(Array.from({ length: 800 }, (_, i) => publisher.publish(env.realmId, topic, i)));
+    await eventually("the flood settled", async () => heard > 0 && sub.dropped() > 0);
+    expect(heard).toBeLessThan(800);
+    await sub.stop();
+    await listener.close();
+    await publisher.close();
+  }, 30_000);
+
+  it("survives a worker torn down under a live listener", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const s = env.stations[0]!;
+    const out = execFileSync(process.execPath,
+      ["test/probes/worker_teardown.mjs", s.host, String(s.port), s.node_id, env.realmId],
+      { encoding: "utf8", timeout: 60_000 });
+    expect(out).toContain("teardown survived");
+  }, 70_000);
+});

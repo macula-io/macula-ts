@@ -59,6 +59,7 @@ interface Native {
   poolPublish(pool: Handle, realm: Uint8Array, topic: string, payloadJson: string, ttlMs: number): Promise<void>;
   poolSubscribe(pool: Handle, realm: Uint8Array, topic: string, listener: Listener): Promise<Handle>;
   subscriptionStop(subscription: Handle): Promise<void>;
+  subscriptionDropped(subscription: Handle): number;
   poolFindRecord(pool: Handle, key: Uint8Array, timeoutMs: number): Promise<string>;
   poolFindRecords(pool: Handle, key: Uint8Array, timeoutMs: number): Promise<string>;
   poolFindRecordsByType(pool: Handle, type: number, timeoutMs: number): Promise<string>;

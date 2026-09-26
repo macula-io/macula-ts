@@ -25,6 +25,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -186,40 +187,92 @@ struct Delivery {
 // Poller drains one inbox: a subscription's (events) or a served procedure's
 // (requests). It is shared by its thread and the registry, so stop can reach
 // it while the thread lives, and nothing frees it under either.
+//
+// Its ThreadSafeFunction holds at most kQueue deliveries: a listener whose JS
+// is behind blocks the poll thread, the ABI's inbox fills, and the ABI's own
+// policy applies (a subscription drops the newest and counts it; a served
+// call waits for room until its deadline).
+//
+// Lifetime: the normal end is the source ending (stopped, or its pool
+// closed): the poll delivers the closing notice, whose JS side removes the
+// env cleanup hook and detaches the thread. When the env is torn down first
+// (a worker terminated), the cleanup hook aborts the ThreadSafeFunction,
+// which wakes a blocked delivery, cancels the wait and joins the thread, so
+// no poll outlives its env.
 struct Poller {
   enum class Kind { kSubscription, kServed };
 
   Kind kind;
+  napi_env env = nullptr;
   macula_handle source = 0;
   macula_handle cancel = 0;
   Napi::ThreadSafeFunction tsfn;
+  std::thread thread;  // touched on the env's main thread only
   std::atomic<bool> stopping{false};
+  // aborted: the env refused a delivery (it is being torn down); the poll
+  // delivers nothing more and does not release the ThreadSafeFunction.
+  std::atomic<bool> aborted{false};
 };
 
+constexpr size_t kQueue = 256;
+
 // g_pollers maps a subscription's or served procedure's handle to its poller,
-// touched only on the main thread, so stop can find it.
+// so stop can find it. Handles are unique across the process; the mutex
+// covers several envs (workers).
+std::mutex g_pollers_mu;
 std::unordered_map<macula_handle, std::shared_ptr<Poller>> g_pollers;
 
-void Deliver(const std::shared_ptr<Poller>& poller, Delivery* d) {
+std::shared_ptr<Poller> TakePoller(macula_handle source) {
+  std::lock_guard<std::mutex> lock(g_pollers_mu);
+  auto it = g_pollers.find(source);
+  if (it == g_pollers.end()) return nullptr;
+  auto poller = it->second;
+  g_pollers.erase(it);
+  return poller;
+}
+
+void CleanupPoller(void* arg);
+
+// Deliver hands d to JS, waiting while the queue is full. False when the env
+// refused it: the poll must stop.
+bool Deliver(const std::shared_ptr<Poller>& poller, Delivery* d) {
   napi_status status = poller->tsfn.BlockingCall(d, [](Napi::Env env, Napi::Function fn, Delivery* data) {
+    if (env == nullptr) {
+      delete data;
+      return;
+    }
     Napi::Object msg = Napi::Object::New(env);
     msg.Set("kind", Napi::String::New(env, data->kind));
     msg.Set("json", Napi::String::New(env, data->json));
     msg.Set("handle", Napi::BigInt::New(env, data->handle));
     fn.Call({msg});
-    if (data->last) g_pollers.erase(data->source);
+    if (data->last) {
+      // The poll is over: no cleanup hook is needed, and the thread ends on
+      // its own.
+      std::shared_ptr<Poller> poller = TakePoller(data->source);
+      if (poller) {
+        napi_remove_env_cleanup_hook(poller->env, CleanupPoller, poller.get());
+        if (poller->thread.joinable()) poller->thread.detach();
+      }
+    }
     delete data;
   });
-  if (status != napi_ok) delete d;
+  if (status == napi_ok) return true;
+  delete d;
+  poller->aborted.store(true);
+  return false;
 }
 
-// errKind is the "kind" of the ABI's error JSON, read by its fixed prefix
-// `{"kind":"...`, without a JSON parser.
+// ErrKind is the "kind" of the ABI's error JSON, found by its key (the keys
+// come sorted, so "code" may precede it), without a JSON parser. The kinds are
+// plain identifiers, so the value holds no escaped quote.
 std::string ErrKind(const std::string& err) {
-  const std::string prefix = "{\"kind\":\"";
-  if (err.compare(0, prefix.size(), prefix) != 0) return std::string();
-  size_t end = err.find('"', prefix.size());
-  return end == std::string::npos ? std::string() : err.substr(prefix.size(), end - prefix.size());
+  const std::string key = "\"kind\":\"";
+  size_t at = err.find(key);
+  if (at == std::string::npos) return std::string();
+  at += key.size();
+  size_t end = err.find('"', at);
+  return end == std::string::npos ? std::string() : err.substr(at, end - at);
 }
 
 // Poll takes from the poller's inbox until its source ends, then delivers the
@@ -250,16 +303,30 @@ void Poll(std::shared_ptr<Poller> poller) {
     d->kind = poller->kind == Poller::Kind::kSubscription ? "event" : "request";
     d->json = TakeString(json);
     d->handle = static_cast<uint64_t>(item);
-    Deliver(poller, d);
+    if (!Deliver(poller, d)) break;
   }
-  auto* d = new Delivery();
-  d->kind = "closed";
-  d->json = why;
-  d->last = true;
-  d->source = poller->source;
-  Deliver(poller, d);
-  poller->tsfn.Release();
+  if (!poller->aborted.load()) {
+    auto* d = new Delivery();
+    d->kind = "closed";
+    d->json = why;
+    d->last = true;
+    d->source = poller->source;
+    if (Deliver(poller, d)) poller->tsfn.Release();
+  }
   macula_cancel_free(poller->cancel);
+}
+
+// CleanupPoller runs on the env's main thread as the env is torn down, before
+// the ThreadSafeFunction's own cleanup (hooks run last registered first): it
+// wakes and ends the poll, and waits for its thread.
+void CleanupPoller(void* arg) {
+  auto* raw = static_cast<Poller*>(arg);
+  std::shared_ptr<Poller> poller = TakePoller(raw->source);
+  raw->stopping.store(true);
+  raw->aborted.store(true);
+  raw->tsfn.Abort();
+  macula_cancel(raw->cancel);
+  if (raw->thread.joinable()) raw->thread.join();
 }
 
 bool RequireFunction(const Napi::CallbackInfo& info, size_t i) {
@@ -275,8 +342,9 @@ Napi::Value StartListener(const Napi::CallbackInfo& info, size_t callbackArg, Po
   Napi::Env env = info.Env();
   auto poller = std::make_shared<Poller>();
   poller->kind = kind;
+  poller->env = env;
   poller->cancel = macula_cancel_new();
-  poller->tsfn = Napi::ThreadSafeFunction::New(env, info[callbackArg].As<Napi::Function>(), name, 0, 1);
+  poller->tsfn = Napi::ThreadSafeFunction::New(env, info[callbackArg].As<Napi::Function>(), name, kQueue, 1);
   auto* job = new Job(env, Job::Result::kHandle, [open](Job& j) {
     char* errOut = nullptr;
     j.handle = open(&errOut);
@@ -284,8 +352,12 @@ Napi::Value StartListener(const Napi::CallbackInfo& info, size_t callbackArg, Po
   });
   job->onOK = [job, poller]() {
     poller->source = job->handle;
-    g_pollers[job->handle] = poller;
-    std::thread(Poll, poller).detach();
+    {
+      std::lock_guard<std::mutex> lock(g_pollers_mu);
+      g_pollers[job->handle] = poller;
+    }
+    napi_add_env_cleanup_hook(poller->env, CleanupPoller, poller.get());
+    poller->thread = std::thread(Poll, poller);
   };
   // A source that failed to open never polls: release what was made for it.
   job->onFail = [poller]() {
@@ -303,11 +375,13 @@ Napi::Value StopListener(const Napi::CallbackInfo& info, std::function<void(macu
   bool ok = false;
   macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
-  auto it = g_pollers.find(h);
-  if (it != g_pollers.end()) {
-    it->second->stopping.store(true);
-    macula_cancel(it->second->cancel);
-    g_pollers.erase(it);
+  {
+    std::lock_guard<std::mutex> lock(g_pollers_mu);
+    auto it = g_pollers.find(h);
+    if (it != g_pollers.end()) {
+      it->second->stopping.store(true);
+      macula_cancel(it->second->cancel);
+    }
   }
   return Queue(info.Env(), Job::Result::kVoid, [h, stop](Job& job) {
     char* errOut = nullptr;
@@ -570,6 +644,19 @@ Napi::Value PoolSubscribe(const Napi::CallbackInfo& info) {
   return StartListener(info, 3, Poller::Kind::kSubscription, "macula-subscription", [=](char** errOut) mutable {
     return macula_pool_subscribe(h, Ptr(realm), C(topic), errOut);
   });
+}
+
+// subscriptionDropped(subscription) -> number: events the inbox dropped
+// because the listener was behind.
+Napi::Value SubscriptionDropped(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  bool ok = false;
+  macula_handle h = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Null();
+  char* errOut = nullptr;
+  uint64_t dropped = macula_subscription_dropped(h, &errOut);
+  if (ThrowIfErr(env, errOut)) return env.Null();
+  return Napi::Number::New(env, static_cast<double>(dropped));
 }
 
 Napi::Value SubscriptionStop(const Napi::CallbackInfo& info) {
@@ -895,6 +982,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("poolPublish", Napi::Function::New(env, PoolPublish));
   exports.Set("poolSubscribe", Napi::Function::New(env, PoolSubscribe));
   exports.Set("subscriptionStop", Napi::Function::New(env, SubscriptionStop));
+  exports.Set("subscriptionDropped", Napi::Function::New(env, SubscriptionDropped));
   exports.Set("poolFindRecord", Napi::Function::New(env, PoolFindRecord));
   exports.Set("poolFindRecords", Napi::Function::New(env, PoolFindRecords));
   exports.Set("poolFindRecordsByType", Napi::Function::New(env, PoolFindRecordsByType));

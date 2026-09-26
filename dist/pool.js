@@ -29,6 +29,11 @@ export class Subscription {
         this.handle = handle;
         this.closed = closed;
     }
+    /** Events dropped because onEvent was behind: the inbox holds 256, and a
+     * full one drops the newest. */
+    dropped() {
+        return native.subscriptionDropped(this.handle);
+    }
     /** Ends the subscription on every link. */
     async stop() {
         await native.subscriptionStop(this.handle);
@@ -84,7 +89,9 @@ export class Pool {
     }
     /** Every link the pool holds. */
     status() {
-        return JSON.parse(native.poolStatus(this.live())) ?? [];
+        // The ABI carries flags as 0 or 1.
+        const links = JSON.parse(native.poolStatus(this.live())) ?? [];
+        return links.map((l) => ({ station: l.station, host: l.host, port: l.port, direct: l.direct === 1, up: l.up === 1 }));
     }
     /** Calls procedure in realm at a provider (any trusted one unless
      * `provider` names one) by direct dial. A provider's ERROR is thrown as a
