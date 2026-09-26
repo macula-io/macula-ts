@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-27
+
 ### Changed
 
 - macula-ts binds macula-go's shared C ABI (`cabi/macula.h`, ABI 1) at
@@ -882,6 +884,8 @@ description.
   separate `prebuilds.yml`).
 
 ## [Unreleased]
+
+## [0.22.0] - 2026-09-27
 
 Real cross-platform prebuild distribution, built on all prior protocol
 work (no changes to `cabi/main.go`, `addon/binding.cc`, or any protocol
