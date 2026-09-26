@@ -2,23 +2,19 @@
 node_modules/
 *.tsbuildinfo
 
-# Regenerable build scaffolding -- rebuild via `npm run build:go` /
-# `npm run build:addon:dev`. NOT the same as prebuilds/, which IS
-# committed on purpose: it's the whole point of the prebuildify +
-# node-gyp-build packaging (see README.md's "Packaging" section) --
-# a consumer's `npm install` needs zero compile step because the
-# matching binary is already sitting in the package, not gitignored
-# away and rebuilt some other way.
-cabi/build/
+# Regenerable build output: native/build is macula-go's cabi built by
+# scripts/build-native.sh, /build the local addon node-gyp builds from it.
+native/build/
 /build/
 
-# dist/ (compiled TS output) and prebuilds/ (compiled native addon)
-# ARE committed, deliberately, until a real `npm publish` pipeline
-# with a prepublishOnly build step exists -- see package.json.
+# prebuilds/ is built per platform, from source, by the release workflow
+# (prebuild-matrix.yml) and packed into the npm package there; it is never
+# committed (macula-ts#2). `npm run build:prebuilds` makes this platform's
+# locally.
+prebuilds/
+
+# dist/ (compiled TS output) IS committed: CI checks it is a fresh build of
+# src/.
 
 # OS
 .DS_Store
-
-# A local go.work points cabi at a macula-go checkout during development.
-go.work
-go.work.sum

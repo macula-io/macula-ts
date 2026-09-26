@@ -1,5 +1,6 @@
 // The shapes every part of the API shares: payload values, ids, and the
 // errors a call or a stream ends with.
+import { ContentUnavailableError, NotSharedError } from "./content.js";
 
 /** A payload, restricted to what macula's wire CBOR carries: no boolean and
  * no undefined. Encode true/false as 1/0 yourself; a JS boolean reaching the
@@ -16,11 +17,27 @@ export type JsonValue = string | number | null | JsonValue[] | { [key: string]: 
  * "hex" (the default) or "tagged" ({"$bytes": "<base64>"}). */
 export type BytesOutput = "hex" | "tagged";
 
-/** BytesOutput as the integer the native layer takes. */
-export function bytesModeFor(bytes: BytesOutput | undefined): number {
-  if (bytes === undefined || bytes === "hex") return 0;
-  if (bytes === "tagged") return 1;
-  throw new Error(`macula-ts: bytes must be "hex" or "tagged", got ${JSON.stringify(bytes)}`);
+/** A value from the native layer, whose bytes are always the tagged
+ * {"$bytes": ...} object, with its bytes as `bytes` asks: "0x" hex (the
+ * default) or left tagged. */
+export function bytesOut(value: unknown, bytes: BytesOutput | undefined): JsonValue {
+  if (bytes !== undefined && bytes !== "hex" && bytes !== "tagged") {
+    throw new Error(`macula-ts: bytes must be "hex" or "tagged", got ${JSON.stringify(bytes)}`);
+  }
+  if (bytes === "tagged") return value as JsonValue;
+  return hexBytes(value) as JsonValue;
+}
+
+function hexBytes(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(hexBytes);
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 1 && entries[0]![0] === "$bytes" && typeof entries[0]![1] === "string") {
+      return "0x" + Buffer.from(entries[0]![1], "base64").toString("hex");
+    }
+    return Object.fromEntries(entries.map(([k, v]) => [k, hexBytes(v)]));
+  }
+  return value;
 }
 
 /** A 32-byte id (a node_id, a realm id, a record key): 64 hex characters or
@@ -71,16 +88,42 @@ export class StreamError extends Error {
   }
 }
 
-/** The error the native layer rejects a call with, as the class it names:
- * "provider_error:<code>:<detail>" and "relay_error:<code>" (cabi's
- * callError), any other text as a plain Error. */
-export function callError(e: unknown): Error {
-  const message = e instanceof Error ? e.message : String(e);
-  const provider = /^provider_error:([^:]*):([\s\S]*)$/.exec(message);
-  if (provider) return new ProviderError(provider[1] ?? "", provider[2] ?? "");
-  const relay = /^relay_error:(.*)$/.exec(message);
-  if (relay) return new RelayError(relay[1] ?? "");
-  return e instanceof Error ? e : new Error(message);
+/** An error the native layer reported: its kind, from macula-go's C ABI
+ * (cabi/CONTRACT.md "Errors"), and its message. Provider, relay and content
+ * errors have classes of their own; every other kind is this. */
+export class MaculaError extends Error {
+  constructor(readonly kind: string, message: string) {
+    super(`macula-ts: ${message}`);
+    this.name = "MaculaError";
+  }
+}
+
+/** The native layer's error, whose message is the ABI's error JSON, as the
+ * class its kind names. */
+export function nativeError(e: unknown): Error {
+  const text = e instanceof Error ? e.message : String(e);
+  let error: { kind?: unknown; message?: unknown; code?: unknown; detail?: unknown; failures?: unknown };
+  try {
+    error = JSON.parse(text);
+  } catch {
+    return e instanceof Error ? e : new Error(text);
+  }
+  if (typeof error !== "object" || error === null || typeof error.kind !== "string") {
+    return e instanceof Error ? e : new Error(text);
+  }
+  const message = typeof error.message === "string" ? error.message : error.kind;
+  switch (error.kind) {
+    case "provider_error":
+      return new ProviderError(String(error.code ?? ""), typeof error.detail === "string" ? error.detail : "");
+    case "relay_error":
+      return new RelayError(String(error.code ?? ""));
+    case "not_shared":
+      return new NotSharedError();
+    case "unavailable":
+      return new ContentUnavailableError(Array.isArray(error.failures) ? error.failures.map(String).join("; ") : message);
+    default:
+      return new MaculaError(error.kind, message);
+  }
 }
 
 /** How long a call waits, in milliseconds, when not told: macula's 5 s. */

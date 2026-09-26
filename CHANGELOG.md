@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- macula-ts binds macula-go's shared C ABI (`cabi/macula.h`, ABI 1) at
+  macula-go v0.16.0 instead of a C ABI of its own: the vendored `cabi/` Go
+  module is gone, and there is no Go code in this repository.
+  `scripts/build-native.sh` builds macula-go's cabi as a c-archive from the
+  release in `native/MACULA_GO`, taken through `go mod download` (checked
+  against the Go checksum database) and refused unless the tag is the
+  recorded commit. The addon checks the ABI version when it loads.
+- The TypeScript API is unchanged. Subscriptions and served procedures now
+  take from the ABI's inboxes on a thread each, with a cancel token each, so
+  stopping one never races its wait; bytes still come out as `"0x"` hex by
+  default, or tagged with `bytes: "tagged"`.
+- An error the ABI reports that has no class of its own (a timeout, a closed
+  pool, no provider, an invalid argument) is a `MaculaError` carrying its
+  `kind`; `ProviderError`, `RelayError`, `NotSharedError` and
+  `ContentUnavailableError` are unchanged. A stream's `recv` timeout is a
+  `MaculaError` of kind `timeout`.
+- Prebuilds are built from source per platform in CI, attested at release,
+  and packed into the npm package; they are no longer committed by a bot
+  (fixes macula-ts#2). `prebuilds.yml` is replaced by `prebuild-matrix.yml`,
+  and `package.json` has no `prepublishOnly`.
+
 ## [0.21.0] - 2026-09-26
 
 ### Added

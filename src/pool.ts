@@ -8,11 +8,11 @@
 import { native, type Delivery, type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
-import { DEFAULT_CONTENT_TIMEOUT_MS, contentError, mcid50, type ContentOptions, type Mcid } from "./content.js";
+import { DEFAULT_CONTENT_TIMEOUT_MS, mcid50, type ContentOptions, type Mcid } from "./content.js";
 import {
   DEFAULT_CALL_TIMEOUT_MS,
-  bytesModeFor,
-  callError,
+  MaculaError,
+  bytesOut,
   hex,
   id32,
   type BytesOutput,
@@ -166,14 +166,11 @@ export class Pool {
    * ProviderError, a station's relay error as a RelayError. */
   async call(realm: Id, procedure: string, payload: JsonValue = {},
     options: { provider?: Id; timeoutMs?: number; bytes?: BytesOutput } = {}): Promise<JsonValue> {
-    try {
-      const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload),
-        options.provider === undefined ? null : id32(options.provider, "provider"),
-        options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes));
-      return JSON.parse(result);
-    } catch (e) {
-      throw callError(e);
-    }
+    bytesOut(null, options.bytes);
+    const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload),
+      options.provider === undefined ? null : id32(options.provider, "provider"),
+      options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+    return bytesOut(JSON.parse(result), options.bytes);
   }
 
   /** The procedure's trusted providers, freshest first. */
@@ -195,7 +192,8 @@ export class Pool {
     options: { bytes?: BytesOutput } = {}): Promise<Subscription> {
     let settle: (why: string | null) => void = () => {};
     const closed = new Promise<string | null>((resolve) => (settle = resolve));
-    const handle = await native.poolSubscribe(this.live(), id32(realm, "realm"), topic, bytesModeFor(options.bytes),
+    bytesOut(null, options.bytes);
+    const handle = await native.poolSubscribe(this.live(), id32(realm, "realm"), topic,
       (d: Delivery) => {
         if (d.kind === "closed") {
           settle(d.json === "" ? null : d.json);
@@ -203,7 +201,7 @@ export class Pool {
         }
         const e = JSON.parse(d.json);
         onEvent({ publisher: e.publisher, realm: e.realm, topic: e.topic, seq: e.seq, publishedAt: e.published_at,
-          payload: e.payload, deliveredVia: e.delivered_via });
+          payload: bytesOut(e.payload, options.bytes), deliveredVia: e.delivered_via });
       });
     return new Subscription(handle, closed);
   }
@@ -215,10 +213,11 @@ export class Pool {
    * neither, and another node's namespace is refused. */
   async serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>,
     options: { bytes?: BytesOutput } = {}): Promise<Served> {
-    const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, bytesModeFor(options.bytes),
+    bytesOut(null, options.bytes);
+    const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure,
       (d: Delivery) => {
         if (d.kind !== "request") return;
-        void answer(d, handler);
+        void answer(d, handler, options.bytes);
       });
     return new Served(handle);
   }
@@ -229,8 +228,9 @@ export class Pool {
   async serveStream(realm: Id, procedure: string, mode: StreamMode,
     handler: (stream: Stream, request: StreamRequest) => void | Promise<void>,
     options: { bytes?: BytesOutput } = {}): Promise<Served> {
+    bytesOut(null, options.bytes);
     const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode,
-      bytesModeFor(options.bytes), (d: Delivery) => {
+      (d: Delivery) => {
         if (d.kind !== "request") return;
         void runStream(new Stream(d.handle, options.bytes), handler);
       });
@@ -241,23 +241,21 @@ export class Pool {
    * dial. A refusal arrives on its first recv(). */
   async openStream(realm: Id, procedure: string, mode: StreamMode, payload: JsonValue = {},
     options: { provider?: Id; deadlineMs?: number; timeoutMs?: number; bytes?: BytesOutput } = {}): Promise<Stream> {
-    try {
-      const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode,
-        JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"),
-        options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
-      return new Stream(handle, options.bytes);
-    } catch (e) {
-      throw callError(e);
-    }
+    bytesOut(null, options.bytes);
+    const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode,
+      JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"),
+      options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+    return new Stream(handle, options.bytes);
   }
 
   /** The verified record under key, or null when there is none. */
   async findRecord(key: Id, options: { timeoutMs?: number; bytes?: BytesOutput } = {}): Promise<DhtRecord | null> {
+    bytesOut(null, options.bytes);
     try {
       return toRecord(JSON.parse(await native.poolFindRecord(this.live(), id32(key, "key"),
-        options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+        options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)), options.bytes);
     } catch (e) {
-      if (e instanceof Error && e.message === "not_found") return null;
+      if (e instanceof MaculaError && e.kind === "not_found") return null;
       throw e;
     }
   }
@@ -265,16 +263,18 @@ export class Pool {
   /** Every verified record under key, and how many did not verify. */
   async findRecords(key: Id, options: { timeoutMs?: number; bytes?: BytesOutput } = {}):
     Promise<{ records: DhtRecord[]; dropped: number }> {
+    bytesOut(null, options.bytes);
     return toRecords(JSON.parse(await native.poolFindRecords(this.live(), id32(key, "key"),
-      options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+      options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)), options.bytes);
   }
 
   /** Every verified record of type the station holds, and how many did not
    * verify. */
   async findRecordsByType(type: RecordType | number, options: { timeoutMs?: number; bytes?: BytesOutput } = {}):
     Promise<{ records: DhtRecord[]; dropped: number }> {
+    bytesOut(null, options.bytes);
     return toRecords(JSON.parse(await native.poolFindRecordsByType(this.live(), type,
-      options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+      options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)), options.bytes);
   }
 
   /** Shares data in realm: this node keeps it, serves it on its own
@@ -298,12 +298,13 @@ export class Pool {
    * ContentUnavailableError. */
   async getContent(realm: Id, mcid: Mcid, options: ContentOptions = {}): Promise<Uint8Array> {
     const asked = mcid50(mcid);
-    try {
-      return await native.poolGetContent(this.live(), id32(realm, "realm"), asked, options.maxBytes ?? 0,
-        options.maxChunks ?? 0, options.parallel ?? 0, options.chunkTimeoutMs ?? 0, options.timeoutMs ?? DEFAULT_CONTENT_TIMEOUT_MS);
-    } catch (e) {
-      throw contentError(e);
-    }
+    const bounds: Record<string, number> = {};
+    if (options.maxBytes) bounds.max_bytes = options.maxBytes;
+    if (options.maxChunks) bounds.max_chunks = options.maxChunks;
+    if (options.parallel) bounds.parallel = options.parallel;
+    if (options.chunkTimeoutMs) bounds.chunk_timeout_ms = options.chunkTimeoutMs;
+    return await native.poolGetContent(this.live(), id32(realm, "realm"), asked,
+      Object.keys(bounds).length === 0 ? "" : JSON.stringify(bounds), options.timeoutMs ?? DEFAULT_CONTENT_TIMEOUT_MS);
   }
 
   /** Puts a signed record's wire bytes in the DHT. */
@@ -325,10 +326,11 @@ export class Pool {
 }
 
 /** Answers one served call with the handler's result or its error, once. */
-async function answer(d: Delivery, handler: (request: Request) => JsonValue | Promise<JsonValue>): Promise<void> {
+async function answer(d: Delivery, handler: (request: Request) => JsonValue | Promise<JsonValue>,
+  bytes: BytesOutput | undefined): Promise<void> {
   const r = JSON.parse(d.json);
-  const request: Request = { caller: r.caller, realm: r.realm, procedure: r.procedure, payload: r.payload,
-    deadlineMs: r.deadline_ms };
+  const request: Request = { caller: r.caller, realm: r.realm, procedure: r.procedure,
+    payload: bytesOut(r.payload, bytes), deadlineMs: r.deadline_ms };
   try {
     native.pendingReply(d.handle, JSON.stringify(await handler(request)));
   } catch (e) {
@@ -353,11 +355,13 @@ async function runStream(stream: Stream, handler: (stream: Stream, request: Stre
   }
 }
 
-function toRecord(r: any): DhtRecord {
-  return { type: r.type, keyId: r.key_id, createdAt: r.created_at, expiresAt: r.expires_at, payload: r.payload,
-    wire: r.wire };
+// A record's payload follows the caller's bytes option; its wire bytes are
+// always tagged.
+function toRecord(r: any, bytes: BytesOutput | undefined): DhtRecord {
+  return { type: r.type, keyId: r.key_id, createdAt: r.created_at, expiresAt: r.expires_at,
+    payload: bytesOut(r.payload, bytes), wire: r.wire };
 }
 
-function toRecords(out: any): { records: DhtRecord[]; dropped: number } {
-  return { records: (out.records ?? []).map(toRecord), dropped: out.dropped ?? 0 };
+function toRecords(out: any, bytes: BytesOutput | undefined): { records: DhtRecord[]; dropped: number } {
+  return { records: (out.records ?? []).map((r: any) => toRecord(r, bytes)), dropped: out.dropped ?? 0 };
 }

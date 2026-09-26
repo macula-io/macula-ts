@@ -5,7 +5,7 @@
       "sources": ["addon/binding.cc"],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
-        "cabi/build"
+        "native/build"
       ],
       "dependencies": ["<!(node -p \"require('node-addon-api').gyp\")"],
       "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
@@ -13,14 +13,14 @@
         [
           "OS==\"linux\"",
           {
-            "libraries": ["../cabi/build/libmacula.a", "-lpthread"]
+            "libraries": ["../native/build/libmacula.a", "-lpthread"]
           }
         ],
         [
           "OS==\"mac\"",
           {
             "libraries": [
-              "../cabi/build/libmacula.a",
+              "../native/build/libmacula.a",
               "-framework CoreFoundation",
               "-framework Security"
             ]
@@ -30,7 +30,7 @@
           "OS==\"win\"",
           {
             "libraries": [
-              "../cabi/build/libmacula.a",
+              "../native/build/libmacula.a",
               "ws2_32.lib",
               "ntdll.lib",
               "userenv.lib",

@@ -1,7 +1,7 @@
 {
   "name": "@macula-io/ts",
   "version": "0.21.0",
-  "description": "TypeScript SDK for the Macula mesh (FFI over macula-go)",
+  "description": "TypeScript SDK for the Macula mesh, over macula-go's shared C ABI",
   "license": "Apache-2.0",
   "keywords": [
     "macula",
@@ -41,16 +41,14 @@
     "prebuilds"
   ],
   "scripts": {
-    "build:go": "go env -w CGO_ENABLED=1 && cd cabi && go mod tidy && go build -trimpath -buildvcs=false -buildmode=c-archive -o build/libmacula.a .",
+    "build:go": "bash scripts/build-native.sh",
     "build:addon:dev": "npm run build:go && node-gyp rebuild",
     "build:prebuilds": "npm run build:go && prebuildify --napi --strip && npm pkg delete scripts.install",
     "build:ts": "rm -rf dist && tsc",
     "build": "npm run build:addon:dev && npm run build:ts",
-    "test": "npm run build:teststation && vitest run",
+    "test": "npm run build:go && vitest run",
     "test:live": "MACULA_TS_LIVE=1 vitest run src/fleet.live.test.ts",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build:prebuilds && npm run build:ts",
-    "build:teststation": "cd cabi && go build -trimpath -buildvcs=false -o ../build/teststation ./cmd/teststation"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "node-addon-api": "^8.9.2",

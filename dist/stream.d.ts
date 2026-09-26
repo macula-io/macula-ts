@@ -51,7 +51,7 @@ export declare class Stream {
     abort(code: string, message?: string): Promise<void>;
     /** The peer's next frame, or null once the stream has ended normally. A
      * stream error is thrown as a StreamError; `timeoutMs` (0 for none) bounds
-     * the wait with an Error("timeout"). */
+     * the wait with a MaculaError of kind "timeout". */
     recv(options?: {
         timeoutMs?: number;
     }): Promise<StreamEvent | null>;

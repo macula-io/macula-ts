@@ -13,8 +13,10 @@ export type JsonValue = string | number | null | JsonValue[] | {
 /** How bytes in a result, a request, an event or a record reach JavaScript:
  * "hex" (the default) or "tagged" ({"$bytes": "<base64>"}). */
 export type BytesOutput = "hex" | "tagged";
-/** BytesOutput as the integer the native layer takes. */
-export declare function bytesModeFor(bytes: BytesOutput | undefined): number;
+/** A value from the native layer, whose bytes are always the tagged
+ * {"$bytes": ...} object, with its bytes as `bytes` asks: "0x" hex (the
+ * default) or left tagged. */
+export declare function bytesOut(value: unknown, bytes: BytesOutput | undefined): JsonValue;
 /** A 32-byte id (a node_id, a realm id, a record key): 64 hex characters or
  * 32 bytes. */
 export type Id = string | Uint8Array;
@@ -45,9 +47,15 @@ export declare class StreamError extends Error {
     readonly relay: boolean;
     constructor(code: string, detail: string, relay: boolean);
 }
-/** The error the native layer rejects a call with, as the class it names:
- * "provider_error:<code>:<detail>" and "relay_error:<code>" (cabi's
- * callError), any other text as a plain Error. */
-export declare function callError(e: unknown): Error;
+/** An error the native layer reported: its kind, from macula-go's C ABI
+ * (cabi/CONTRACT.md "Errors"), and its message. Provider, relay and content
+ * errors have classes of their own; every other kind is this. */
+export declare class MaculaError extends Error {
+    readonly kind: string;
+    constructor(kind: string, message: string);
+}
+/** The native layer's error, whose message is the ABI's error JSON, as the
+ * class its kind names. */
+export declare function nativeError(e: unknown): Error;
 /** How long a call waits, in milliseconds, when not told: macula's 5 s. */
 export declare const DEFAULT_CALL_TIMEOUT_MS = 5000;

@@ -63,11 +63,9 @@ macula-go, macula-rust, macula-dotnet, and macula-php have all already
 proven this protocol works and are actively maintained. Rather than
 reimplement QUIC, TLS 1.3 with a hybrid post-quantum key exchange, deterministic CBOR and signed frames a fifth time in a
 language with no mature QUIC story of its own, macula-ts reuses macula-go's
-already-proven implementation through FFI — the same tradeoff
-[macula-php](https://github.com/macula-io/macula-php) already made
-successfully (see its `cabi/` directory, which this package's own `cabi/`
-is structurally modeled on, including its handle-based memory-ownership
-convention).
+already-proven implementation through macula-go's shared C ABI
+([`cabi/macula.h`](https://github.com/macula-io/macula-go/blob/master/cabi/macula.h),
+contract in `cabi/CONTRACT.md`), the one C ABI every non-Go SDK binds.
 
 ## Sibling SDKs
 
@@ -141,15 +139,23 @@ compatibility layer.
 ## Architecture
 
 ```
-src/ (TypeScript API)  ──  addon/binding.cc (N-API)  ──  cabi/ (Go, C archive)  ──  macula-go pool
+src/ (TypeScript API)  ──  addon/binding.cc (N-API)  ──  macula-go cabi (C ABI 1, c-archive)  ──  macula-go pool
 ```
 
-`cabi/` exports C functions over macula-go's `pool` (and `stationlink`
-streams). Every Go value crosses as a `runtime/cgo.Handle`; payloads cross as
-JSON with no booleans and bytes as `{"$bytes": "<base64>"}` going in. Every call
-that does network I/O runs on a worker thread (`Napi::AsyncWorker`) and returns
-a Promise; events, served calls and served streams reach JavaScript through a
-`ThreadSafeFunction`.
+The addon links macula-go's shared C ABI, built as a c-archive from the
+macula-go release in `native/MACULA_GO` (`scripts/build-native.sh`, which
+takes macula-go through `go mod download` and the Go checksum database and
+checks the release's commit). There is no Go code in this repository. Every Go
+value crosses as a handle; payloads cross as JSON with no booleans and bytes
+as `{"$bytes": "<base64>"}` both ways (this package turns them into `"0x"`
+hex by default, or leaves them tagged with `bytes: "tagged"`); an error
+crosses as JSON with a fixed kind, which becomes `ProviderError`,
+`RelayError`, `NotSharedError`, `ContentUnavailableError` or a `MaculaError`
+carrying the kind. Every call that does network I/O runs on a worker thread
+(`Napi::AsyncWorker`) and returns a Promise. The ABI never calls back into
+Node: each subscription and served procedure has a thread of its own that
+takes from its inbox, with a cancel token of its own, and hands each event,
+call and session to JavaScript through a `ThreadSafeFunction`.
 
 ## What's implemented
 
@@ -174,12 +180,13 @@ a Promise; events, served calls and served streams reach JavaScript through a
 ## Testing
 
 ```bash
-npm test          # builds build/teststation, then the offline suite
+npm test          # builds native/build (libmacula.a and the teststation), then the offline suite
 npm run test:live # one live station, see below
 ```
 
-`npm test` runs `src/pool.test.ts` against `cabi/cmd/teststation`, a helper
-that runs two in-process macula 12 stations (macula-go's `teststation`) sharing
+`npm test` runs `src/pool.test.ts` against macula-go's own
+`teststation/cmd/teststation` at the pinned release, a helper that runs two
+in-process macula 12 stations sharing
 a DHT, with a test realm that admits the test's provider nodes. It exercises
 keys, calls by direct dial and their errors, providers, server and client
 streams (and that no stream is left unreleased), pubsub and the DHT, through
@@ -197,8 +204,8 @@ and signs its own, and this SDK verifies it.
 (the station's node_id), `MACULA_TS_LIVE_REALM` and `MACULA_TS_LIVE_REALM_KEY`;
 an unset one fails the run naming it. It reads the DHT, calls `mcl-echo/echo`
 by direct dial and hears its own publication.
-`.github/workflows/live.yml` runs it when dispatched by hand, on the committed
-linux-x64 prebuild.
+`.github/workflows/live.yml` runs it when dispatched by hand, on an addon it
+builds from the commit's source.
 
 ## Packaging: genuinely zero install-time scripts
 
@@ -217,28 +224,25 @@ macula-ts's own exported functions (not a generic bridge), packaged with
 [`node-gyp-build`](https://github.com/prebuild/node-gyp-build) — the same
 pattern used by `sharp`, `bcrypt`, and other native modules that need zero
 consumer-side compilation. The compiled `.node` binary for each supported
-platform is baked into `prebuilds/` and published as part of the npm
-package itself (**not** gitignored — there is nothing to build or fetch
-at a consumer's `npm install` time). `package.json` has no `install`,
-`postinstall`, or `preinstall` script at all.
+platform is in the npm package's `prebuilds/` (there is nothing to build or
+fetch at a consumer's `npm install`). `package.json` has no `install`,
+`postinstall`, `preinstall` or `prepublishOnly` script at all.
 
 Five platforms are covered: `linux-x64`, `linux-arm64`, `darwin-arm64`,
-`darwin-x64`, and `win32-x64`. `.github/workflows/prebuilds.yml` builds
-each on a real GitHub-hosted runner for that platform (`CGO_ENABLED=1`
-needs a matching native C toolchain per target, so cross-compiling
-`cabi/`'s Go archive from Linux isn't the right approach here — the same
-reason `sharp`/`bcrypt`/etc. use real per-OS runners) and commits the
-results back to `main`. `.github/workflows/ci.yml`'s "Confirm the
-committed prebuild is not stale" step re-verifies, on every push, that
-`linux-x64`'s committed binary still matches a fresh rebuild of current
-source, byte for byte. Getting that check — and the Windows build — to
-actually hold surfaced three real build-toolchain bugs; see
-[CHANGELOG.md](CHANGELOG.md) for the specifics.
+`darwin-x64`, and `win32-x64`. `.github/workflows/prebuild-matrix.yml` builds
+each from source on a real GitHub-hosted runner for that platform (cgo needs
+the platform's own C toolchain, so no cross-compiling), loads it and generates
+a key with it before uploading it. The release workflow attests each prebuild
+(build provenance) and packs all five into the package it publishes; CI runs
+the same matrix on every push, then installs the packed package into an empty
+project and checks the install compiled nothing. Prebuilds are never committed
+(macula-ts#2).
 
 ## Development
 
 ```bash
-npm run build:go   # builds cabi/build/libmacula.a -- must run BEFORE
+npm run build:go   # builds native/build (libmacula.a, macula.h, teststation)
+                    # from macula-go at native/MACULA_GO -- must run BEFORE
                     # npm install, since binding.gyp's mere presence in
                     # this repo (not in the published package) makes npm
                     # implicitly run `node-gyp rebuild` as part of
@@ -246,12 +250,13 @@ npm run build:go   # builds cabi/build/libmacula.a -- must run BEFORE
 npm install         # builds the native addon (via the implicit node-gyp
                     # rebuild above) and installs JS deps
 npm run typecheck
-npm test            # builds build/teststation (Go) first
-npm run build:prebuilds   # regenerate prebuilds/ after touching addon/ or cabi/ -- commit the result
+npm test            # builds native/build first
+npm run build:prebuilds   # this platform's prebuild, into prebuilds/ (never committed)
 npm run build             # local dev build: addon + tsc
 ```
 
-Requires Go >=1.27 (for `cabi/`), a C++ toolchain (for `addon/`), and Node
+Requires Go >=1.27 and a C compiler (to build macula-go's cabi), a C++
+toolchain (for `addon/`), and Node
 >=24.18.1 (see `engines` in `package.json` — matches the same floor
 macula-mcp landed on for `node:sqlite`; earlier Node lines don't ship it).
 None of this is required to *consume* the published package — only to

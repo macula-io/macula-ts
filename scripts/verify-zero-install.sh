@@ -18,13 +18,13 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 echo "==> Removing every generated artifact"
-rm -rf node_modules build dist prebuilds cabi/build
+rm -rf node_modules build dist prebuilds native/build
 
 # build:go FIRST, then npm install: this REPO's own root has a
 # binding.gyp (dev-repo convenience only -- excluded from the published
 # tarball, see package.json's "files"), which npm's own node-gyp
 # auto-rebuild runs during `npm install` here whether we like it or not;
-# that rebuild needs cabi/build/libmacula.a + libmacula.h to already
+# that rebuild needs native/build/libmacula.a + macula.h to already
 # exist. This ordering constraint is local-dev-only and is NOT part of
 # the zero-install-script property itself -- that property is about the
 # PACKED TARBALL's install below, which carries no binding.gyp at all.
@@ -43,7 +43,7 @@ npm test
 echo "==> npx tsc (emit dist/)"
 npx tsc
 
-echo "==> npm run build:prebuilds (every platform/arch prebuild via prebuildify)"
+echo "==> npm run build:prebuilds (this platform's prebuild via prebuildify; CI builds all five)"
 npm run build:prebuilds
 
 TARBALL_DIR="$(mktemp -d)"

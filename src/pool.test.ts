@@ -202,3 +202,33 @@ describe("DHT", () => {
     await p.close();
   });
 });
+
+describe("the shared C ABI underneath", () => {
+  it("gives bytes as 0x hex by default, and tagged when asked", async () => {
+    const provider = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
+    const back = provider.ownProcedure("bytes_back");
+    const served = await provider.serve(env.realmId, back, (r) => r.payload, { bytes: "tagged" });
+    const caller = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(1)]);
+    const sent = { b: { $bytes: "AQID" } };
+    expect(await caller.call(env.realmId, back, sent)).toEqual({ b: "0x010203" });
+    expect(await caller.call(env.realmId, back, sent, { bytes: "tagged" })).toEqual({ b: { $bytes: "AQID" } });
+    await expect(caller.call(env.realmId, back, sent, { bytes: "raw" as never })).rejects.toThrow(/hex" or "tagged/);
+    await served.stop();
+    await provider.close();
+    await caller.close();
+  });
+
+  it("ends a subscription when its pool closes, as asked (closed is null)", async () => {
+    const listener = await node(0);
+    const sub = await listener.subscribe(env.realmId, "mcl-ts/tests/nothing_said_v1", () => {});
+    await listener.close();
+    expect(await sub.closed).toBeNull();
+    await sub.stop();
+  });
+
+  it("reports an ABI error as a MaculaError with its kind", async () => {
+    const caller = await node(0);
+    await expect(caller.call(env.realmId, `${env.org}/nothing`, {})).rejects.toMatchObject({ name: "MaculaError", kind: "no_provider" });
+    await caller.close();
+  });
+});

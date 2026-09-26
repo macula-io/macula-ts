@@ -3,7 +3,7 @@
 // stream of its own, released on every path; frames are signed by each side
 // and verified before they are handed on.
 import { native, type Handle } from "./binding.js";
-import { StreamError, bytesModeFor, type BytesOutput, type JsonValue } from "./wire.js";
+import { StreamError, bytesOut, type BytesOutput, type JsonValue } from "./wire.js";
 
 /** The three stream modes: the provider sends (server), the caller sends and
  * the provider replies (client), or both send (bidi). */
@@ -38,8 +38,9 @@ export class Stream {
 
   /** The stream's open. */
   request(): StreamRequest {
-    const r = JSON.parse(native.streamRequest(this.live(), bytesModeFor(this.bytes)));
-    return { caller: r.caller, realm: r.realm, procedure: r.procedure, payload: r.payload, deadlineMs: r.deadline_ms };
+    const r = JSON.parse(native.streamRequest(this.live()));
+    return { caller: r.caller, realm: r.realm, procedure: r.procedure, payload: bytesOut(r.payload, this.bytes),
+      deadlineMs: r.deadline_ms };
   }
 
   /** Sends a raw chunk. */
@@ -74,20 +75,20 @@ export class Stream {
 
   /** The peer's next frame, or null once the stream has ended normally. A
    * stream error is thrown as a StreamError; `timeoutMs` (0 for none) bounds
-   * the wait with an Error("timeout"). */
+   * the wait with a MaculaError of kind "timeout". */
   async recv(options: { timeoutMs?: number } = {}): Promise<StreamEvent | null> {
-    const e = JSON.parse(await native.streamRecv(this.live(), options.timeoutMs ?? 0, bytesModeFor(this.bytes)));
+    const e = JSON.parse(await native.streamRecv(this.live(), options.timeoutMs ?? 0));
     switch (e.kind) {
       case "eof":
         return null;
       case "error":
         throw new StreamError(e.code, e.message ?? "", e.relay === 1);
       case "data":
-        return { kind: "data", encoding: e.encoding, body: e.body };
+        return { kind: "data", encoding: e.encoding, body: bytesOut(e.body, this.bytes) };
       case "end":
         return { kind: "end", role: e.role };
       default:
-        return { kind: "reply", payload: e.payload };
+        return { kind: "reply", payload: bytesOut(e.payload, this.bytes) };
     }
   }
 
