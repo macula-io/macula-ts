@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-09-27
+
 ### Added
 
 - Ownership proof v2 (mcl-om#7): `NodeKey.ownershipProof(realm, procedure,
@@ -903,6 +905,8 @@ description.
   separate `prebuilds.yml`).
 
 ## [Unreleased]
+
+## [0.23.0] - 2026-09-27
 
 ## [0.22.0] - 2026-09-27
 
