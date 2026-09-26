@@ -36,6 +36,7 @@ jobs:
             platform: win32-x64
     name: prebuild (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
@@ -77,6 +78,9 @@ jobs:
       - name: Produce this platform's prebuild
         run: npx prebuildify --napi --strip
 
+      # Two stages, each bounded, so a hang says where: loading the addon runs
+      # the ABI version check, the first call into Go; generating a key is the
+      # first real work.
       - name: The prebuild loads and works without build/
         shell: bash
         env:
@@ -85,7 +89,13 @@ jobs:
           set -euo pipefail
           test -f prebuilds/${{ matrix.platform }}/*.node
           rm -rf build
-          node --input-type=module -e "
+          echo "stage 1: load the addon"
+          timeout 120 node -e '
+            const native = require("node-gyp-build")(process.cwd());
+            console.log("loaded, C ABI " + native.abiVersion);
+          '
+          echo "stage 2: generate a key"
+          timeout 120 node --input-type=module -e "
             import { NodeKey } from './dist/index.js';
             const key = await NodeKey.generate('pq_pure');
             if (key.nodeId().length !== 32) throw new Error('bad nodeId length');
