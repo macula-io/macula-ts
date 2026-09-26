@@ -20,7 +20,8 @@
 ---
 
 > **Status, 2026-09-26:** on the **macula 12** wire (post-quantum: ML-DSA-87
-> identities, ML-KEM hybrid key exchange, signed requests), over macula-go's
+> identities, as the ML-DSA-87 + RSA-PSS-4096 composite in `pq_hybrid`, the
+> fleet's profile; ML-KEM hybrid key exchange; signed requests), over macula-go's
 > pool. Calls and streams by direct dial, serving (under an org or in a node's
 > own namespace), publish/subscribe, the DHT and node-served content are
 > tested against in-process macula 12 stations on every `npm test`.
@@ -60,7 +61,7 @@ that's actually usable for this today:
 
 macula-go, macula-rust, macula-dotnet, and macula-php have all already
 proven this protocol works and are actively maintained. Rather than
-reimplement QUIC, post-quantum TLS, deterministic CBOR and signed frames a fifth time in a
+reimplement QUIC, TLS 1.3 with a hybrid post-quantum key exchange, deterministic CBOR and signed frames a fifth time in a
 language with no mature QUIC story of its own, macula-ts reuses macula-go's
 already-proven implementation through FFI — the same tradeoff
 [macula-php](https://github.com/macula-io/macula-php) already made
