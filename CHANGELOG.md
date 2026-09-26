@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- `NodeKey.verify(data, signature, publicKey, profile)`: whether a signature
+  is valid for a public key as carried, ML-DSA-87 in pq_pure and in pq_hybrid
+  the LAMPS composite id-MLDSA87-RSA4096-PSS-SHA512 with the empty context,
+  both halves verified (cabi `macula_verify`, synchronous).
+- `scripts/cross-verify-macula.sh`, which cross-verifies pq_hybrid composites
+  both ways with macula 12.x.
+
+### Verified
+
+- pq_hybrid against `draft-ietf-lamps-pq-composite-sigs`' own vector, the one
+  macula and macula-go check (`src/lamps.test.ts`): the draft's signature
+  verifies through the public API, and an altered message, an altered
+  ML-DSA-87 half, an altered RSA-PSS half, pq_pure, the draft's signature made
+  with a context, and the composite whose RSA-PSS half lost its zero byte are
+  each refused. The draft's private key, loaded with `NodeKey.load` as
+  pq_hybrid, carries the draft's public key, and its signature over the
+  draft's message verifies under the draft's public key.
+- Cross-verified both ways with macula 12.7.0 (from hex, on OTP 28.4.3, in the
+  image macula v12.7.0's own test job pins): macula verified a composite this
+  SDK signed and refused it altered, and this SDK verifies a composite macula
+  signed. Both are kept in `test/fixtures/macula_12_cross/` and checked on
+  every `npm test`.
+
 ## [0.19.0] - 2026-09-26
 
 ### Added

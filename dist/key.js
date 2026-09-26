@@ -56,6 +56,13 @@ export class NodeKey {
     async sign(data) {
         return native.keySign(this.live(), data);
     }
+    /** Whether signature is valid over data for a public key as carried on the
+     * wire (publicKey()), under profile: ML-DSA-87 in pq_pure, and in pq_hybrid
+     * the LAMPS composite id-MLDSA87-RSA4096-PSS-SHA512 with the empty context,
+     * both halves verified. Anything malformed is false. */
+    static verify(data, signature, publicKey, profile = "pq_hybrid") {
+        return native.verify(data, signature, publicKey, profile);
+    }
     /** Frees the native key. The NodeKey is unusable after. */
     free() {
         if (this.handle !== null)

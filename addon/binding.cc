@@ -337,6 +337,21 @@ Napi::Value KeySign(const Napi::CallbackInfo& info) {
   });
 }
 
+// verify(data, signature, publicKey, profile) -> boolean: a verification is a
+// public-key operation, quick enough to run on the calling thread.
+Napi::Value Verify(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::vector<uint8_t> data = ArgBytes(info, 0);
+  std::vector<uint8_t> signature = ArgBytes(info, 1);
+  std::vector<uint8_t> publicKey = ArgBytes(info, 2);
+  std::string profile = ArgString(info, 3);
+  char* errOut = nullptr;
+  int valid = macula_verify(Ptr(data), data.size(), Ptr(signature), signature.size(), Ptr(publicKey),
+                            publicKey.size(), const_cast<char*>(profile.c_str()), &errOut);
+  if (ThrowIfErr(env, errOut)) return env.Null();
+  return Napi::Boolean::New(env, valid == 1);
+}
+
 Napi::Value KeyFree(const Napi::CallbackInfo& info) {
   bool ok = false;
   uintptr_t h = ToHandle(info.Env(), info[0], &ok);
@@ -819,6 +834,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("keyPublicKey", Napi::Function::New(env, KeyPublicKey));
   exports.Set("keyProfile", Napi::Function::New(env, KeyProfile));
   exports.Set("keySign", Napi::Function::New(env, KeySign));
+  exports.Set("verify", Napi::Function::New(env, Verify));
   exports.Set("keyFree", Napi::Function::New(env, KeyFree));
   exports.Set("poolConnect", Napi::Function::New(env, PoolConnect));
   exports.Set("poolClose", Napi::Function::New(env, PoolClose));

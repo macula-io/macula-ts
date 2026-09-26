@@ -37,6 +37,7 @@ export const native = require("node-gyp-build")(repoRoot) as {
   keyProfile(key: Handle): string;
   keySign(key: Handle, data: Uint8Array): Promise<Uint8Array>;
   keyFree(key: Handle): void;
+  verify(data: Uint8Array, signature: Uint8Array, publicKey: Uint8Array, profile: string): boolean;
 
   poolConnect(key: Handle, seedsJson: string, optionsJson: string): Promise<Handle>;
   poolClose(pool: Handle): Promise<void>;

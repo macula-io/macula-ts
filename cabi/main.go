@@ -219,6 +219,25 @@ func macula_key_sign(h C.uintptr_t, data *C.uchar, dataLen C.size_t, outLen *C.s
 	return cBytes(signature, outLen)
 }
 
+// macula_verify reports whether signature is valid over data for a public key
+// as carried, under profile ("pq_hybrid" or "pq_pure", pq_hybrid when NULL):
+// 1 when it is, 0 when it is not or anything is malformed. A profile it does
+// not know is an error.
+//
+//export macula_verify
+func macula_verify(data *C.uchar, dataLen C.size_t, signature *C.uchar, signatureLen C.size_t,
+	publicKey *C.uchar, publicKeyLen C.size_t, profileName *C.char, errOut **C.char) C.int {
+	p, err := parseProfile(profileName)
+	if err != nil {
+		setErr(errOut, err)
+		return 0
+	}
+	if identity.Verify(goBytes(data, dataLen), goBytes(signature, signatureLen), goBytes(publicKey, publicKeyLen), p) {
+		return 1
+	}
+	return 0
+}
+
 // macula_key_free frees the key's handle.
 //
 //export macula_key_free

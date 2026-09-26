@@ -24,6 +24,11 @@ export declare class NodeKey {
     profile(): Profile;
     /** Signs data as given. */
     sign(data: Uint8Array): Promise<Uint8Array>;
+    /** Whether signature is valid over data for a public key as carried on the
+     * wire (publicKey()), under profile: ML-DSA-87 in pq_pure, and in pq_hybrid
+     * the LAMPS composite id-MLDSA87-RSA4096-PSS-SHA512 with the empty context,
+     * both halves verified. Anything malformed is false. */
+    static verify(data: Uint8Array, signature: Uint8Array, publicKey: Uint8Array, profile?: Profile): boolean;
     /** Frees the native key. The NodeKey is unusable after. */
     free(): void;
     /** @internal */

@@ -155,7 +155,7 @@ a Promise; events, served calls and served streams reach JavaScript through a
 
 | Primitive | Caller | Provider | Notes |
 |---|---|---|---|
-| Node keys (`NodeKey`) | ✅ | ✅ | `pq_hybrid` (the fleet's) or `pq_pure`; key files readable by the owner only |
+| Node keys (`NodeKey`) | ✅ | ✅ | `pq_hybrid` (the fleet's) or `pq_pure`; key files readable by the owner only; `sign` and `NodeKey.verify`, pq_hybrid checked against the LAMPS draft's own vector and cross-verified with macula 12.7.0 |
 | Pool of station links (`Pool.connect`) | ✅ | ✅ | Seeds pinned by node_id; realm keys pinned; links redialed with subscriptions and served procedures replayed |
 | Calls by direct dial (`call`, `providers`) | ✅ | ✅ | `serve`: a thrown error goes back as `handler_error`; errors arrive as `ProviderError` / `RelayError` |
 | A node's own namespace (`ownProcedure`) | ✅ | ✅ | `~<node_id>/<name>`: served and called with no org and no realm key; the node's signature authorizes it |
@@ -183,6 +183,13 @@ a DHT, with a test realm that admits the test's provider nodes. It exercises
 keys, calls by direct dial and their errors, providers, server and client
 streams (and that no stream is left unreleased), pubsub and the DHT, through
 the real addon. No network is needed.
+
+`src/lamps.test.ts` holds pq_hybrid, the LAMPS composite
+id-MLDSA87-RSA4096-PSS-SHA512, to `draft-ietf-lamps-pq-composite-sigs`' own
+vector (the one macula and macula-go check), and to composites that crossed
+both ways with macula 12.x. `scripts/cross-verify-macula.sh` renews those: this
+SDK signs, macula (from hex, in the image macula's own CI runs in) verifies
+and signs its own, and this SDK verifies it.
 
 `src/fleet.live.test.ts` runs against one real station and is not part of
 `npm test`. It needs `MACULA_TS_LIVE_SEED` (host:port), `MACULA_TS_LIVE_STATION_ID`
