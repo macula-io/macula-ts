@@ -14,6 +14,7 @@
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { readdirSync } from "node:fs";
 import { nativeError } from "./wire.js";
 
 const require = createRequire(import.meta.url);
@@ -94,11 +95,26 @@ function load(): Native {
     return require("node-gyp-build")(repoRoot) as Native;
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
-    const hint = process.platform === "win32"
-      ? " On Windows the addon needs macula-go's macula.dll beside its .node (prebuilds/win32-x64/)."
-      : "";
-    throw new Error(`macula-ts: the native addon did not load on ${process.platform}-${process.arch}: ${why}.${hint}`);
+    throw new Error(`macula-ts: the native addon did not load on ${process.platform}-${process.arch}: ${why}.${windowsHint()}`);
   }
+}
+
+// On Windows the addon needs macula-go's DLL (macula-<release>.dll) beside
+// its .node: say whether it is there, so a missing DLL is told apart from a
+// failure of anything else.
+function windowsHint(): string {
+  if (process.platform !== "win32") return "";
+  let dir: string;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    dir = dirname(require("node-gyp-build").path(repoRoot) as string);
+  } catch {
+    return " No prebuild for this platform was found.";
+  }
+  const dlls = readdirSync(dir).filter((f) => /^macula-v[0-9.]+\.dll$/.test(f));
+  return dlls.length === 0
+    ? ` macula-go's DLL (macula-<release>.dll) is not there, beside the .node in ${dir}.`
+    : ` ${dlls.join(", ")} is there, beside the .node, so the failure is elsewhere.`;
 }
 
 const addon = load();

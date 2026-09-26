@@ -45,7 +45,7 @@
               {
                 "destination": "<(PRODUCT_DIR)",
                 "files": [
-                  "native/build/macula.dll"
+                  "<!(node -p \"'native/build/macula-' + require('fs').readFileSync('native/MACULA_GO', 'utf8').split(' ')[0] + '.dll'\")"
                 ]
               }
             ]

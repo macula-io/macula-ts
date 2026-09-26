@@ -79,11 +79,25 @@ jobs:
         run: npx prebuildify --napi --strip
 
       # On Windows the addon links macula-go's DLL (scripts/build-native.sh
-      # says why), which Node's loader finds beside the .node.
-      - name: Put macula.dll beside the prebuild (Windows)
+      # says why), which Node's loader finds beside the .node. It must need
+      # nothing but Windows itself: a MinGW runtime DLL would load on this
+      # runner and be missing on a user's machine.
+      - name: The DLL imports only system DLLs (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          imports=$(objdump -p native/build/macula-*.dll | sed -n 's/^.*DLL Name: //p')
+          echo "$imports"
+          if echo "$imports" | grep -Eiv '^(kernel32|msvcrt|advapi32|ws2_32|winmm|ntdll|user32|bcrypt|crypt32|iphlpapi|dnsapi|secur32|userenv|powrprof|api-ms-win-[a-z0-9-]+)\.dll$' | grep -q .; then
+            echo "::error::macula's DLL imports a DLL Windows does not carry"
+            exit 1
+          fi
+
+      - name: Put macula's DLL beside the prebuild (Windows)
         if: runner.os == 'Windows'
         shell: bash
-        run: cp native/build/macula.dll prebuilds/${{ matrix.platform }}/
+        run: cp native/build/macula-*.dll prebuilds/${{ matrix.platform }}/
 
       # Two stages, each bounded, so a hang says where: loading the addon runs
       # the ABI version check, the first call into Go; generating a key is the

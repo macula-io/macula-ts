@@ -23,11 +23,13 @@ All notable changes to this project will be documented in this file.
   `ContentUnavailableError` are unchanged. A stream's `recv` timeout is a
   `MaculaError` of kind `timeout`.
 - Windows: the win32-x64 prebuild links macula-go's DLL (c-shared, with
-  `macula.dll` beside the `.node`) instead of the c-archive. node-gyp links
+  `macula-v0.16.0.dll`, named after macula-go's release, beside the `.node`)
+  instead of the c-archive. node-gyp links
   the addon with MSVC, whose C runtime never runs the MinGW constructor that
   starts Go's runtime in a c-archive, so the first call into Go waited for
   ever: measured in this release's CI, which is the first to load the win32
-  prebuild at all.
+  prebuild at all. The DLL imports only DLLs Windows carries (checked in CI),
+  and without it the import fails at once, saying it is missing.
 - **Windows did not work before this release.** Every published win32
   prebuild up to 0.21.0 was built the same way: it imports, and its first
   call into macula-go hangs. Measured on 0.21.0 from npm on windows-latest

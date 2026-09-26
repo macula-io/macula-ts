@@ -3,10 +3,12 @@
 # release in native/MACULA_GO ("<tag> <commit>"), into native/build: macula.h
 # (the ABI's contract), the teststation the tests drive, and the library the
 # addon links. On Linux and macOS that is libmacula.a (c-archive), linked into
-# the addon. On Windows it is macula.dll (c-shared) and its import library
-# macula.lib: node-gyp links with MSVC, whose C runtime never runs the MinGW
-# constructor that starts Go's runtime in a c-archive, so the first call into
-# Go would wait for ever; Go's DLL starts its runtime itself. macula-go comes through `go mod download`, which
+# the addon. On Windows it is macula-<tag>.dll (c-shared) and its import
+# library macula.lib: node-gyp links with MSVC, whose C runtime never runs the
+# MinGW constructor that starts Go's runtime in a c-archive, so the first call
+# into Go would wait for ever; Go's DLL starts its runtime itself. The DLL is
+# named after its release because Windows binds a dependent DLL by name: two
+# versions of this package in one process must not share one DLL. macula-go comes through `go mod download`, which
 # checks it against the Go checksum database, and its origin commit must be
 # the one recorded beside the tag. Needs Go 1.27 and a C compiler (cgo).
 set -euo pipefail
@@ -26,9 +28,10 @@ fi
 export CGO_ENABLED=1
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
+    rm -f "$out"/macula-*.dll
     (cd "$dir" && go build -trimpath -buildvcs=false -buildmode=c-shared \
-      -ldflags="-extldflags=-Wl,--out-implib,$out/macula.lib" -o "$out/macula.dll" ./cabi)
-    rm -f "$out/macula.h" ;;
+      -ldflags="-extldflags=-Wl,--out-implib,$out/macula.lib" -o "$out/macula-$tag.dll" ./cabi)
+    rm -f "$out/macula-$tag.h" ;;
   *)
     (cd "$dir" && go build -trimpath -buildvcs=false -buildmode=c-archive -o "$out/libmacula.a" ./cabi)
     rm -f "$out/libmacula.h" ;;

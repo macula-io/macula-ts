@@ -231,7 +231,8 @@ fetch at a consumer's `npm install`). `package.json` has no `install`,
 Five platforms are covered: `linux-x64`, `linux-arm64`, `darwin-arm64`,
 `darwin-x64`, and `win32-x64`. On Linux and macOS the prebuild is one `.node`
 with macula-go's cabi linked in statically; on Windows it is the `.node` and
-macula-go's `macula.dll` beside it, because node-gyp links with MSVC, which
+macula-go's DLL beside it (`macula-<release>.dll`, named after macula-go's
+release so two versions of this package never share one), because node-gyp links with MSVC, which
 does not start the Go runtime of a MinGW-built static archive. `.github/workflows/prebuild-matrix.yml` builds
 each from source on a real GitHub-hosted runner for that platform (cgo needs
 the platform's own C toolchain, so no cross-compiling), loads it and generates

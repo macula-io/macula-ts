@@ -263,10 +263,33 @@ describe("listeners over the ABI's inboxes", () => {
     await Promise.all(Array.from({ length: 800 }, (_, i) => publisher.publish(env.realmId, topic, i)));
     await eventually("the flood settled", async () => heard > 0 && sub.dropped() > 0);
     expect(heard).toBeLessThan(800);
+    const atStop = sub.dropped();
     await sub.stop();
     await listener.close();
     await publisher.close();
+    // The count outlives the subscription and its pool.
+    expect(sub.dropped()).toBeGreaterThanOrEqual(atStop);
   }, 30_000);
+
+  it("exits cleanly with process.exit() right after a pool closes or a subscription stops", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const s = env.stations[0]!;
+    for (const mode of ["close", "stop", "close", "stop", "close", "stop"]) {
+      const run = spawnSync(process.execPath, ["test/probes/exit_after_close.mjs", s.host, String(s.port), s.node_id, env.realmId],
+        { encoding: "utf8", timeout: 60_000, env: { ...process.env, MODE: mode } });
+      expect({ mode, status: run.status, signal: run.signal, stderr: run.stderr.slice(-300) })
+        .toEqual({ mode, status: 0, signal: null, stderr: "" });
+    }
+  }, 120_000);
+
+  it("survives a worker torn down with deliveries queued for its listener", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const s = env.stations[0]!;
+    const run = spawnSync(process.execPath, ["test/probes/worker_backlog.mjs", s.host, String(s.port), s.node_id, env.realmId],
+      { encoding: "utf8", timeout: 60_000 });
+    expect({ status: run.status, signal: run.signal, out: run.stdout.trim(), err: run.stderr.slice(-400) })
+      .toMatchObject({ status: 0, signal: null, out: "backlog teardown survived" });
+  }, 70_000);
 
   it("survives a worker torn down under a live listener", async () => {
     const { execFileSync } = await import("node:child_process");

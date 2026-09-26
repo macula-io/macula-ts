@@ -60,7 +60,7 @@ jobs:
   zero-install:
     # The package as npm would carry it, with the five prebuilds just built,
     # installs and works with no compiler and no install script: on Linux, and
-    # on Windows from the installed layout, where the addon needs macula.dll
+    # on Windows from the installed layout, where the addon needs macula-go's DLL
     # beside it (and fails at once, naming it, without it).
     needs: prebuilds
     strategy:
@@ -125,15 +125,15 @@ jobs:
             console.log('consumer install verified end to end, zero build steps');
           "
 
-      - name: Without macula.dll the addon fails at once, naming it (Windows)
+      - name: Without macula's DLL the addon fails at once, naming it (Windows)
         if: runner.os == 'Windows'
         run: |
           set -uo pipefail
           cd ../consumer
           echo "in $(pwd)"
           ls -l node_modules/@macula-io/ts/prebuilds/win32-x64/
-          test -f node_modules/@macula-io/ts/prebuilds/win32-x64/macula.dll || { echo "::error::no macula.dll in the installed package"; exit 1; }
-          rm node_modules/@macula-io/ts/prebuilds/win32-x64/macula.dll
+          ls node_modules/@macula-io/ts/prebuilds/win32-x64/macula-v*.dll > /dev/null || { echo "::error::no macula DLL in the installed package"; exit 1; }
+          rm node_modules/@macula-io/ts/prebuilds/win32-x64/macula-v*.dll
           start=$(date +%s)
           # The shell runs with -e; this command is expected to fail.
           set +e
@@ -143,8 +143,8 @@ jobs:
           took=$(( $(date +%s) - start ))
           cat out.log
           if [ "$code" -eq 0 ] || [ "$code" -eq 124 ]; then
-            echo "::error::without macula.dll the import exited $code after $took s: it must fail, not load or hang"
+            echo "::error::without macula's DLL the import exited $code after $took s: it must fail, not load or hang"
             exit 1
           fi
-          grep -q "macula.dll" out.log || { echo "::error::the failure does not name macula.dll"; exit 1; }
-          echo "failed as it must, in $took s, naming macula.dll"
+          grep -q "is not there" out.log || { echo "::error::the failure does not say the DLL is missing"; exit 1; }
+          echo "failed as it must, in $took s, saying the DLL is missing"

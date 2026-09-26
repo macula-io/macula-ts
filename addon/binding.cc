@@ -212,15 +212,25 @@ struct Poller {
   // aborted: the env refused a delivery (it is being torn down); the poll
   // delivers nothing more and does not release the ThreadSafeFunction.
   std::atomic<bool> aborted{false};
+
+  // The last reference can drop while the thread, finished, is still
+  // joinable: its closing notice queued, the loop not yet turned (a
+  // process.exit() in the same tick). The poll holds a reference while it
+  // runs, so the thread has ended here.
+  ~Poller() {
+    if (thread.joinable()) thread.detach();
+  }
 };
 
 constexpr size_t kQueue = 256;
 
 // g_pollers maps a subscription's or served procedure's handle to its poller,
 // so stop can find it. Handles are unique across the process; the mutex
-// covers several envs (workers).
-std::mutex g_pollers_mu;
-std::unordered_map<macula_handle, std::shared_ptr<Poller>> g_pollers;
+// covers several envs (workers). Both are allocated once and never destroyed:
+// no static destructor may reach a poller at exit().
+std::mutex& g_pollers_mu = *new std::mutex();
+std::unordered_map<macula_handle, std::shared_ptr<Poller>>& g_pollers =
+    *new std::unordered_map<macula_handle, std::shared_ptr<Poller>>();
 
 std::shared_ptr<Poller> TakePoller(macula_handle source) {
   std::lock_guard<std::mutex> lock(g_pollers_mu);
@@ -233,22 +243,33 @@ std::shared_ptr<Poller> TakePoller(macula_handle source) {
 
 void CleanupPoller(void* arg);
 
+// CallListener hands one delivery to the listener, in raw N-API: an env being
+// torn down (a worker terminated with deliveries queued) refuses the calls,
+// and each refusal must end the delivery quietly. A node-addon-api wrapper
+// here would turn the refusal into a fatal error.
+void CallListener(napi_env env, napi_value fn, const Delivery& d) {
+  napi_value msg, kind, json, handle, result;
+  if (napi_create_object(env, &msg) != napi_ok) return;
+  if (napi_create_string_utf8(env, d.kind.c_str(), d.kind.size(), &kind) != napi_ok) return;
+  if (napi_create_string_utf8(env, d.json.c_str(), d.json.size(), &json) != napi_ok) return;
+  if (napi_create_bigint_uint64(env, d.handle, &handle) != napi_ok) return;
+  if (napi_set_named_property(env, msg, "kind", kind) != napi_ok) return;
+  if (napi_set_named_property(env, msg, "json", json) != napi_ok) return;
+  if (napi_set_named_property(env, msg, "handle", handle) != napi_ok) return;
+  napi_value global;
+  if (napi_get_global(env, &global) != napi_ok) return;
+  // A listener that throws is reported by Node as an uncaught exception.
+  napi_call_function(env, global, fn, 1, &msg, &result);
+}
+
 // Deliver hands d to JS, waiting while the queue is full. False when the env
 // refused it: the poll must stop.
 bool Deliver(const std::shared_ptr<Poller>& poller, Delivery* d) {
   napi_status status = poller->tsfn.BlockingCall(d, [](Napi::Env env, Napi::Function fn, Delivery* data) {
-    if (env == nullptr) {
-      delete data;
-      return;
-    }
-    Napi::Object msg = Napi::Object::New(env);
-    msg.Set("kind", Napi::String::New(env, data->kind));
-    msg.Set("json", Napi::String::New(env, data->json));
-    msg.Set("handle", Napi::BigInt::New(env, data->handle));
-    fn.Call({msg});
+    CallListener(env, fn, *data);
     if (data->last) {
-      // The poll is over: no cleanup hook is needed, and the thread ends on
-      // its own.
+      // The poll is over, whether or not the notice reached JS: no cleanup
+      // hook is needed, and the thread ends on its own.
       std::shared_ptr<Poller> poller = TakePoller(data->source);
       if (poller) {
         napi_remove_env_cleanup_hook(poller->env, CleanupPoller, poller.get());

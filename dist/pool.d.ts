@@ -78,10 +78,13 @@ export declare enum RecordType {
 export declare class Subscription {
     private readonly handle;
     readonly closed: Promise<string | null>;
+    private finalDropped;
     /** @internal */
     constructor(handle: Handle, closed: Promise<string | null>);
-    /** Events dropped because onEvent was behind: the inbox holds 256, and a
-     * full one drops the newest. */
+    /** Events dropped before onEvent heard them: when onEvent was behind and
+     * the inbox (256) was full, which drops the newest, and any the pool itself
+     * could not hand on. After stop(), the count at stop; read it before the
+     * pool closes if the subscription was not stopped, since closing frees it. */
     dropped(): number;
     /** Ends the subscription on every link. */
     stop(): Promise<void>;
