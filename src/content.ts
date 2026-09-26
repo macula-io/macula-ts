@@ -50,14 +50,5 @@ export class ContentUnavailableError extends Error {
   }
 }
 
-/** The native layer's content errors, as the classes they name. */
-export function contentError(e: unknown): Error {
-  const message = e instanceof Error ? e.message : String(e);
-  if (message === "not_shared") return new NotSharedError();
-  const unavailable = /^unavailable:([\s\S]*)$/.exec(message);
-  if (unavailable) return new ContentUnavailableError(unavailable[1] ?? "");
-  return e instanceof Error ? e : new Error(message);
-}
-
 /** How long a whole fetch waits when not told: 5 minutes. */
 export const DEFAULT_CONTENT_TIMEOUT_MS = 300_000;

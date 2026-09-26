@@ -7,12 +7,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    # This job only builds/tests linux-x64. The 5-platform prebuild
-    # matrix (linux-x64/arm64, darwin-x64/arm64, win32-x64) lives in
-    # prebuilds.yml, which builds and commits prebuilds/ back to main --
-    # see README.md's "Status" section.
+    # Builds and tests on linux-x64; prebuilds (below) builds every platform.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,29 +20,20 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27"
+          cache: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: "24.20.0"
 
-      # Must run before `npm install`: binding.gyp's mere presence makes
-      # npm implicitly run `node-gyp rebuild` as part of install (this is
-      # npm's own long-standing convention, not something declared in our
-      # scripts), and that rebuild links against cabi/build/libmacula.a,
-      # which has to exist first. This ordering requirement is a dev/CI
-      # concern only -- it does NOT affect consumers, since binding.gyp
-      # is not part of what gets published (see package.json's "files").
-      - name: Build the Go c-archive (cabi/)
+      # Before `npm ci`: binding.gyp's presence makes npm run `node-gyp
+      # rebuild` on install, which links native/build/libmacula.a. A dev and
+      # CI concern only: binding.gyp is not published.
+      - name: Build macula-go's cabi at native/MACULA_GO
         run: npm run build:go
 
-      # wirevalue.go's JSON <-> CBOR rules (the reserved {"$bytes": base64}
-      # input, the hex and tagged bytes output modes) are pinned by Go tests.
-      # vitest only reaches that layer through a live station, so they run here.
-      - name: Go tests (cabi/)
-        run: cd cabi && go test ./...
-
-      - name: Install (builds the native addon via node-gyp, using the archive above)
-        run: npm install
+      - name: Install (builds the native addon via node-gyp)
+        run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
@@ -59,33 +50,67 @@ jobs:
             exit 1
           fi
 
-      - name: Confirm the committed prebuild is not stale
-        run: |
-          npm run build:prebuilds
-          if ! git diff --exit-code -- prebuilds/; then
-            echo "::error::committed prebuilds/ does not match a fresh build -- run 'npm run build:prebuilds' and commit the result"
-            exit 1
-          fi
+  prebuilds:
+    uses: ./.github/workflows/prebuild-matrix.yml
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
 
-      - name: Verify a consumer install needs zero compilation
+  zero-install:
+    # The package as npm would carry it, with the five prebuilds just built,
+    # installs and works with no compiler and no install script.
+    needs: prebuilds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+
+      - run: npm ci --ignore-scripts
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: prebuild-*
+          path: prebuilds-in
+
+      - name: Assemble prebuilds/ and pack
         run: |
-          set -eu
+          set -euo pipefail
+          for plat in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            mkdir -p "prebuilds/$plat"
+            cp prebuilds-in/prebuild-$plat/* "prebuilds/$plat/"
+          done
+          rm -f binding.gyp
           npm pack --pack-destination /tmp
+
+      - name: A consumer install needs zero compilation
+        run: |
+          set -euo pipefail
           TARBALL=$(ls /tmp/macula-io-ts-*.tgz)
-          mkdir -p /tmp/consumer-install-test && cd /tmp/consumer-install-test
+          mkdir -p /tmp/consumer && cd /tmp/consumer
           npm init -y >/dev/null
-          npm install "$TARBALL"
-          # binding.gyp/addon/cabi are excluded from the published package
-          # (see package.json's "files") -- if either shows up here, the
-          # packaging regressed and a consumer install would try to compile.
-          if [ -e node_modules/@macula-io/ts/binding.gyp ] || [ -d node_modules/@macula-io/ts/addon ] || [ -d node_modules/@macula-io/ts/cabi ]; then
-            echo "::error::published package still contains build sources -- consumer installs would try to compile"
+          npm install --loglevel verbose "$TARBALL" > install.log 2>&1
+          # Not a bare "node-gyp": node-gyp-build, the runtime loader, appears
+          # in a verbose log as a package name. These are compile signals.
+          pattern='node-gyp rebuild|node-gyp configure|node-gyp build|gyp info|gyp ERR|CXX\(target\)|CC\(target\)|SOLINK_MODULE|make: Entering directory|prebuild-install|> node-gyp'
+          if grep -Eiq "$pattern" install.log; then
+            grep -Ein "$pattern" install.log
+            echo "::error::installing the package ran a build step"
             exit 1
           fi
+          for p in binding.gyp addon native scripts; do
+            if [ -e "node_modules/@macula-io/ts/$p" ]; then
+              echo "::error::the published package carries build sources ($p)"
+              exit 1
+            fi
+          done
           node --input-type=module -e "
             import { NodeKey } from '@macula-io/ts';
             const key = await NodeKey.generate('pq_pure');
             if (key.nodeId().length !== 32) throw new Error('bad nodeId length');
             key.free();
-            console.log('consumer-side install verified end to end, zero build steps');
+            console.log('consumer install verified end to end, zero build steps');
           "

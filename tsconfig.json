@@ -16,5 +16,5 @@
     "noUncheckedIndexedAccess": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "cabi", "build", "src/**/*.test.ts"]
+  "exclude": ["node_modules", "dist", "native", "build", "src/**/*.test.ts"]
 }

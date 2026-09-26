@@ -202,3 +202,78 @@ describe("DHT", () => {
     await p.close();
   });
 });
+
+describe("the shared C ABI underneath", () => {
+  it("gives bytes as 0x hex by default, and tagged when asked", async () => {
+    const provider = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
+    const back = provider.ownProcedure("bytes_back");
+    const served = await provider.serve(env.realmId, back, (r) => r.payload, { bytes: "tagged" });
+    const caller = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(1)]);
+    const sent = { b: { $bytes: "AQID" } };
+    expect(await caller.call(env.realmId, back, sent)).toEqual({ b: "0x010203" });
+    expect(await caller.call(env.realmId, back, sent, { bytes: "tagged" })).toEqual({ b: { $bytes: "AQID" } });
+    await expect(caller.call(env.realmId, back, sent, { bytes: "raw" as never })).rejects.toThrow(/hex" or "tagged/);
+    await served.stop();
+    await provider.close();
+    await caller.close();
+  });
+
+  it("ends a subscription when its pool closes, as asked (closed is null)", async () => {
+    const listener = await node(0);
+    const sub = await listener.subscribe(env.realmId, "mcl-ts/tests/nothing_said_v1", () => {});
+    await listener.close();
+    expect(await sub.closed).toBeNull();
+    await sub.stop();
+  });
+
+  it("reports an ABI error as a MaculaError with its kind", async () => {
+    const caller = await node(0);
+    await expect(caller.call(env.realmId, `${env.org}/nothing`, {})).rejects.toMatchObject({ name: "MaculaError", kind: "no_provider" });
+    await caller.close();
+  });
+});
+
+describe("listeners over the ABI's inboxes", () => {
+  it("reports each link's flags as booleans", async () => {
+    const p = await node(0);
+    const links = p.status();
+    expect(links.length).toBeGreaterThan(0);
+    expect(typeof links[0]!.up).toBe("boolean");
+    expect(typeof links[0]!.direct).toBe("boolean");
+    expect(links.some((l) => l.up === true)).toBe(true);
+    await p.close();
+  });
+
+  it("lets the inbox drop, and count, what a listener behind on its events cannot take", async () => {
+    const listener = await node(0);
+    const publisher = await node(0);
+    const topic = "mcl-ts/tests/flood_sent_v1";
+    let heard = 0;
+    let blocked = false;
+    const sub = await listener.subscribe(env.realmId, topic, () => {
+      heard++;
+      if (!blocked) {
+        // Hold the event loop, as a slow consumer would, while the rest arrive.
+        blocked = true;
+        const until = Date.now() + 3000;
+        while (Date.now() < until) { /* busy */ }
+      }
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    await Promise.all(Array.from({ length: 800 }, (_, i) => publisher.publish(env.realmId, topic, i)));
+    await eventually("the flood settled", async () => heard > 0 && sub.dropped() > 0);
+    expect(heard).toBeLessThan(800);
+    await sub.stop();
+    await listener.close();
+    await publisher.close();
+  }, 30_000);
+
+  it("survives a worker torn down under a live listener", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const s = env.stations[0]!;
+    const out = execFileSync(process.execPath,
+      ["test/probes/worker_teardown.mjs", s.host, String(s.port), s.node_id, env.realmId],
+      { encoding: "utf8", timeout: 60_000 });
+    expect(out).toContain("teardown survived");
+  }, 70_000);
+});

@@ -1,152 +1,134 @@
 name: Release to npm
 
+# A v* tag publishes that version to npm through Trusted Publishing (OIDC; no
+# token is stored). Nothing publishes unless the tag names package.json's
+# version, the suite is green, and all five platform prebuilds built from
+# source here, each loaded and attested (build provenance), before they are
+# packed. Prebuilds are never committed (macula-ts#2).
+
 on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+
 jobs:
-  publish:
-    name: publish to npm
+  guard:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write # npm OIDC Trusted Publishing -- no NPM_TOKEN secret needed or stored
-      contents: read
     steps:
       - uses: actions/checkout@v4
+      - name: The tag names package.json's version
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "v$PKG_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not name package.json's version $PKG_VERSION"
+            exit 1
+          fi
 
+  test:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27"
+          cache: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+      - run: npm run build:go
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  prebuilds:
+    needs: guard
+    uses: ./.github/workflows/prebuild-matrix.yml
+    with:
+      attest: true
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+  publish:
+    name: publish to npm
+    needs: [test, prebuilds]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # npm OIDC Trusted Publishing
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: "24.20.0"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Extract version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      # --ignore-scripts: binding.gyp would otherwise make npm build the addon
+      # here, and nothing past this point compiles anything.
+      - run: npm ci --ignore-scripts
 
-      - name: Validate version matches package.json
+      - name: Build TypeScript output, and confirm the committed dist/ is exactly it
         run: |
-          PKG_VERSION="$(node -p "require('./package.json').version")"
-          if [ "$PKG_VERSION" != "${{ steps.version.outputs.VERSION }}" ]; then
-            echo "::error::Tag version (${{ steps.version.outputs.VERSION }}) doesn't match package.json version ($PKG_VERSION)"
+          npm run build:ts
+          if [ -n "$(git status --porcelain -- dist/)" ]; then
+            echo "::error::committed dist/ is not a fresh build of src/"
             exit 1
           fi
 
-      # Must run before `npm install`, same ordering requirement ci.yml
-      # already establishes: binding.gyp's mere presence makes npm
-      # implicitly run `node-gyp rebuild`, which links against
-      # cabi/build/libmacula.a -- that has to exist first. Dev/CI concern
-      # only, doesn't affect consumers (binding.gyp isn't published).
-      - name: Build the Go c-archive (cabi/)
-        run: npm run build:go
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: prebuild-*
+          path: prebuilds-in
 
-      - run: npm install
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build:ts
-
-      # The 5-platform prebuild matrix (linux-x64/arm64, darwin-x64/arm64,
-      # win32-x64) is built on real per-platform runners by prebuilds.yml
-      # and committed back to main -- this job runs on ubuntu-latest only,
-      # so it can't rebuild all of them itself. It can and must confirm
-      # what's already committed is genuinely current and complete before
-      # publishing it, same check ci.yml already runs on every push.
-      - name: Confirm the committed prebuild is not stale
+      - name: Assemble all five prebuilds, refusing an incomplete set
         run: |
-          npm run build:prebuilds
-          if ! git diff --exit-code -- prebuilds/; then
-            echo "::error::committed prebuilds/ does not match a fresh build -- run 'npm run build:prebuilds' and commit the result before tagging a release"
-            exit 1
-          fi
-
-      - name: Confirm all 5 platforms are present before publishing
-        run: |
+          set -euo pipefail
           for plat in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
-            if [ ! -d "prebuilds/$plat" ]; then
-              echo "::error::prebuilds/$plat is missing -- refusing to publish an incomplete platform matrix"
-              exit 1
-            fi
+            ls prebuilds-in/prebuild-$plat/*.node > /dev/null || { echo "::error::no $plat prebuild"; exit 1; }
+            mkdir -p "prebuilds/$plat"
+            cp prebuilds-in/prebuild-$plat/* "prebuilds/$plat/"
           done
+          test -f prebuilds/win32-x64/macula.dll || { echo "::error::no macula.dll beside the win32 prebuild"; exit 1; }
+          ls -l prebuilds/*/
 
-      # Trusted Publishing (OIDC) needs npm CLI >=11.5.0. Copied from
-      # macula-mcp's own release.yml, which hit this directly: an older
-      # bundled npm on a GitHub-hosted runner doesn't know how to do the
-      # OIDC-for-auth exchange, and silently falls through to an
-      # unauthenticated publish request that comes back 404 instead of a
-      # clear auth error.
+      # Trusted Publishing (OIDC) needs npm CLI >= 11.5.0: an older bundled npm
+      # falls through to an unauthenticated publish that comes back 404
+      # (macula-mcp hit this first).
       - run: npm install -g npm@11
       - run: npm --version
 
-      # 0.13.0 AND 0.13.1 both published with a stray, npm-injected
-      # "install": "node-gyp rebuild" in the PUBLISHED package.json --
-      # 0.13.1's own fix (resetting package.json/package-lock.json to the
-      # clean git-committed state right before `npm publish`) did NOT
-      # work, because it ran too early: `npm publish` itself invokes the
-      # "prepublishOnly" lifecycle script (npm run build:prebuilds && tsc)
-      # as an internal step, AFTER any pre-publish check a workflow adds
-      # around it, and build:prebuilds's own `prebuildify --napi --strip`
-      # call is what actually writes the "install" key -- confirmed
-      # directly in 0.13.2's own run log, which shows exactly this
-      # (prepublishOnly -> build:prebuilds -> prebuildify) executing
-      # between the earlier clean-state check and the real upload.
-      # build:prebuilds now strips that key itself immediately after
-      # prebuildify runs (see its own script entry) -- but that fix could
-      # not be proven locally (this exact injection never reproduces on
-      # this developer's machine, only in CI, npm 11.19.1 vs 11.14.1
-      # locally, exact cause still not fully pinned down) so don't just
-      # trust it: actually run the real prepublish sequence here, in this
-      # same CI environment, and verify its result before ever reaching
-      # the real `npm publish` call below.
-      # IMPORTANT: after verifying clean, do NOT `git checkout` package.json
-      # back to the committed state -- 0.13.3's own version of this step did
-      # exactly that, which restores scripts.prepublishOnly too, so the
-      # actual `npm publish` call below still re-runs build:prebuilds a
-      # SECOND time via its own internal hook, unverified, undoing this
-      # entire check. Instead, delete prepublishOnly here so npm publish
-      # has nothing left to re-trigger -- the verified-clean state (already
-      # built dist/prebuilds, already stripped scripts.install) IS what
-      # gets packed, not a fresh unchecked rebuild.
-      - name: Force clean state, then PROVE the prepublish sequence produces no install script
+      # 0.13.0 to 0.13.4 published with a stray "install": "node-gyp rebuild"
+      # in the published package.json. Two things were needed, and both stay:
+      # no lifecycle script may rebuild at publish (package.json has no
+      # prepublishOnly, and none is added here), and binding.gyp must not be
+      # in the directory npm publish runs from, since its presence alone is
+      # what made npm add the key. Proved here, then published as checked.
+      - name: Prove the package carries no install script
         run: |
-          git checkout -- package.json package-lock.json
-          git clean -fdx -e node_modules -e prebuilds -e dist -e build
-          npm run build:prebuilds
-          npm run build:ts
-          if node -p "require('./package.json').scripts.install !== undefined" | grep -q true; then
-            echo "::error::package.json has a scripts.install key after running the real prepublish sequence (build:prebuilds && tsc) -- refusing to publish. This is exactly what happened in 0.13.0/0.13.1/0.13.2/0.13.3; do not proceed without a real fix."
+          set -euo pipefail
+          rm -f binding.gyp
+          if node -p "const s = require('./package.json').scripts || {}; s.install !== undefined || s.prepublishOnly !== undefined || s.preinstall !== undefined || s.postinstall !== undefined" | grep -q true; then
+            echo "::error::package.json has an install or prepublish lifecycle script -- refusing to publish"
             exit 1
           fi
-          npm pkg delete scripts.prepublishOnly
-          if node -p "require('./package.json').scripts.install !== undefined || require('./package.json').scripts.prepublishOnly !== undefined" | grep -q true; then
-            echo "::error::package.json still has scripts.install or scripts.prepublishOnly right before npm publish -- refusing to publish"
-            exit 1
-          fi
+          npm pack --dry-run --json > pack.json
+          node -e '
+            const [pack] = require("./pack.json");
+            const files = pack.files.map((f) => f.path);
+            for (const p of ["binding.gyp", "addon/", "native/", "scripts/"]) {
+              if (files.some((f) => f === p || f.startsWith(p))) throw new Error("the package would carry " + p);
+            }
+            for (const plat of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"]) {
+              if (!files.some((f) => f.startsWith("prebuilds/" + plat + "/") && f.endsWith(".node"))) throw new Error("no " + plat + " prebuild in the package");
+            }
+            if (!files.includes("prebuilds/win32-x64/macula.dll")) throw new Error("no macula.dll beside the win32 prebuild");
+            console.log(files.length + " files, five prebuilds, no build sources");
+          '
+          rm pack.json
 
-      # 0.13.4 confirmed (via this run's own log) that deleting
-      # scripts.prepublishOnly above genuinely works -- npm publish's log
-      # showed no "prepublishOnly" line at all, prepublishOnly definitely
-      # did not run a second time -- and the published package STILL had
-      # the stray install key regardless. So package.json's scripts.* is
-      # not the actual trigger; deleting prepublishOnly was necessary but
-      # not sufficient. The one remaining variable never eliminated in any
-      # of the five prior attempts: binding.gyp's mere PRESENCE in the
-      # directory `npm publish` runs from. It isn't needed for anything
-      # past this point (dist/ and prebuilds/ are already built), and
-      # "files" already excludes it from what gets packed either way --
-      # remove it outright before the real publish call.
-      - name: Remove binding.gyp -- nothing past this point needs it, and its presence is the one variable never yet eliminated
-        run: rm -f binding.gyp
-
-      # Auto-detects GitHub Actions' OIDC token when id-token: write is
-      # granted and this package has a Trusted Publisher configured on
-      # npmjs.com (Settings -> Trusted Publisher, repo macula-io/macula-ts,
-      # workflow release.yml) -- no login step, no stored secret. This
-      # CANNOT be configured until the package exists on npm at all
-      # (npm requires the package to already be there before a Trusted
-      # Publisher can be attached to it), so this workflow will not fire
-      # anything useful until AFTER the one-time manual first publish --
-      # see the release prep notes for that step.
       - run: npm publish --access public --provenance

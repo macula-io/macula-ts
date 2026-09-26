@@ -2,25 +2,34 @@
   "targets": [
     {
       "target_name": "macula_native",
-      "sources": ["addon/binding.cc"],
+      "sources": [
+        "addon/binding.cc"
+      ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")",
-        "cabi/build"
+        "native/build"
       ],
-      "dependencies": ["<!(node -p \"require('node-addon-api').gyp\")"],
-      "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+      "dependencies": [
+        "<!(node -p \"require('node-addon-api').gyp\")"
+      ],
+      "defines": [
+        "NAPI_DISABLE_CPP_EXCEPTIONS"
+      ],
       "conditions": [
         [
           "OS==\"linux\"",
           {
-            "libraries": ["../cabi/build/libmacula.a", "-lpthread"]
+            "libraries": [
+              "../native/build/libmacula.a",
+              "-lpthread"
+            ]
           }
         ],
         [
           "OS==\"mac\"",
           {
             "libraries": [
-              "../cabi/build/libmacula.a",
+              "../native/build/libmacula.a",
               "-framework CoreFoundation",
               "-framework Security"
             ]
@@ -30,11 +39,15 @@
           "OS==\"win\"",
           {
             "libraries": [
-              "../cabi/build/libmacula.a",
-              "ws2_32.lib",
-              "ntdll.lib",
-              "userenv.lib",
-              "bcrypt.lib"
+              "../native/build/macula.lib"
+            ],
+            "copies": [
+              {
+                "destination": "<(PRODUCT_DIR)",
+                "files": [
+                  "native/build/macula.dll"
+                ]
+              }
             ]
           }
         ]

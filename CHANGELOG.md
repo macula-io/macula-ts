@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- macula-ts binds macula-go's shared C ABI (`cabi/macula.h`, ABI 1) at
+  macula-go v0.16.0 instead of a C ABI of its own: the vendored `cabi/` Go
+  module is gone, and there is no Go code in this repository.
+  `scripts/build-native.sh` builds macula-go's cabi as a c-archive from the
+  release in `native/MACULA_GO`, taken through `go mod download` (checked
+  against the Go checksum database) and refused unless the tag is the
+  recorded commit. The addon checks the ABI version when it loads.
+- The TypeScript API is unchanged. Subscriptions and served procedures now
+  take from the ABI's inboxes on a thread each, with a cancel token each, so
+  stopping one never races its wait; bytes still come out as `"0x"` hex by
+  default, or tagged with `bytes: "tagged"`.
+- An error the ABI reports that has no class of its own (a timeout, a closed
+  pool, no provider, an invalid argument) is a `MaculaError` carrying its
+  `kind`; `ProviderError`, `RelayError`, `NotSharedError` and
+  `ContentUnavailableError` are unchanged. A stream's `recv` timeout is a
+  `MaculaError` of kind `timeout`.
+- Windows: the win32-x64 prebuild links macula-go's DLL (c-shared, with
+  `macula.dll` beside the `.node`) instead of the c-archive. node-gyp links
+  the addon with MSVC, whose C runtime never runs the MinGW constructor that
+  starts Go's runtime in a c-archive, so the first call into Go waited for
+  ever: measured in this release's CI, which is the first to load the win32
+  prebuild at all. Earlier win32 prebuilds were built the same way and were
+  never run in CI; they very likely hang on first use.
+- Linux and macOS keep a single self-contained `.node` (c-archive).
+- Subscription.dropped(): events the inbox (256) dropped because the listener
+  was behind; a listener's JS falling behind now blocks its poll thread
+  instead of growing the heap, so the ABI's drop policy applies.
+- Terminating a worker thread under a live listener no longer aborts the
+  process.
+- Prebuilds are built from source per platform in CI, attested at release,
+  and packed into the npm package; they are no longer committed by a bot
+  (fixes macula-ts#2). `prebuilds.yml` is replaced by `prebuild-matrix.yml`,
+  and `package.json` has no `prepublishOnly`.
+
 ## [0.21.0] - 2026-09-26
 
 ### Added

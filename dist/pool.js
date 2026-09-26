@@ -7,8 +7,8 @@
 // pinned.
 import { native } from "./binding.js";
 import { Stream } from "./stream.js";
-import { DEFAULT_CONTENT_TIMEOUT_MS, contentError, mcid50 } from "./content.js";
-import { DEFAULT_CALL_TIMEOUT_MS, bytesModeFor, callError, hex, id32, } from "./wire.js";
+import { DEFAULT_CONTENT_TIMEOUT_MS, mcid50 } from "./content.js";
+import { DEFAULT_CALL_TIMEOUT_MS, MaculaError, bytesOut, hex, id32, } from "./wire.js";
 /** macula 12's record types. */
 export var RecordType;
 (function (RecordType) {
@@ -28,6 +28,11 @@ export class Subscription {
     constructor(handle, closed) {
         this.handle = handle;
         this.closed = closed;
+    }
+    /** Events dropped because onEvent was behind: the inbox holds 256, and a
+     * full one drops the newest. */
+    dropped() {
+        return native.subscriptionDropped(this.handle);
     }
     /** Ends the subscription on every link. */
     async stop() {
@@ -84,19 +89,17 @@ export class Pool {
     }
     /** Every link the pool holds. */
     status() {
-        return JSON.parse(native.poolStatus(this.live())) ?? [];
+        // The ABI carries flags as 0 or 1.
+        const links = JSON.parse(native.poolStatus(this.live())) ?? [];
+        return links.map((l) => ({ station: l.station, host: l.host, port: l.port, direct: l.direct === 1, up: l.up === 1 }));
     }
     /** Calls procedure in realm at a provider (any trusted one unless
      * `provider` names one) by direct dial. A provider's ERROR is thrown as a
      * ProviderError, a station's relay error as a RelayError. */
     async call(realm, procedure, payload = {}, options = {}) {
-        try {
-            const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes));
-            return JSON.parse(result);
-        }
-        catch (e) {
-            throw callError(e);
-        }
+        bytesOut(null, options.bytes);
+        const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+        return bytesOut(JSON.parse(result), options.bytes);
     }
     /** The procedure's trusted providers, freshest first. */
     async providers(realm, procedure, options = {}) {
@@ -113,14 +116,15 @@ export class Pool {
     async subscribe(realm, topic, onEvent, options = {}) {
         let settle = () => { };
         const closed = new Promise((resolve) => (settle = resolve));
-        const handle = await native.poolSubscribe(this.live(), id32(realm, "realm"), topic, bytesModeFor(options.bytes), (d) => {
+        bytesOut(null, options.bytes);
+        const handle = await native.poolSubscribe(this.live(), id32(realm, "realm"), topic, (d) => {
             if (d.kind === "closed") {
                 settle(d.json === "" ? null : d.json);
                 return;
             }
             const e = JSON.parse(d.json);
             onEvent({ publisher: e.publisher, realm: e.realm, topic: e.topic, seq: e.seq, publishedAt: e.published_at,
-                payload: e.payload, deliveredVia: e.delivered_via });
+                payload: bytesOut(e.payload, options.bytes), deliveredVia: e.delivered_via });
         });
         return new Subscription(handle, closed);
     }
@@ -130,10 +134,11 @@ export class Pool {
      * DHT; a procedure in this node's own namespace (ownProcedure) needs
      * neither, and another node's namespace is refused. */
     async serve(realm, procedure, handler, options = {}) {
-        const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, bytesModeFor(options.bytes), (d) => {
+        bytesOut(null, options.bytes);
+        const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, (d) => {
             if (d.kind !== "request")
                 return;
-            void answer(d, handler);
+            void answer(d, handler, options.bytes);
         });
         return new Served(handle);
     }
@@ -141,7 +146,8 @@ export class Pool {
      * session. The stream is closed when the handler returns without ending
      * it, aborted with code error when it throws, and released either way. */
     async serveStream(realm, procedure, mode, handler, options = {}) {
-        const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode, bytesModeFor(options.bytes), (d) => {
+        bytesOut(null, options.bytes);
+        const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode, (d) => {
             if (d.kind !== "request")
                 return;
             void runStream(new Stream(d.handle, options.bytes), handler);
@@ -151,33 +157,32 @@ export class Pool {
     /** Opens a stream of mode on procedure in realm at a provider, by direct
      * dial. A refusal arrives on its first recv(). */
     async openStream(realm, procedure, mode, payload = {}, options = {}) {
-        try {
-            const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode, JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"), options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
-            return new Stream(handle, options.bytes);
-        }
-        catch (e) {
-            throw callError(e);
-        }
+        bytesOut(null, options.bytes);
+        const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode, JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"), options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+        return new Stream(handle, options.bytes);
     }
     /** The verified record under key, or null when there is none. */
     async findRecord(key, options = {}) {
+        bytesOut(null, options.bytes);
         try {
-            return toRecord(JSON.parse(await native.poolFindRecord(this.live(), id32(key, "key"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+            return toRecord(JSON.parse(await native.poolFindRecord(this.live(), id32(key, "key"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)), options.bytes);
         }
         catch (e) {
-            if (e instanceof Error && e.message === "not_found")
+            if (e instanceof MaculaError && e.kind === "not_found")
                 return null;
             throw e;
         }
     }
     /** Every verified record under key, and how many did not verify. */
     async findRecords(key, options = {}) {
-        return toRecords(JSON.parse(await native.poolFindRecords(this.live(), id32(key, "key"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+        bytesOut(null, options.bytes);
+        return toRecords(JSON.parse(await native.poolFindRecords(this.live(), id32(key, "key"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)), options.bytes);
     }
     /** Every verified record of type the station holds, and how many did not
      * verify. */
     async findRecordsByType(type, options = {}) {
-        return toRecords(JSON.parse(await native.poolFindRecordsByType(this.live(), type, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS, bytesModeFor(options.bytes))));
+        bytesOut(null, options.bytes);
+        return toRecords(JSON.parse(await native.poolFindRecordsByType(this.live(), type, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)), options.bytes);
     }
     /** Shares data in realm: this node keeps it, serves it on its own
      * `~<node_id>/content_v1` and announces it, renewing the announcement until
@@ -197,12 +202,16 @@ export class Pool {
      * ContentUnavailableError. */
     async getContent(realm, mcid, options = {}) {
         const asked = mcid50(mcid);
-        try {
-            return await native.poolGetContent(this.live(), id32(realm, "realm"), asked, options.maxBytes ?? 0, options.maxChunks ?? 0, options.parallel ?? 0, options.chunkTimeoutMs ?? 0, options.timeoutMs ?? DEFAULT_CONTENT_TIMEOUT_MS);
-        }
-        catch (e) {
-            throw contentError(e);
-        }
+        const bounds = {};
+        if (options.maxBytes)
+            bounds.max_bytes = options.maxBytes;
+        if (options.maxChunks)
+            bounds.max_chunks = options.maxChunks;
+        if (options.parallel)
+            bounds.parallel = options.parallel;
+        if (options.chunkTimeoutMs)
+            bounds.chunk_timeout_ms = options.chunkTimeoutMs;
+        return await native.poolGetContent(this.live(), id32(realm, "realm"), asked, Object.keys(bounds).length === 0 ? "" : JSON.stringify(bounds), options.timeoutMs ?? DEFAULT_CONTENT_TIMEOUT_MS);
     }
     /** Puts a signed record's wire bytes in the DHT. */
     async putRecord(wire, options = {}) {
@@ -222,10 +231,10 @@ export class Pool {
     }
 }
 /** Answers one served call with the handler's result or its error, once. */
-async function answer(d, handler) {
+async function answer(d, handler, bytes) {
     const r = JSON.parse(d.json);
-    const request = { caller: r.caller, realm: r.realm, procedure: r.procedure, payload: r.payload,
-        deadlineMs: r.deadline_ms };
+    const request = { caller: r.caller, realm: r.realm, procedure: r.procedure,
+        payload: bytesOut(r.payload, bytes), deadlineMs: r.deadline_ms };
     try {
         native.pendingReply(d.handle, JSON.stringify(await handler(request)));
     }
@@ -251,11 +260,13 @@ async function runStream(stream, handler) {
         await stream.free();
     }
 }
-function toRecord(r) {
-    return { type: r.type, keyId: r.key_id, createdAt: r.created_at, expiresAt: r.expires_at, payload: r.payload,
-        wire: r.wire };
+// A record's payload follows the caller's bytes option; its wire bytes are
+// always tagged.
+function toRecord(r, bytes) {
+    return { type: r.type, keyId: r.key_id, createdAt: r.created_at, expiresAt: r.expires_at,
+        payload: bytesOut(r.payload, bytes), wire: r.wire };
 }
-function toRecords(out) {
-    return { records: (out.records ?? []).map(toRecord), dropped: out.dropped ?? 0 };
+function toRecords(out, bytes) {
+    return { records: (out.records ?? []).map((r) => toRecord(r, bytes)), dropped: out.dropped ?? 0 };
 }
 //# sourceMappingURL=pool.js.map

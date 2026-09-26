@@ -1,41 +1,43 @@
-// N-API glue for macula-ts, purpose-built for exactly the functions cabi/
-// exports over macula-go's macula 12 API. libmacula.a (go build
-// -buildmode=c-archive) is linked statically into this addon, so the published
-// .node file is self-contained.
+// N-API glue for macula-ts over macula-go's shared C ABI (cabi/macula.h, ABI
+// 1). libmacula.a, built from macula-go's cabi/ at the release in
+// native/MACULA_GO (go build -buildmode=c-archive), is linked statically into
+// this addon, so the published .node file is self-contained.
 //
-// Handles: a Go value crosses as a uintptr_t from runtime/cgo.Handle, surfaced
-// to JS as a BigInt so no precision is lost; ToHandle also accepts a Number.
+// Handles: a Go value crosses as a macula_handle (uintptr_t), surfaced to JS
+// as a BigInt so no precision is lost; ToHandle also accepts a Number.
 //
-// Threads: every call that does network I/O, or may wait on QUIC flow control,
-// runs on a worker thread through Job, a single Napi::AsyncWorker that returns
-// a Promise; nothing blocks the event loop. Events, served calls and served
-// streams arrive on Go threads and reach JS through a ThreadSafeFunction per
-// listener; the C trampolines below only copy data and queue it.
+// Threads: every call that does network I/O, or may wait on QUIC flow
+// control, runs on a worker thread through Job, a single Napi::AsyncWorker
+// that returns a Promise; nothing blocks the event loop. The ABI never calls
+// back into the host: a subscription's events, and a served procedure's calls
+// and sessions, wait in an inbox. Each listener gets a thread of its own that
+// takes from the inbox (macula_*_next, waiting with a cancel token of its own)
+// and hands every item to JS through a ThreadSafeFunction.
 //
-// Errors: cabi's err_out strings are freed here and become rejected Promises
-// (or thrown errors for the few synchronous calls).
+// Errors: the ABI's err_out is JSON with a fixed kind (CONTRACT.md "Errors").
+// It is freed here and becomes the message of a rejected Promise (or a thrown
+// error for the few synchronous calls), which src/binding.ts turns into the
+// matching TypeScript error.
 #include <napi.h>
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
-#include "libmacula.h"
+extern "C" {
+#include "macula.h"
+}
+
+static_assert(MACULA_ABI_VERSION == 1, "this addon is written against macula C ABI 1");
 
 namespace {
-
-// TakeErr moves a cabi error string into a std::string and frees it; empty
-// when there was none.
-std::string TakeErr(char* errOut) {
-  if (errOut == nullptr) return std::string();
-  std::string msg(errOut);
-  macula_free_string(errOut);
-  return msg;
-}
 
 std::string TakeString(char* s) {
   if (s == nullptr) return std::string();
@@ -45,19 +47,19 @@ std::string TakeString(char* s) {
 }
 
 bool ThrowIfErr(Napi::Env env, char* errOut) {
-  std::string msg = TakeErr(errOut);
+  std::string msg = TakeString(errOut);
   if (msg.empty()) return false;
   Napi::Error::New(env, msg).ThrowAsJavaScriptException();
   return true;
 }
 
-uintptr_t ToHandle(const Napi::Env& env, const Napi::Value& v, bool* ok) {
+macula_handle ToHandle(const Napi::Env& env, const Napi::Value& v, bool* ok) {
   *ok = true;
   if (v.IsBigInt()) {
     bool lossless = false;
-    return static_cast<uintptr_t>(v.As<Napi::BigInt>().Uint64Value(&lossless));
+    return static_cast<macula_handle>(v.As<Napi::BigInt>().Uint64Value(&lossless));
   }
-  if (v.IsNumber()) return static_cast<uintptr_t>(v.As<Napi::Number>().Int64Value());
+  if (v.IsNumber()) return static_cast<macula_handle>(v.As<Napi::Number>().Int64Value());
   *ok = false;
   Napi::TypeError::New(env, "expected a BigInt or Number handle").ThrowAsJavaScriptException();
   return 0;
@@ -79,27 +81,32 @@ std::vector<uint8_t> ArgBytes(const Napi::CallbackInfo& info, size_t i) {
   return std::vector<uint8_t>(a.Data(), a.Data() + a.ByteLength());
 }
 
-// Arg32 reads a 32-byte id argument; absent (null or undefined) is allowed
-// when optional, and anything else of the wrong size is an error.
-bool Arg32(const Napi::CallbackInfo& info, size_t i, bool optional, std::vector<uint8_t>* out) {
+// ArgFixed reads an argument of exactly n bytes; absent (null or undefined) is
+// allowed when optional, and anything else of the wrong size is an error.
+bool ArgFixed(const Napi::CallbackInfo& info, size_t i, size_t n, bool optional, std::vector<uint8_t>* out) {
   Napi::Env env = info.Env();
   if (info.Length() <= i || info[i].IsNull() || info[i].IsUndefined()) {
     if (optional) return true;
-    Napi::TypeError::New(env, "expected a 32-byte id").ThrowAsJavaScriptException();
+    Napi::TypeError::New(env, "expected " + std::to_string(n) + " bytes").ThrowAsJavaScriptException();
     return false;
   }
-  if (!info[i].IsTypedArray() || info[i].As<Napi::Uint8Array>().ByteLength() != 32) {
-    Napi::TypeError::New(env, "expected a 32-byte id").ThrowAsJavaScriptException();
+  if (!info[i].IsTypedArray() || info[i].As<Napi::Uint8Array>().ByteLength() != n) {
+    Napi::TypeError::New(env, "expected " + std::to_string(n) + " bytes").ThrowAsJavaScriptException();
     return false;
   }
   auto a = info[i].As<Napi::Uint8Array>();
-  out->assign(a.Data(), a.Data() + 32);
+  out->assign(a.Data(), a.Data() + n);
   return true;
 }
 
-unsigned char* Ptr(std::vector<uint8_t>& v) { return v.empty() ? nullptr : v.data(); }
+bool Arg32(const Napi::CallbackInfo& info, size_t i, bool optional, std::vector<uint8_t>* out) {
+  return ArgFixed(info, i, 32, optional, out);
+}
 
-// Job runs one cabi call on a worker thread and settles a Promise with what it
+uint8_t* Ptr(std::vector<uint8_t>& v) { return v.empty() ? nullptr : v.data(); }
+const char* C(const std::string& s) { return s.c_str(); }
+
+// Job runs one ABI call on a worker thread and settles a Promise with what it
 // produced.
 class Job : public Napi::AsyncWorker {
  public:
@@ -111,16 +118,15 @@ class Job : public Napi::AsyncWorker {
   Napi::Promise Promise() { return deferred_.Promise(); }
 
   void Fail(char* errOut) {
-    std::string msg = TakeErr(errOut);
+    std::string msg = TakeString(errOut);
     if (!msg.empty()) SetError(msg);
   }
 
-  void Refuse(const std::string& msg) { SetError(msg); }
-
   std::string text;
-  uintptr_t handle = 0;
+  macula_handle handle = 0;
   std::vector<uint8_t> bytes;
   std::function<void()> onOK;
+  std::function<void()> onFail;
 
  protected:
   void Execute() override { run_(*this); }
@@ -147,6 +153,7 @@ class Job : public Napi::AsyncWorker {
 
   void OnError(const Napi::Error& e) override {
     Napi::HandleScope scope(Env());
+    if (onFail) onFail();
     deferred_.Reject(e.Value());
   }
 
@@ -163,80 +170,163 @@ Napi::Value Queue(Napi::Env env, Job::Result result, std::function<void(Job&)> r
   return promise;
 }
 
-// Listener is one JS callback that Go threads deliver to: a subscription's
-// events, a served procedure's calls, or a served stream procedure's
-// sessions. It lives as long as the process may still deliver to it; its
-// ThreadSafeFunction is released when JS stops the listener.
-struct Listener {
-  Napi::ThreadSafeFunction tsfn;
-};
+// --- listeners: an inbox drained on a thread of its own ------------------
 
+// Delivery is what a listener hands to JS: an event, a request with the
+// pending call's or stream's handle, or the closing notice (last).
 struct Delivery {
   std::string kind;
   std::string json;
   uint64_t handle = 0;
-  // last marks a subscription's final delivery, after which its listener is
-  // released: the Go side delivers nothing to it after "closed".
+  // last is the closing notice; source is then the ended listener's handle,
+  // which leaves the registry.
   bool last = false;
-  Listener* listener = nullptr;
+  macula_handle source = 0;
 };
 
-void Deliver(void* user_data, Delivery* d) {
-  auto* listener = static_cast<Listener*>(user_data);
-  d->listener = listener;
-  napi_status status = listener->tsfn.NonBlockingCall(d, [](Napi::Env env, Napi::Function fn, Delivery* data) {
+// Poller drains one inbox: a subscription's (events) or a served procedure's
+// (requests). It is shared by its thread and the registry, so stop can reach
+// it while the thread lives, and nothing frees it under either.
+//
+// Its ThreadSafeFunction holds at most kQueue deliveries: a listener whose JS
+// is behind blocks the poll thread, the ABI's inbox fills, and the ABI's own
+// policy applies (a subscription drops the newest and counts it; a served
+// call waits for room until its deadline).
+//
+// Lifetime: the normal end is the source ending (stopped, or its pool
+// closed): the poll delivers the closing notice, whose JS side removes the
+// env cleanup hook and detaches the thread. When the env is torn down first
+// (a worker terminated), the cleanup hook aborts the ThreadSafeFunction,
+// which wakes a blocked delivery, cancels the wait and joins the thread, so
+// no poll outlives its env.
+struct Poller {
+  enum class Kind { kSubscription, kServed };
+
+  Kind kind;
+  napi_env env = nullptr;
+  macula_handle source = 0;
+  macula_handle cancel = 0;
+  Napi::ThreadSafeFunction tsfn;
+  std::thread thread;  // touched on the env's main thread only
+  std::atomic<bool> stopping{false};
+  // aborted: the env refused a delivery (it is being torn down); the poll
+  // delivers nothing more and does not release the ThreadSafeFunction.
+  std::atomic<bool> aborted{false};
+};
+
+constexpr size_t kQueue = 256;
+
+// g_pollers maps a subscription's or served procedure's handle to its poller,
+// so stop can find it. Handles are unique across the process; the mutex
+// covers several envs (workers).
+std::mutex g_pollers_mu;
+std::unordered_map<macula_handle, std::shared_ptr<Poller>> g_pollers;
+
+std::shared_ptr<Poller> TakePoller(macula_handle source) {
+  std::lock_guard<std::mutex> lock(g_pollers_mu);
+  auto it = g_pollers.find(source);
+  if (it == g_pollers.end()) return nullptr;
+  auto poller = it->second;
+  g_pollers.erase(it);
+  return poller;
+}
+
+void CleanupPoller(void* arg);
+
+// Deliver hands d to JS, waiting while the queue is full. False when the env
+// refused it: the poll must stop.
+bool Deliver(const std::shared_ptr<Poller>& poller, Delivery* d) {
+  napi_status status = poller->tsfn.BlockingCall(d, [](Napi::Env env, Napi::Function fn, Delivery* data) {
+    if (env == nullptr) {
+      delete data;
+      return;
+    }
     Napi::Object msg = Napi::Object::New(env);
     msg.Set("kind", Napi::String::New(env, data->kind));
     msg.Set("json", Napi::String::New(env, data->json));
     msg.Set("handle", Napi::BigInt::New(env, data->handle));
     fn.Call({msg});
     if (data->last) {
-      data->listener->tsfn.Release();
-      delete data->listener;
+      // The poll is over: no cleanup hook is needed, and the thread ends on
+      // its own.
+      std::shared_ptr<Poller> poller = TakePoller(data->source);
+      if (poller) {
+        napi_remove_env_cleanup_hook(poller->env, CleanupPoller, poller.get());
+        if (poller->thread.joinable()) poller->thread.detach();
+      }
     }
     delete data;
   });
-  if (status != napi_ok) delete d;
+  if (status == napi_ok) return true;
+  delete d;
+  poller->aborted.store(true);
+  return false;
 }
 
-// g_served maps a served procedure's handle to its listener, touched only on
-// the main thread (a Job's OnOK), so servedStop can release it. A listener is
-// released, not deleted, at stop: a call already in flight on a Go thread may
-// still deliver to it, and NonBlockingCall on a released ThreadSafeFunction
-// refuses safely only while the Listener itself is alive.
-std::unordered_map<uintptr_t, Listener*> g_served;
-
-}  // namespace
-
-extern "C" void OnMaculaEvent(void* user_data, const char* event_json) {
-  auto* d = new Delivery();
-  d->kind = "event";
-  d->json.assign(event_json != nullptr ? event_json : "");
-  Deliver(user_data, d);
+// ErrKind is the "kind" of the ABI's error JSON, found by its key (the keys
+// come sorted, so "code" may precede it), without a JSON parser. The kinds are
+// plain identifiers, so the value holds no escaped quote.
+std::string ErrKind(const std::string& err) {
+  const std::string key = "\"kind\":\"";
+  size_t at = err.find(key);
+  if (at == std::string::npos) return std::string();
+  at += key.size();
+  size_t end = err.find('"', at);
+  return end == std::string::npos ? std::string() : err.substr(at, end - at);
 }
 
-extern "C" void OnMaculaClosed(void* user_data, const char* err_message) {
-  auto* d = new Delivery();
-  d->kind = "closed";
-  d->last = true;
-  d->json.assign(err_message != nullptr ? err_message : "");
-  Deliver(user_data, d);
+// Poll takes from the poller's inbox until its source ends, then delivers the
+// closing notice: empty when it ended as asked (stopped, or its pool closed),
+// the error's JSON when it failed. Every item is handed on in order.
+void Poll(std::shared_ptr<Poller> poller) {
+  std::string why;
+  for (;;) {
+    int32_t closed = 0;
+    char* errOut = nullptr;
+    macula_handle item = 0;
+    char* json = poller->kind == Poller::Kind::kSubscription
+                     ? macula_subscription_next(poller->source, 0, poller->cancel, &closed, &errOut)
+                     : macula_served_next(poller->source, 0, poller->cancel, &item, &closed, &errOut);
+    std::string err = TakeString(errOut);
+    if (!err.empty()) {
+      // Stopping cancels the wait, and then frees the source under it: both
+      // end the poll as asked, not as a failure.
+      std::string kind = ErrKind(err);
+      if (!(poller->stopping.load() && (kind == "cancelled" || kind == "invalid_handle"))) why = err;
+      break;
+    }
+    if (json == nullptr) {
+      if (closed == 1) break;
+      continue;
+    }
+    auto* d = new Delivery();
+    d->kind = poller->kind == Poller::Kind::kSubscription ? "event" : "request";
+    d->json = TakeString(json);
+    d->handle = static_cast<uint64_t>(item);
+    if (!Deliver(poller, d)) break;
+  }
+  if (!poller->aborted.load()) {
+    auto* d = new Delivery();
+    d->kind = "closed";
+    d->json = why;
+    d->last = true;
+    d->source = poller->source;
+    if (Deliver(poller, d)) poller->tsfn.Release();
+  }
+  macula_cancel_free(poller->cancel);
 }
 
-extern "C" void OnMaculaRequest(void* user_data, uintptr_t handle, const char* request_json) {
-  auto* d = new Delivery();
-  d->kind = "request";
-  d->handle = static_cast<uint64_t>(handle);
-  d->json.assign(request_json != nullptr ? request_json : "");
-  Deliver(user_data, d);
-}
-
-namespace {
-
-Listener* NewListener(Napi::Env env, const Napi::Value& callback, const char* name) {
-  auto* listener = new Listener();
-  listener->tsfn = Napi::ThreadSafeFunction::New(env, callback.As<Napi::Function>(), name, 0, 1);
-  return listener;
+// CleanupPoller runs on the env's main thread as the env is torn down, before
+// the ThreadSafeFunction's own cleanup (hooks run last registered first): it
+// wakes and ends the poll, and waits for its thread.
+void CleanupPoller(void* arg) {
+  auto* raw = static_cast<Poller*>(arg);
+  std::shared_ptr<Poller> poller = TakePoller(raw->source);
+  raw->stopping.store(true);
+  raw->aborted.store(true);
+  raw->tsfn.Abort();
+  macula_cancel(raw->cancel);
+  if (raw->thread.joinable()) raw->thread.join();
 }
 
 bool RequireFunction(const Napi::CallbackInfo& info, size_t i) {
@@ -245,13 +335,68 @@ bool RequireFunction(const Napi::CallbackInfo& info, size_t i) {
   return false;
 }
 
+// StartListener queues open (which returns the source's handle) on a worker,
+// then, on the main thread, registers the poller and starts its thread.
+Napi::Value StartListener(const Napi::CallbackInfo& info, size_t callbackArg, Poller::Kind kind, const char* name,
+                          std::function<macula_handle(char**)> open) {
+  Napi::Env env = info.Env();
+  auto poller = std::make_shared<Poller>();
+  poller->kind = kind;
+  poller->env = env;
+  poller->cancel = macula_cancel_new();
+  poller->tsfn = Napi::ThreadSafeFunction::New(env, info[callbackArg].As<Napi::Function>(), name, kQueue, 1);
+  auto* job = new Job(env, Job::Result::kHandle, [open](Job& j) {
+    char* errOut = nullptr;
+    j.handle = open(&errOut);
+    j.Fail(errOut);
+  });
+  job->onOK = [job, poller]() {
+    poller->source = job->handle;
+    {
+      std::lock_guard<std::mutex> lock(g_pollers_mu);
+      g_pollers[job->handle] = poller;
+    }
+    napi_add_env_cleanup_hook(poller->env, CleanupPoller, poller.get());
+    poller->thread = std::thread(Poll, poller);
+  };
+  // A source that failed to open never polls: release what was made for it.
+  job->onFail = [poller]() {
+    poller->tsfn.Release();
+    macula_cancel_free(poller->cancel);
+  };
+  Napi::Promise promise = job->Promise();
+  job->Queue();
+  return promise;
+}
+
+// StopListener ends a listener: it cancels the poll's wait, then runs stop (on
+// a worker), which ends the source; the poll delivers the closing notice.
+Napi::Value StopListener(const Napi::CallbackInfo& info, std::function<void(macula_handle, char**)> stop) {
+  bool ok = false;
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
+  if (!ok) return info.Env().Null();
+  {
+    std::lock_guard<std::mutex> lock(g_pollers_mu);
+    auto it = g_pollers.find(h);
+    if (it != g_pollers.end()) {
+      it->second->stopping.store(true);
+      macula_cancel(it->second->cancel);
+    }
+  }
+  return Queue(info.Env(), Job::Result::kVoid, [h, stop](Job& job) {
+    char* errOut = nullptr;
+    stop(h, &errOut);
+    job.Fail(errOut);
+  });
+}
+
 // --- keys ---------------------------------------------------------------
 
 Napi::Value KeyGenerate(const Napi::CallbackInfo& info) {
   std::string profile = ArgString(info, 0);
   return Queue(info.Env(), Job::Result::kHandle, [profile](Job& job) {
     char* errOut = nullptr;
-    job.handle = macula_key_generate(const_cast<char*>(profile.c_str()), &errOut);
+    job.handle = macula_key_generate(C(profile), 0, &errOut);
     job.Fail(errOut);
   });
 }
@@ -260,19 +405,19 @@ Napi::Value KeyLoad(const Napi::CallbackInfo& info) {
   std::string path = ArgString(info, 0), profile = ArgString(info, 1);
   return Queue(info.Env(), Job::Result::kHandle, [path, profile](Job& job) {
     char* errOut = nullptr;
-    job.handle = macula_key_load(const_cast<char*>(path.c_str()), const_cast<char*>(profile.c_str()), &errOut);
+    job.handle = macula_key_load(C(path), C(profile), &errOut);
     job.Fail(errOut);
   });
 }
 
 Napi::Value KeySave(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   std::string path = ArgString(info, 1);
   return Queue(info.Env(), Job::Result::kVoid, [h, path](Job& job) {
     char* errOut = nullptr;
-    macula_key_save(h, const_cast<char*>(path.c_str()), &errOut);
+    macula_key_save(h, C(path), &errOut);
     job.Fail(errOut);
   });
 }
@@ -280,7 +425,7 @@ Napi::Value KeySave(const Napi::CallbackInfo& info) {
 Napi::Value KeyNodeId(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   bool ok = false;
-  uintptr_t h = ToHandle(env, info[0], &ok);
+  macula_handle h = ToHandle(env, info[0], &ok);
   if (!ok) return env.Null();
   auto out = Napi::Buffer<uint8_t>::New(env, 32);
   char* errOut = nullptr;
@@ -289,7 +434,7 @@ Napi::Value KeyNodeId(const Napi::CallbackInfo& info) {
   return out;
 }
 
-Napi::Value BytesResult(Napi::Env env, unsigned char* data, size_t len, char* errOut) {
+Napi::Value BytesResult(Napi::Env env, uint8_t* data, size_t len, char* errOut) {
   if (ThrowIfErr(env, errOut)) return env.Null();
   auto out = Napi::Buffer<uint8_t>::Copy(env, data, len);
   if (data != nullptr) macula_free_bytes(data);
@@ -299,18 +444,18 @@ Napi::Value BytesResult(Napi::Env env, unsigned char* data, size_t len, char* er
 Napi::Value KeyPublicKey(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   bool ok = false;
-  uintptr_t h = ToHandle(env, info[0], &ok);
+  macula_handle h = ToHandle(env, info[0], &ok);
   if (!ok) return env.Null();
   size_t len = 0;
   char* errOut = nullptr;
-  unsigned char* data = macula_key_public_key(h, &len, &errOut);
+  uint8_t* data = macula_key_public_key(h, &len, &errOut);
   return BytesResult(env, data, len, errOut);
 }
 
 Napi::Value KeyProfile(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   bool ok = false;
-  uintptr_t h = ToHandle(env, info[0], &ok);
+  macula_handle h = ToHandle(env, info[0], &ok);
   if (!ok) return env.Null();
   char* errOut = nullptr;
   char* name = macula_key_profile(h, &errOut);
@@ -322,13 +467,13 @@ Napi::Value KeyProfile(const Napi::CallbackInfo& info) {
 // long enough to keep off the event loop.
 Napi::Value KeySign(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   std::vector<uint8_t> data = ArgBytes(info, 1);
   return Queue(info.Env(), Job::Result::kBytes, [=](Job& job) mutable {
     size_t len = 0;
     char* errOut = nullptr;
-    unsigned char* out = macula_key_sign(h, Ptr(data), data.size(), &len, &errOut);
+    uint8_t* out = macula_key_sign(h, Ptr(data), data.size(), &len, &errOut);
     if (out != nullptr) {
       job.bytes.assign(out, out + len);
       macula_free_bytes(out);
@@ -346,8 +491,8 @@ Napi::Value Verify(const Napi::CallbackInfo& info) {
   std::vector<uint8_t> publicKey = ArgBytes(info, 2);
   std::string profile = ArgString(info, 3);
   char* errOut = nullptr;
-  int valid = macula_verify(Ptr(data), data.size(), Ptr(signature), signature.size(), Ptr(publicKey),
-                            publicKey.size(), const_cast<char*>(profile.c_str()), &errOut);
+  int32_t valid = macula_verify(Ptr(data), data.size(), Ptr(signature), signature.size(), Ptr(publicKey),
+                                publicKey.size(), C(profile), &errOut);
   if (ThrowIfErr(env, errOut)) return env.Null();
   return Napi::Boolean::New(env, valid == 1);
 }
@@ -357,17 +502,16 @@ Napi::Value Verify(const Napi::CallbackInfo& info) {
 // loop like keySign.
 Napi::Value KeyDeviceRequestProof(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
-  if (!ok) return info.Env().Null();
-  std::vector<uint8_t> realm = ArgBytes(info, 1);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm;
+  if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
   std::string procedure = ArgString(info, 2);
   std::string request = ArgString(info, 3);
-  int rule = static_cast<int>(ArgInt(info, 4));
+  int32_t rule = static_cast<int32_t>(ArgInt(info, 4));
   return Queue(info.Env(), Job::Result::kString, [=](Job& job) mutable {
     char* errOut = nullptr;
-    char* proof = macula_key_device_request_proof(h, Ptr(realm), const_cast<char*>(procedure.c_str()),
-                                                  const_cast<char*>(request.c_str()), rule, &errOut);
-    if (proof != nullptr) job.text = TakeString(proof);
+    char* proof = macula_key_device_request_proof(h, Ptr(realm), C(procedure), C(request), rule, &errOut);
+    job.text = TakeString(proof);
     job.Fail(errOut);
   });
 }
@@ -377,26 +521,22 @@ Napi::Value KeyDeviceRequestProof(const Napi::CallbackInfo& info) {
 Napi::Value DeviceRequestMessage(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   std::vector<uint8_t> publicKey = ArgBytes(info, 0);
-  std::vector<uint8_t> realm = ArgBytes(info, 1);
+  std::vector<uint8_t> realm, nonce;
+  if (!Arg32(info, 1, false, &realm) || !ArgFixed(info, 4, 16, false, &nonce)) return env.Null();
   std::string procedure = ArgString(info, 2);
   int64_t timestamp = ArgInt(info, 3);
-  std::vector<uint8_t> nonce = ArgBytes(info, 4);
   std::string request = ArgString(info, 5);
-  int rule = static_cast<int>(ArgInt(info, 6));
+  int32_t rule = static_cast<int32_t>(ArgInt(info, 6));
   size_t len = 0;
   char* errOut = nullptr;
-  unsigned char* out = macula_device_request_message(Ptr(publicKey), publicKey.size(), Ptr(realm),
-                                                     const_cast<char*>(procedure.c_str()), timestamp, Ptr(nonce),
-                                                     const_cast<char*>(request.c_str()), rule, &len, &errOut);
-  if (ThrowIfErr(env, errOut)) return env.Null();
-  Napi::Buffer<uint8_t> result = Napi::Buffer<uint8_t>::Copy(env, out, len);
-  macula_free_bytes(out);
-  return result;
+  uint8_t* out = macula_device_request_message(Ptr(publicKey), publicKey.size(), Ptr(realm), C(procedure), timestamp,
+                                               Ptr(nonce), C(request), rule, &len, &errOut);
+  return BytesResult(env, out, len, errOut);
 }
 
 Napi::Value KeyFree(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (ok) macula_key_free(h);
   return info.Env().Undefined();
 }
@@ -405,19 +545,21 @@ Napi::Value KeyFree(const Napi::CallbackInfo& info) {
 
 Napi::Value PoolConnect(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t key = ToHandle(info.Env(), info[0], &ok);
+  macula_handle key = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   std::string seeds = ArgString(info, 1), opts = ArgString(info, 2);
   return Queue(info.Env(), Job::Result::kHandle, [key, seeds, opts](Job& job) {
     char* errOut = nullptr;
-    job.handle = macula_pool_connect(key, const_cast<char*>(seeds.c_str()), const_cast<char*>(opts.c_str()), &errOut);
+    job.handle = macula_pool_connect(key, C(seeds), C(opts), 0, &errOut);
     job.Fail(errOut);
   });
 }
 
+// poolClose(pool): its subscriptions and served procedures end, and their
+// polls deliver their closing notices.
 Napi::Value PoolClose(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   return Queue(info.Env(), Job::Result::kVoid, [h](Job&) { macula_pool_close(h); });
 }
@@ -425,7 +567,7 @@ Napi::Value PoolClose(const Napi::CallbackInfo& info) {
 Napi::Value PoolNodeId(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   bool ok = false;
-  uintptr_t h = ToHandle(env, info[0], &ok);
+  macula_handle h = ToHandle(env, info[0], &ok);
   if (!ok) return env.Null();
   auto out = Napi::Buffer<uint8_t>::New(env, 32);
   char* errOut = nullptr;
@@ -437,7 +579,7 @@ Napi::Value PoolNodeId(const Napi::CallbackInfo& info) {
 Napi::Value PoolStatus(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   bool ok = false;
-  uintptr_t h = ToHandle(env, info[0], &ok);
+  macula_handle h = ToHandle(env, info[0], &ok);
   if (!ok) return env.Null();
   char* errOut = nullptr;
   char* json = macula_pool_status(h, &errOut);
@@ -445,20 +587,17 @@ Napi::Value PoolStatus(const Napi::CallbackInfo& info) {
   return Napi::String::New(env, TakeString(json));
 }
 
-// poolCall(pool, realm, procedure, payloadJson, provider|null, timeoutMs, bytesMode)
+// poolCall(pool, realm, procedure, payloadJson, provider|null, timeoutMs)
 Napi::Value PoolCall(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm, provider;
   if (!ok || !Arg32(info, 1, false, &realm) || !Arg32(info, 4, true, &provider)) return info.Env().Null();
   std::string procedure = ArgString(info, 2), payload = ArgString(info, 3);
   int64_t timeout = ArgInt(info, 5);
-  int mode = static_cast<int>(ArgInt(info, 6));
   return Queue(info.Env(), Job::Result::kString, [=](Job& job) mutable {
     char* errOut = nullptr;
-    char* out = macula_pool_call(h, Ptr(realm), const_cast<char*>(procedure.c_str()), const_cast<char*>(payload.c_str()),
-                                 Ptr(provider), timeout, mode, &errOut);
-    job.text = TakeString(out);
+    job.text = TakeString(macula_pool_call(h, Ptr(realm), C(procedure), C(payload), Ptr(provider), timeout, 0, &errOut));
     job.Fail(errOut);
   });
 }
@@ -466,14 +605,14 @@ Napi::Value PoolCall(const Napi::CallbackInfo& info) {
 // poolProviders(pool, realm, procedure, timeoutMs)
 Napi::Value PoolProviders(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm;
   if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
   std::string procedure = ArgString(info, 2);
   int64_t timeout = ArgInt(info, 3);
   return Queue(info.Env(), Job::Result::kString, [=](Job& job) mutable {
     char* errOut = nullptr;
-    job.text = TakeString(macula_pool_providers(h, Ptr(realm), const_cast<char*>(procedure.c_str()), timeout, &errOut));
+    job.text = TakeString(macula_pool_providers(h, Ptr(realm), C(procedure), timeout, 0, &errOut));
     job.Fail(errOut);
   });
 }
@@ -481,89 +620,86 @@ Napi::Value PoolProviders(const Napi::CallbackInfo& info) {
 // poolPublish(pool, realm, topic, payloadJson, ttlMs)
 Napi::Value PoolPublish(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm;
   if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
   std::string topic = ArgString(info, 2), payload = ArgString(info, 3);
   int64_t ttl = ArgInt(info, 4);
   return Queue(info.Env(), Job::Result::kVoid, [=](Job& job) mutable {
     char* errOut = nullptr;
-    macula_pool_publish(h, Ptr(realm), const_cast<char*>(topic.c_str()), const_cast<char*>(payload.c_str()), ttl, &errOut);
+    macula_pool_publish(h, Ptr(realm), C(topic), C(payload), ttl, &errOut);
     job.Fail(errOut);
   });
 }
 
-// poolSubscribe(pool, realm, topic, bytesMode, callback) -> Promise<handle>; the
-// callback gets {kind: "event"|"closed", json}.
+// poolSubscribe(pool, realm, topic, callback) -> Promise<handle>; the callback
+// gets {kind: "event", json} per event and, last, {kind: "closed", json: why,
+// or "" when it ended as asked}.
 Napi::Value PoolSubscribe(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm;
-  if (!ok || !Arg32(info, 1, false, &realm) || !RequireFunction(info, 4)) return info.Env().Null();
+  if (!ok || !Arg32(info, 1, false, &realm) || !RequireFunction(info, 3)) return info.Env().Null();
   std::string topic = ArgString(info, 2);
-  int mode = static_cast<int>(ArgInt(info, 3));
-  Listener* listener = NewListener(info.Env(), info[4], "macula-subscription");
-  return Queue(info.Env(), Job::Result::kHandle, [=](Job& job) mutable {
-    char* errOut = nullptr;
-    job.handle = macula_pool_subscribe(h, Ptr(realm), const_cast<char*>(topic.c_str()), OnMaculaEvent, OnMaculaClosed,
-                                       listener, mode, &errOut);
-    std::string msg = TakeErr(errOut);
-    if (!msg.empty()) {
-      listener->tsfn.Release();
-      job.Refuse(msg);
-    }
+  return StartListener(info, 3, Poller::Kind::kSubscription, "macula-subscription", [=](char** errOut) mutable {
+    return macula_pool_subscribe(h, Ptr(realm), C(topic), errOut);
   });
 }
 
-// subscriptionStop(handle): the subscription's own "closed" delivery follows;
-// the JS side releases nothing.
-Napi::Value SubscriptionStop(const Napi::CallbackInfo& info) {
+// subscriptionDropped(subscription) -> number: events the inbox dropped
+// because the listener was behind.
+Napi::Value SubscriptionDropped(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
-  if (!ok) return info.Env().Null();
-  return Queue(info.Env(), Job::Result::kVoid, [h](Job&) { macula_subscription_stop(h); });
+  macula_handle h = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Null();
+  char* errOut = nullptr;
+  uint64_t dropped = macula_subscription_dropped(h, &errOut);
+  if (ThrowIfErr(env, errOut)) return env.Null();
+  return Napi::Number::New(env, static_cast<double>(dropped));
 }
 
-// poolFindRecord(pool, key, timeoutMs, bytesMode)
+Napi::Value SubscriptionStop(const Napi::CallbackInfo& info) {
+  return StopListener(info, [](macula_handle h, char**) { macula_subscription_stop(h); });
+}
+
+// poolFindRecord(pool, key, timeoutMs)
 Napi::Value PoolFindRecord(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> key;
   if (!ok || !Arg32(info, 1, false, &key)) return info.Env().Null();
   int64_t timeout = ArgInt(info, 2);
-  int mode = static_cast<int>(ArgInt(info, 3));
   return Queue(info.Env(), Job::Result::kString, [=](Job& job) mutable {
     char* errOut = nullptr;
-    job.text = TakeString(macula_pool_find_record(h, Ptr(key), timeout, mode, &errOut));
+    job.text = TakeString(macula_pool_find_record(h, Ptr(key), timeout, 0, &errOut));
     job.Fail(errOut);
   });
 }
 
 Napi::Value PoolFindRecords(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> key;
   if (!ok || !Arg32(info, 1, false, &key)) return info.Env().Null();
   int64_t timeout = ArgInt(info, 2);
-  int mode = static_cast<int>(ArgInt(info, 3));
   return Queue(info.Env(), Job::Result::kString, [=](Job& job) mutable {
     char* errOut = nullptr;
-    job.text = TakeString(macula_pool_find_records(h, Ptr(key), timeout, mode, &errOut));
+    job.text = TakeString(macula_pool_find_records(h, Ptr(key), timeout, 0, &errOut));
     job.Fail(errOut);
   });
 }
 
-// poolFindRecordsByType(pool, type, timeoutMs, bytesMode)
+// poolFindRecordsByType(pool, type, timeoutMs)
 Napi::Value PoolFindRecordsByType(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
-  int type = static_cast<int>(ArgInt(info, 1));
+  int32_t type = static_cast<int32_t>(ArgInt(info, 1));
   int64_t timeout = ArgInt(info, 2);
-  int mode = static_cast<int>(ArgInt(info, 3));
   return Queue(info.Env(), Job::Result::kString, [=](Job& job) {
     char* errOut = nullptr;
-    job.text = TakeString(macula_pool_find_records_by_type(h, type, timeout, mode, &errOut));
+    job.text = TakeString(macula_pool_find_records_by_type(h, type, timeout, 0, &errOut));
     job.Fail(errOut);
   });
 }
@@ -571,13 +707,13 @@ Napi::Value PoolFindRecordsByType(const Napi::CallbackInfo& info) {
 // poolPutRecord(pool, wire, timeoutMs)
 Napi::Value PoolPutRecord(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   std::vector<uint8_t> wire = ArgBytes(info, 1);
   int64_t timeout = ArgInt(info, 2);
   return Queue(info.Env(), Job::Result::kVoid, [=](Job& job) mutable {
     char* errOut = nullptr;
-    macula_pool_put_record(h, Ptr(wire), wire.size(), timeout, &errOut);
+    macula_pool_put_record(h, Ptr(wire), wire.size(), timeout, 0, &errOut);
     job.Fail(errOut);
   });
 }
@@ -588,21 +724,17 @@ Napi::Value PoolPutRecord(const Napi::CallbackInfo& info) {
 // content id, 50 bytes).
 Napi::Value PoolShareContent(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm;
   if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
   std::vector<uint8_t> data = ArgBytes(info, 2);
   std::string name = ArgString(info, 3);
   int64_t timeout = ArgInt(info, 4);
   return Queue(info.Env(), Job::Result::kBytes, [=](Job& job) mutable {
-    size_t len = 0;
     char* errOut = nullptr;
-    unsigned char* out = macula_pool_share_content(h, Ptr(realm), Ptr(data), data.size(),
-                                                   const_cast<char*>(name.c_str()), timeout, &len, &errOut);
-    if (out != nullptr) {
-      job.bytes.assign(out, out + len);
-      macula_free_bytes(out);
-    }
+    uint8_t mcid[50];
+    macula_pool_share_content(h, Ptr(realm), Ptr(data), data.size(), C(name), timeout, 0, mcid, &errOut);
+    job.bytes.assign(mcid, mcid + 50);
     job.Fail(errOut);
   });
 }
@@ -610,36 +742,30 @@ Napi::Value PoolShareContent(const Napi::CallbackInfo& info) {
 // poolUnshareContent(pool, realm, mcid, timeoutMs)
 Napi::Value PoolUnshareContent(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
-  std::vector<uint8_t> realm;
-  if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
-  std::vector<uint8_t> mcid = ArgBytes(info, 2);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm, mcid;
+  if (!ok || !Arg32(info, 1, false, &realm) || !ArgFixed(info, 2, 50, false, &mcid)) return info.Env().Null();
   int64_t timeout = ArgInt(info, 3);
   return Queue(info.Env(), Job::Result::kVoid, [=](Job& job) mutable {
     char* errOut = nullptr;
-    macula_pool_unshare_content(h, Ptr(realm), Ptr(mcid), mcid.size(), timeout, &errOut);
+    macula_pool_unshare_content(h, Ptr(realm), Ptr(mcid), timeout, 0, &errOut);
     job.Fail(errOut);
   });
 }
 
-// poolGetContent(pool, realm, mcid, maxBytes, maxChunks, parallel,
-// chunkTimeoutMs, timeoutMs) -> Promise<Buffer>
+// poolGetContent(pool, realm, mcid, optionsJson, timeoutMs) -> Promise<Buffer>
 Napi::Value PoolGetContent(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
-  std::vector<uint8_t> realm;
-  if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
-  std::vector<uint8_t> mcid = ArgBytes(info, 2);
-  uint64_t maxBytes = static_cast<uint64_t>(ArgInt(info, 3));
-  int maxChunks = static_cast<int>(ArgInt(info, 4));
-  int parallel = static_cast<int>(ArgInt(info, 5));
-  int64_t chunkTimeout = ArgInt(info, 6);
-  int64_t timeout = ArgInt(info, 7);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm, mcid;
+  if (!ok || !Arg32(info, 1, false, &realm) || !ArgFixed(info, 2, 50, false, &mcid)) return info.Env().Null();
+  std::string options = ArgString(info, 3);
+  int64_t timeout = ArgInt(info, 4);
   return Queue(info.Env(), Job::Result::kBytes, [=](Job& job) mutable {
     size_t len = 0;
     char* errOut = nullptr;
-    unsigned char* out = macula_pool_get_content(h, Ptr(realm), Ptr(mcid), mcid.size(), maxBytes, maxChunks,
-                                                 parallel, chunkTimeout, timeout, &len, &errOut);
+    uint8_t* out = macula_pool_get_content(h, Ptr(realm), Ptr(mcid), options.empty() ? nullptr : C(options), timeout,
+                                           0, &len, &errOut);
     if (out != nullptr) {
       job.bytes.assign(out, out + len);
       macula_free_bytes(out);
@@ -650,67 +776,42 @@ Napi::Value PoolGetContent(const Napi::CallbackInfo& info) {
 
 // --- serving ------------------------------------------------------------
 
-// poolServe(pool, realm, procedure, bytesMode, callback) -> Promise<handle>; the
-// callback gets {kind: "request", handle, json} per CALL.
+// poolServe(pool, realm, procedure, callback) -> Promise<handle>; the callback
+// gets {kind: "request", handle, json} per CALL, handle the pending call.
 Napi::Value PoolServe(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm;
+  if (!ok || !Arg32(info, 1, false, &realm) || !RequireFunction(info, 3)) return info.Env().Null();
+  std::string procedure = ArgString(info, 2);
+  return StartListener(info, 3, Poller::Kind::kServed, "macula-serve", [=](char** errOut) mutable {
+    return macula_pool_serve(h, Ptr(realm), C(procedure), errOut);
+  });
+}
+
+// poolServeStream(pool, realm, procedure, mode, callback) -> Promise<handle>;
+// the callback gets {kind: "request", handle, json} per session, handle a
+// stream.
+Napi::Value PoolServeStream(const Napi::CallbackInfo& info) {
+  bool ok = false;
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm;
   if (!ok || !Arg32(info, 1, false, &realm) || !RequireFunction(info, 4)) return info.Env().Null();
   std::string procedure = ArgString(info, 2);
-  int mode = static_cast<int>(ArgInt(info, 3));
-  Listener* listener = NewListener(info.Env(), info[4], "macula-serve");
-  auto* job = new Job(info.Env(), Job::Result::kHandle, [=](Job& j) mutable {
-    char* errOut = nullptr;
-    j.handle = macula_pool_serve(h, Ptr(realm), const_cast<char*>(procedure.c_str()), OnMaculaRequest, listener, mode,
-                                 &errOut);
-    std::string msg = TakeErr(errOut);
-    if (!msg.empty()) {
-      listener->tsfn.Release();
-      j.Refuse(msg);
-    }
+  int32_t mode = static_cast<int32_t>(ArgInt(info, 3));
+  return StartListener(info, 4, Poller::Kind::kServed, "macula-serve-stream", [=](char** errOut) mutable {
+    return macula_pool_serve_stream(h, Ptr(realm), C(procedure), mode, errOut);
   });
-  job->onOK = [job, listener]() { g_served[job->handle] = listener; };
-  Napi::Promise promise = job->Promise();
-  job->Queue();
-  return promise;
-}
-
-// poolServeStream(pool, realm, procedure, mode, bytesMode, callback) -> Promise<handle>;
-// the callback gets {kind: "request", handle, json} per session, handle a stream.
-Napi::Value PoolServeStream(const Napi::CallbackInfo& info) {
-  bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
-  std::vector<uint8_t> realm;
-  if (!ok || !Arg32(info, 1, false, &realm) || !RequireFunction(info, 5)) return info.Env().Null();
-  std::string procedure = ArgString(info, 2);
-  int streamMode = static_cast<int>(ArgInt(info, 3));
-  int mode = static_cast<int>(ArgInt(info, 4));
-  Listener* listener = NewListener(info.Env(), info[5], "macula-serve-stream");
-  auto* job = new Job(info.Env(), Job::Result::kHandle, [=](Job& j) mutable {
-    char* errOut = nullptr;
-    j.handle = macula_pool_serve_stream(h, Ptr(realm), const_cast<char*>(procedure.c_str()), streamMode,
-                                        OnMaculaRequest, listener, mode, &errOut);
-    std::string msg = TakeErr(errOut);
-    if (!msg.empty()) {
-      listener->tsfn.Release();
-      j.Refuse(msg);
-    }
-  });
-  job->onOK = [job, listener]() { g_served[job->handle] = listener; };
-  Napi::Promise promise = job->Promise();
-  job->Queue();
-  return promise;
 }
 
 Napi::Value PendingReply(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   bool ok = false;
-  uintptr_t h = ToHandle(env, info[0], &ok);
+  macula_handle h = ToHandle(env, info[0], &ok);
   if (!ok) return env.Null();
   std::string json = ArgString(info, 1);
   char* errOut = nullptr;
-  macula_pending_reply(h, const_cast<char*>(json.c_str()), &errOut);
+  macula_pending_reply(h, C(json), &errOut);
   ThrowIfErr(env, errOut);
   return env.Undefined();
 }
@@ -718,33 +819,17 @@ Napi::Value PendingReply(const Napi::CallbackInfo& info) {
 Napi::Value PendingError(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   bool ok = false;
-  uintptr_t h = ToHandle(env, info[0], &ok);
+  macula_handle h = ToHandle(env, info[0], &ok);
   if (!ok) return env.Null();
   std::string message = ArgString(info, 1);
   char* errOut = nullptr;
-  macula_pending_error(h, const_cast<char*>(message.c_str()), &errOut);
+  macula_pending_error(h, C(message), &errOut);
   ThrowIfErr(env, errOut);
   return env.Undefined();
 }
 
 Napi::Value ServedStop(const Napi::CallbackInfo& info) {
-  bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
-  if (!ok) return info.Env().Null();
-  auto* job = new Job(info.Env(), Job::Result::kVoid, [h](Job& j) {
-    char* errOut = nullptr;
-    macula_served_stop(h, &errOut);
-    j.Fail(errOut);
-  });
-  job->onOK = [h]() {
-    auto it = g_served.find(h);
-    if (it == g_served.end()) return;
-    it->second->tsfn.Release();
-    g_served.erase(it);
-  };
-  Napi::Promise promise = job->Promise();
-  job->Queue();
-  return promise;
+  return StopListener(info, [](macula_handle h, char** errOut) { macula_served_stop(h, errOut); });
 }
 
 // --- streams ------------------------------------------------------------
@@ -752,23 +837,23 @@ Napi::Value ServedStop(const Napi::CallbackInfo& info) {
 // poolOpenStream(pool, realm, procedure, mode, payloadJson, provider|null, deadlineMs, timeoutMs)
 Napi::Value PoolOpenStream(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm, provider;
   if (!ok || !Arg32(info, 1, false, &realm) || !Arg32(info, 5, true, &provider)) return info.Env().Null();
   std::string procedure = ArgString(info, 2), payload = ArgString(info, 4);
-  int streamMode = static_cast<int>(ArgInt(info, 3));
+  int32_t mode = static_cast<int32_t>(ArgInt(info, 3));
   int64_t deadline = ArgInt(info, 6), timeout = ArgInt(info, 7);
   return Queue(info.Env(), Job::Result::kHandle, [=](Job& job) mutable {
     char* errOut = nullptr;
-    job.handle = macula_pool_open_stream(h, Ptr(realm), const_cast<char*>(procedure.c_str()), streamMode,
-                                         const_cast<char*>(payload.c_str()), Ptr(provider), deadline, timeout, &errOut);
+    job.handle = macula_pool_open_stream(h, Ptr(realm), C(procedure), mode, C(payload), Ptr(provider), deadline,
+                                         timeout, 0, &errOut);
     job.Fail(errOut);
   });
 }
 
 Napi::Value StreamSendBytes(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   std::vector<uint8_t> data = ArgBytes(info, 1);
   return Queue(info.Env(), Job::Result::kVoid, [=](Job& job) mutable {
@@ -780,19 +865,19 @@ Napi::Value StreamSendBytes(const Napi::CallbackInfo& info) {
 
 Napi::Value StreamSendJson(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   std::string json = ArgString(info, 1);
   return Queue(info.Env(), Job::Result::kVoid, [=](Job& job) {
     char* errOut = nullptr;
-    macula_stream_send_json(h, const_cast<char*>(json.c_str()), &errOut);
+    macula_stream_send_json(h, C(json), &errOut);
     job.Fail(errOut);
   });
 }
 
 Napi::Value StreamCloseSend(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   return Queue(info.Env(), Job::Result::kVoid, [h](Job& job) {
     char* errOut = nullptr;
@@ -803,7 +888,7 @@ Napi::Value StreamCloseSend(const Napi::CallbackInfo& info) {
 
 Napi::Value StreamClose(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   return Queue(info.Env(), Job::Result::kVoid, [h](Job& job) {
     char* errOut = nullptr;
@@ -814,38 +899,37 @@ Napi::Value StreamClose(const Napi::CallbackInfo& info) {
 
 Napi::Value StreamReply(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   std::string json = ArgString(info, 1);
   return Queue(info.Env(), Job::Result::kVoid, [=](Job& job) {
     char* errOut = nullptr;
-    macula_stream_reply(h, const_cast<char*>(json.c_str()), &errOut);
+    macula_stream_reply(h, C(json), &errOut);
     job.Fail(errOut);
   });
 }
 
 Napi::Value StreamAbort(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   std::string code = ArgString(info, 1), message = ArgString(info, 2);
   return Queue(info.Env(), Job::Result::kVoid, [=](Job& job) {
     char* errOut = nullptr;
-    macula_stream_abort(h, const_cast<char*>(code.c_str()), const_cast<char*>(message.c_str()), &errOut);
+    macula_stream_abort(h, C(code), C(message), &errOut);
     job.Fail(errOut);
   });
 }
 
-// streamRecv(stream, timeoutMs, bytesMode) -> Promise<json>
+// streamRecv(stream, timeoutMs) -> Promise<json>
 Napi::Value StreamRecv(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   int64_t timeout = ArgInt(info, 1);
-  int mode = static_cast<int>(ArgInt(info, 2));
   return Queue(info.Env(), Job::Result::kString, [=](Job& job) {
     char* errOut = nullptr;
-    job.text = TakeString(macula_stream_recv(h, timeout, mode, &errOut));
+    job.text = TakeString(macula_stream_recv(h, timeout, 0, &errOut));
     job.Fail(errOut);
   });
 }
@@ -853,22 +937,31 @@ Napi::Value StreamRecv(const Napi::CallbackInfo& info) {
 Napi::Value StreamRequest(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
   bool ok = false;
-  uintptr_t h = ToHandle(env, info[0], &ok);
+  macula_handle h = ToHandle(env, info[0], &ok);
   if (!ok) return env.Null();
   char* errOut = nullptr;
-  char* json = macula_stream_request(h, static_cast<int>(ArgInt(info, 1)), &errOut);
+  char* json = macula_stream_request(h, &errOut);
   if (ThrowIfErr(env, errOut)) return env.Null();
   return Napi::String::New(env, TakeString(json));
 }
 
 Napi::Value StreamFree(const Napi::CallbackInfo& info) {
   bool ok = false;
-  uintptr_t h = ToHandle(info.Env(), info[0], &ok);
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
   if (!ok) return info.Env().Null();
   return Queue(info.Env(), Job::Result::kVoid, [h](Job&) { macula_stream_free(h); });
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+  // A library built for another ABI is refused before anything uses it.
+  int32_t abi = macula_abi_version();
+  if (abi != MACULA_ABI_VERSION) {
+    Napi::Error::New(env, "macula-ts: libmacula is ABI " + std::to_string(abi) + ", this addon binds ABI " +
+                              std::to_string(MACULA_ABI_VERSION))
+        .ThrowAsJavaScriptException();
+    return exports;
+  }
+  exports.Set("abiVersion", Napi::Number::New(env, abi));
   exports.Set("keyGenerate", Napi::Function::New(env, KeyGenerate));
   exports.Set("keyLoad", Napi::Function::New(env, KeyLoad));
   exports.Set("keySave", Napi::Function::New(env, KeySave));
@@ -889,6 +982,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("poolPublish", Napi::Function::New(env, PoolPublish));
   exports.Set("poolSubscribe", Napi::Function::New(env, PoolSubscribe));
   exports.Set("subscriptionStop", Napi::Function::New(env, SubscriptionStop));
+  exports.Set("subscriptionDropped", Napi::Function::New(env, SubscriptionDropped));
   exports.Set("poolFindRecord", Napi::Function::New(env, PoolFindRecord));
   exports.Set("poolFindRecords", Napi::Function::New(env, PoolFindRecords));
   exports.Set("poolFindRecordsByType", Napi::Function::New(env, PoolFindRecordsByType));

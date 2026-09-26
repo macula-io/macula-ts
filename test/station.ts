@@ -1,12 +1,13 @@
-// Runs cabi/cmd/teststation (built to build/teststation by `npm run
-// build:teststation`) for a test file: two in-process macula 12 stations
+// Runs macula-go's teststation (built to native/build/teststation by
+// scripts/build-native.sh, from the macula-go release in native/MACULA_GO) for a
+// test file: two in-process macula 12 stations
 // sharing a DHT and a test realm, driven over the helper's stdin.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "build", "teststation");
+const binary = join(dirname(fileURLToPath(import.meta.url)), "..", "native", "build", "teststation");
 
 export interface TestStations {
   readonly stations: ReadonlyArray<{ host: string; port: number; node_id: string }>;

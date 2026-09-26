@@ -32,6 +32,7 @@ export {
   ProviderError,
   RelayError,
   StreamError,
+  MaculaError,
   DEFAULT_CALL_TIMEOUT_MS,
   type JsonValue,
   type BytesOutput,

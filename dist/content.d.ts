@@ -27,7 +27,5 @@ export declare class ContentUnavailableError extends Error {
     readonly detail: string;
     constructor(detail: string);
 }
-/** The native layer's content errors, as the classes they name. */
-export declare function contentError(e: unknown): Error;
 /** How long a whole fetch waits when not told: 5 minutes. */
 export declare const DEFAULT_CONTENT_TIMEOUT_MS = 300000;
