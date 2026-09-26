@@ -135,8 +135,11 @@ jobs:
           test -f node_modules/@macula-io/ts/prebuilds/win32-x64/macula.dll || { echo "::error::no macula.dll in the installed package"; exit 1; }
           rm node_modules/@macula-io/ts/prebuilds/win32-x64/macula.dll
           start=$(date +%s)
+          # The shell runs with -e; this command is expected to fail.
+          set +e
           timeout 60 node --input-type=module -e "import('@macula-io/ts')" > out.log 2>&1
           code=$?
+          set -e
           took=$(( $(date +%s) - start ))
           cat out.log
           if [ "$code" -eq 0 ] || [ "$code" -eq 124 ]; then
