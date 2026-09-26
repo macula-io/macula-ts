@@ -1,0 +1,5 @@
+# LF everywhere, Windows checkouts included: scripts read native/MACULA_GO
+# with the shell and compare files byte for byte.
+* text=auto eol=lf
+*.bin binary
+*.hex text eol=lf
