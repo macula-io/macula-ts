@@ -78,6 +78,13 @@ jobs:
       - name: Produce this platform's prebuild
         run: npx prebuildify --napi --strip
 
+      # On Windows the addon links macula-go's DLL (scripts/build-native.sh
+      # says why), which Node's loader finds beside the .node.
+      - name: Put macula.dll beside the prebuild (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cp native/build/macula.dll prebuilds/${{ matrix.platform }}/
+
       # Two stages, each bounded, so a hang says where: loading the addon runs
       # the ABI version check, the first call into Go; generating a key is the
       # first real work.
@@ -107,10 +114,10 @@ jobs:
         if: inputs.attest
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: prebuilds/${{ matrix.platform }}/*.node
+          subject-path: prebuilds/${{ matrix.platform }}/*
 
       - uses: actions/upload-artifact@v4
         with:
           name: prebuild-${{ matrix.platform }}
-          path: prebuilds/${{ matrix.platform }}/*.node
+          path: prebuilds/${{ matrix.platform }}/*
           if-no-files-found: error

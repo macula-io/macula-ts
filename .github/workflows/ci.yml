@@ -81,7 +81,7 @@ jobs:
           set -euo pipefail
           for plat in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
             mkdir -p "prebuilds/$plat"
-            cp prebuilds-in/prebuild-$plat/*.node "prebuilds/$plat/"
+            cp prebuilds-in/prebuild-$plat/* "prebuilds/$plat/"
           done
           rm -f binding.gyp
           npm pack --pack-destination /tmp

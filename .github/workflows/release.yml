@@ -91,8 +91,9 @@ jobs:
           for plat in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
             ls prebuilds-in/prebuild-$plat/*.node > /dev/null || { echo "::error::no $plat prebuild"; exit 1; }
             mkdir -p "prebuilds/$plat"
-            cp prebuilds-in/prebuild-$plat/*.node "prebuilds/$plat/"
+            cp prebuilds-in/prebuild-$plat/* "prebuilds/$plat/"
           done
+          test -f prebuilds/win32-x64/macula.dll || { echo "::error::no macula.dll beside the win32 prebuild"; exit 1; }
           ls -l prebuilds/*/
 
       # Trusted Publishing (OIDC) needs npm CLI >= 11.5.0: an older bundled npm
@@ -125,6 +126,7 @@ jobs:
             for (const plat of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"]) {
               if (!files.some((f) => f.startsWith("prebuilds/" + plat + "/") && f.endsWith(".node"))) throw new Error("no " + plat + " prebuild in the package");
             }
+            if (!files.includes("prebuilds/win32-x64/macula.dll")) throw new Error("no macula.dll beside the win32 prebuild");
             console.log(files.length + " files, five prebuilds, no build sources");
           '
           rm pack.json
