@@ -102,6 +102,11 @@ const pool = await Pool.connect(key, [{ host: "2600:3c0e::2000:c2ff:fed0:f20b", 
 // trusted only when the realm key authorizes it, and its station dialed.
 const answer = await pool.call(realm, "mcl-echo/echo", "hello");
 
+// A payload this node's key vouches for (ownership proof v2, mcl-om#7): the
+// provider refuses it changed, for another procedure or realm, or sent twice.
+const proven = await key.ownershipProof(realm, "mcl-graph/learn_link", { subject: "a", predicate: "knows", object: "b" });
+await pool.call(realm, "mcl-graph/learn_link", proven);
+
 // Publish and subscribe; topics name a kind of fact, ids go in the payload.
 const sub = await pool.subscribe(realm, "acme/demo/greeting_sent_v1", (e) => console.log(e.payload));
 await pool.publish(realm, "acme/demo/greeting_sent_v1", { text: "hi" });
@@ -169,6 +174,7 @@ call and session to JavaScript through a `ThreadSafeFunction`.
 | Publish/subscribe | ✅ | ✅ | Signed publications, delivered once across links |
 | DHT (`findRecord`, `findRecords`, `findRecordsByType`, `putRecord`) | ✅ | — | Records verified before they are handed on |
 | Realm proof v2 (`NodeKey.deviceRequestProof`) | ✅ | — | macula-realm#29: a join session over HTTP (`"http"`, the realm's JSON rule) or a membership UCAN over the mesh (`"mesh"`), with its device_info and ttl_seconds, the realm and the procedure signed, and a nonce; the realm's own vector reproduced through macula-go's encoder |
+| Ownership proof v2 (`NodeKey.ownershipProof`) | ✅ | — | mcl-om#7: the payload's `asserted_by`, binding every field a handler reads, the procedure, the realm, a timestamp and a nonce; a payload carrying `caller` is refused; mcl_om's own vector reproduced, and a payload signed here and called through a station accepted by mcl_om 0.32.0 |
 | Node-served content (`shareContent`, `unshareContent`, `getContent`) | ✅ | ✅ | macula 12.6.0 (D27): shared on the node's own `~<node_id>/content_v1` and announced; a fetch checks the block, the manifest and every chunk against the content id, bounded, with no realm key; `NotSharedError` / `ContentUnavailableError` |
 
 ## Not yet implemented
@@ -198,6 +204,10 @@ vector (the one macula and macula-go check), and to composites that crossed
 both ways with macula 12.x. `scripts/cross-verify-macula.sh` renews those: this
 SDK signs, macula (from hex, in the image macula's own CI runs in) verifies
 and signs its own, and this SDK verifies it.
+
+`src/ownershipproof.test.ts` holds ownership proof v2 to mcl_om 0.32.0's own
+vector (`testdata/ownership_proof_vector`, copied from macula-go at the pinned
+release): the bytes it signs, and an Erlang key's signature over them.
 
 `src/fleet.live.test.ts` runs against one real station and is not part of
 `npm test`. It needs `MACULA_TS_LIVE_SEED` (host:port), `MACULA_TS_LIVE_STATION_ID`

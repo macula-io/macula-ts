@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Ownership proof v2 (mcl-om#7): `NodeKey.ownershipProof(realm, procedure,
+  payload)` returns the payload with an `asserted_by` block by which the key's
+  node authorises every other field of it for that procedure in that realm,
+  once, with a timestamp and a fresh nonce. Send it as the call's payload.
+  A payload carrying `caller` is refused (`MaculaError` `invalid_argument`):
+  a station replaces it with the caller it authenticated.
+  `NodeKey.ownershipProofMessage` gives the exact bytes such a proof signs.
+  Both go through macula-go v0.16.0's shared ABI
+  (`macula_key_ownership_proof`, `macula_ownership_proof_message`).
+- `src/ownershipproof.test.ts` holds them to mcl_om 0.32.0's own vector. In
+  the other direction, a payload signed with this release and called through
+  macula-go's teststation was accepted by mcl_om 0.32.0's
+  `verify_asserted_by` (macula-go's `erlang_ownership_proof.escript verify`,
+  macula 12.11.1, OTP 28.4.3), and refused with one field changed
+  (`bad_signature`) and sent again (`replayed`). That check ran once, before
+  the release; it is not part of `npm test`.
+
 ## [0.22.0] - 2026-09-27
 
 ### Changed

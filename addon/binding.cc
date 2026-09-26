@@ -555,6 +555,42 @@ Napi::Value DeviceRequestMessage(const Napi::CallbackInfo& info) {
   return BytesResult(env, out, len, errOut);
 }
 
+// keyOwnershipProof(key, realm, procedure, payloadJson) -> Promise<string>:
+// the payload with an ownership proof v2 (mcl-om#7) in its asserted_by,
+// signed off the event loop like keySign.
+Napi::Value KeyOwnershipProof(const Napi::CallbackInfo& info) {
+  bool ok = false;
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm;
+  if (!ok || !Arg32(info, 1, false, &realm)) return info.Env().Null();
+  std::string procedure = ArgString(info, 2);
+  std::string payload = ArgString(info, 3);
+  return Queue(info.Env(), Job::Result::kString, [=](Job& job) mutable {
+    char* errOut = nullptr;
+    char* signed_payload = macula_key_ownership_proof(h, Ptr(realm), C(procedure), C(payload), &errOut);
+    job.text = TakeString(signed_payload);
+    job.Fail(errOut);
+  });
+}
+
+// ownershipProofMessage(identity, realm, procedure, timestampMs, nonce,
+// fieldsJson) -> Buffer: the bytes such a proof signs.
+Napi::Value OwnershipProofMessage(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::vector<uint8_t> identity, realm, nonce;
+  if (!Arg32(info, 0, false, &identity) || !Arg32(info, 1, false, &realm) || !ArgFixed(info, 4, 16, false, &nonce)) {
+    return env.Null();
+  }
+  std::string procedure = ArgString(info, 2);
+  int64_t timestamp = ArgInt(info, 3);
+  std::string fields = ArgString(info, 5);
+  size_t len = 0;
+  char* errOut = nullptr;
+  uint8_t* out = macula_ownership_proof_message(Ptr(identity), Ptr(realm), C(procedure), timestamp, Ptr(nonce),
+                                                C(fields), &len, &errOut);
+  return BytesResult(env, out, len, errOut);
+}
+
 Napi::Value KeyFree(const Napi::CallbackInfo& info) {
   bool ok = false;
   macula_handle h = ToHandle(info.Env(), info[0], &ok);
@@ -992,6 +1028,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("keySign", Napi::Function::New(env, KeySign));
   exports.Set("keyDeviceRequestProof", Napi::Function::New(env, KeyDeviceRequestProof));
   exports.Set("deviceRequestMessage", Napi::Function::New(env, DeviceRequestMessage));
+  exports.Set("keyOwnershipProof", Napi::Function::New(env, KeyOwnershipProof));
+  exports.Set("ownershipProofMessage", Napi::Function::New(env, OwnershipProofMessage));
   exports.Set("verify", Napi::Function::New(env, Verify));
   exports.Set("keyFree", Napi::Function::New(env, KeyFree));
   exports.Set("poolConnect", Napi::Function::New(env, PoolConnect));

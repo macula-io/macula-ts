@@ -57,6 +57,32 @@ export declare class NodeKey {
     static deviceRequestMessage(publicKey: Uint8Array, realm: Id, procedure: string, timestampMs: number, nonce: Uint8Array, request: {
         [field: string]: JsonValue;
     }, rule: DeviceRequestRule): Uint8Array;
+    /**
+     * payload with an ownership proof v2 (mcl-om#7) in its "asserted_by": this
+     * key's node authorises every other field of it for procedure in realm, now
+     * and with a fresh nonce, once. Send the result as the call's payload; a
+     * provider verifying it (mcl_om's verify_asserted_by) refuses it with any
+     * field changed, for another procedure or realm, or sent twice. An
+     * asserted_by already in payload is replaced. A payload carrying "caller" is
+     * refused (MaculaError invalid_argument): a station replaces it with the
+     * caller it authenticated, so it can be neither sent nor signed.
+     *
+     * The result keeps bytes as {"$bytes": ...}, so it goes to Pool.call as
+     * it is. Numbers are signed as they go on the wire: an integral number is
+     * an integer.
+     */
+    ownershipProof(realm: Id, procedure: string, payload: {
+        [field: string]: JsonValue;
+    }): Promise<{
+        [field: string]: JsonValue;
+    }>;
+    /** The exact bytes an ownership proof v2 signs for identity (a node_id), at
+     * timestampMs with a 16-byte nonce, over payload's fields: all of it but
+     * "asserted_by" and a text "caller", as a verifier reads a delivered
+     * payload. What mcl_om's vector is checked against. */
+    static ownershipProofMessage(identity: Id, realm: Id, procedure: string, timestampMs: number, nonce: Uint8Array, payload: {
+        [field: string]: JsonValue;
+    }): Uint8Array;
     /** Whether signature is valid over data for a public key as carried on the
      * wire (publicKey()), under profile: ML-DSA-87 in pq_pure, and in pq_hybrid
      * the LAMPS composite id-MLDSA87-RSA4096-PSS-SHA512 with the empty context,
