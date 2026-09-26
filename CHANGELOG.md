@@ -27,8 +27,11 @@ All notable changes to this project will be documented in this file.
   the addon with MSVC, whose C runtime never runs the MinGW constructor that
   starts Go's runtime in a c-archive, so the first call into Go waited for
   ever: measured in this release's CI, which is the first to load the win32
-  prebuild at all. Earlier win32 prebuilds were built the same way and were
-  never run in CI; they very likely hang on first use.
+  prebuild at all.
+- **Windows did not work before this release.** Every published win32
+  prebuild up to 0.21.0 was built the same way: it imports, and its first
+  call into macula-go hangs. Measured on 0.21.0 from npm on windows-latest
+  (macula-ts#7).
 - Linux and macOS keep a single self-contained `.node` (c-archive).
 - Subscription.dropped(): events the inbox (256) dropped because the listener
   was behind; a listener's JS falling behind now blocks its poll thread
