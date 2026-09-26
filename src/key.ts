@@ -30,6 +30,16 @@ export interface DeviceRequestProof {
   signature: string;
 }
 
+/** An ownership proof v2 (mcl-om#7) as it goes on the wire, under a
+ * payload's "asserted_by": every byte string as lowercase hex. */
+export interface AssertedBy {
+  identity: string;
+  proof: { v: 2; timestamp: number; nonce: string; signature: string; public: string };
+}
+
+/** A payload with its ownership proof v2 under "asserted_by". */
+export type OwnershipProven = { [field: string]: JsonValue } & { asserted_by: AssertedBy };
+
 const ruleNumber = (rule: DeviceRequestRule): number => (rule === "http" ? 0 : 1);
 
 export class NodeKey {
@@ -121,13 +131,13 @@ export class NodeKey {
    * caller it authenticated, so it can be neither sent nor signed.
    *
    * The result keeps bytes as {"$bytes": ...}, so it goes to Pool.call as
-   * it is. Numbers are signed as they go on the wire: an integral number is
-   * an integer.
+   * it is. Send the result, not your own object with its asserted_by: the
+   * fields are signed as they go on the wire (an integral number is an
+   * integer, -0 is 0, NaN is null), and the result carries them so.
    */
-  async ownershipProof(realm: Id, procedure: string, payload: { [field: string]: JsonValue }):
-    Promise<{ [field: string]: JsonValue }> {
+  async ownershipProof(realm: Id, procedure: string, payload: { [field: string]: JsonValue }): Promise<OwnershipProven> {
     const signed = await native.keyOwnershipProof(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload));
-    return JSON.parse(signed) as { [field: string]: JsonValue };
+    return JSON.parse(signed) as OwnershipProven;
   }
 
   /** The exact bytes an ownership proof v2 signs for identity (a node_id), at

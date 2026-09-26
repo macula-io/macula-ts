@@ -6,6 +6,8 @@ export {
   type Profile,
   type DeviceRequestRule,
   type DeviceRequestProof,
+  type AssertedBy,
+  type OwnershipProven,
 } from "./key.js";
 export {
   Pool,

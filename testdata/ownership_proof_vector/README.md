@@ -1,6 +1,6 @@
 # Ownership proof v2 vector (mcl-om#7)
 
-Copied unchanged from macula-go v0.16.0 (`ownershipproof/testdata/vector`, the
+Four of the files in macula-go v0.16.0's `ownershipproof/testdata/vector` (the
 tag `native/MACULA_GO` pins), which wrote it with mcl_om 0.32.0's own
 `mcl_om_ownership_proof` on macula 12.11.1, OTP 28.4.3. See that directory's
 README for how it was made.

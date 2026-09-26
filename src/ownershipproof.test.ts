@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { NodeKey } from "./key.js";
+import { NodeKey, type Profile } from "./key.js";
 import { MaculaError, type JsonValue } from "./wire.js";
 
 // Ownership proof v2 (mcl-om#7) through the ABI: mcl_om's own vector, built by
@@ -20,11 +20,6 @@ const fields: { [field: string]: JsonValue } = {
 };
 const nonce = Uint8Array.from({ length: 16 }, (_, i) => i);
 
-interface AssertedBy {
-  identity: string;
-  proof: { v: number; timestamp: number; nonce: string; signature: string; public: string };
-}
-
 describe("an ownership proof", () => {
   it("signs mcl_om's vector, byte for byte, and an Erlang key's signature over it verifies", () => {
     const got = NodeKey.ownershipProofMessage(vector("identity.hex"), ioMacula, PROCEDURE, 1790000000000, nonce, fields);
@@ -38,11 +33,12 @@ describe("an ownership proof", () => {
     expect(Buffer.from(got).equals(vector("message.hex"))).toBe(true);
   });
 
-  it("is a payload whose asserted_by verifies over its fields, and over nothing else", async () => {
-    const key = await NodeKey.generate("pq_pure");
+  it.each<Profile>(["pq_pure", "pq_hybrid"])("is, in %s, a payload whose asserted_by verifies over the fields it sends, and over nothing else", async (profile) => {
+    const key = await NodeKey.generate(profile);
     try {
       const payload = await key.ownershipProof(ioMacula, PROCEDURE, fields);
-      const { asserted_by: block, ...rest } = payload as unknown as { asserted_by: AssertedBy } & typeof fields;
+      // As Pool.call puts it on the wire.
+      const { asserted_by: block, ...rest } = JSON.parse(JSON.stringify(payload)) as typeof payload;
       expect(rest).toEqual(fields);
       expect(block.identity).toBe(key.nodeIdHex());
       expect(block.proof.v).toBe(2);
@@ -52,15 +48,14 @@ describe("an ownership proof", () => {
       const signed = (f: typeof fields) => NodeKey.ownershipProofMessage(key.nodeId(), ioMacula, PROCEDURE,
         block.proof.timestamp, Buffer.from(block.proof.nonce, "hex"), f);
       const signature = Buffer.from(block.proof.signature, "hex");
-      expect(NodeKey.verify(signed(fields), signature, key.publicKey(), "pq_pure")).toBe(true);
-      expect(NodeKey.verify(signed({ ...fields, weight: 4 }), signature, key.publicKey(), "pq_pure")).toBe(false);
+      expect(NodeKey.verify(signed(rest), signature, key.publicKey(), profile)).toBe(true);
+      expect(NodeKey.verify(signed({ ...rest, weight: 4 }), signature, key.publicKey(), profile)).toBe(false);
       const again = await key.ownershipProof(ioMacula, PROCEDURE, payload);
-      const next = (again as unknown as { asserted_by: AssertedBy }).asserted_by;
-      expect(next.proof.nonce).not.toBe(block.proof.nonce);
+      expect(again.asserted_by.proof.nonce).not.toBe(block.proof.nonce);
     } finally {
       key.free();
     }
-  });
+  }, 120_000);
 
   it("refuses a payload carrying caller, which a station replaces", async () => {
     const key = await NodeKey.generate("pq_pure");

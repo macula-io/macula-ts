@@ -87,8 +87,9 @@ export class NodeKey {
      * caller it authenticated, so it can be neither sent nor signed.
      *
      * The result keeps bytes as {"$bytes": ...}, so it goes to Pool.call as
-     * it is. Numbers are signed as they go on the wire: an integral number is
-     * an integer.
+     * it is. Send the result, not your own object with its asserted_by: the
+     * fields are signed as they go on the wire (an integral number is an
+     * integer, -0 is 0, NaN is null), and the result carries them so.
      */
     async ownershipProof(realm, procedure, payload) {
         const signed = await native.keyOwnershipProof(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload));
