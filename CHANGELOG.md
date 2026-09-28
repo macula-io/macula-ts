@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The caller's seal report** (macula's `DESIGN_E2E_SEAL_REPORT`, through
+  macula-go v0.19.0's shared library: `"report": 1` on
+  `macula_pool_call_opts`, `macula_stream_report`).
+  - `Pool.callReport(realm, procedure, payload, options)` returns
+    `{ result, report }`: the result `call` returns, and its `SealReport`,
+    `sealed` (0 or 1), `provider` (the node it was addressed to, hex) and
+    `sealKeyId` (the key's 8-byte id, hex, only when sealed). After a
+    `sealed_refused` and one reseal it names the reseal's key. An error is
+    thrown as `call` throws it, with no report. `Pool.call` is unchanged.
+  - `Stream.report()` gives a caller stream's report once it has settled: on
+    the provider's first chunk or reply opened under the stream's key, or on
+    a clear stream its first chunk, reply or end. It is kept after the stream
+    ends. Before it settles, and on a stream that ended first, it throws a
+    `MaculaError` of kind `not_settled`; on a served stream, `not_a_caller`.
+  - The report states that sealing ran on that exchange, nothing more: not
+    that the provider keeps the payload to itself.
+  - `src/sealing.test.ts` holds a sealed and a clear call's report, a
+    stream's report before and after it settles and after its end, the
+    provider side's refusal, and `report` refused on `openStream` (all seen
+    red on the pin before they were bound).
+
+### Changed
+
+- On macula-go v0.19.0's shared library (C ABI minor: `macula_stream_report`
+  and the error kinds `not_settled`, `not_a_caller`).
+
 ## [0.24.1] - 2026-09-28
 
 ### Fixed
