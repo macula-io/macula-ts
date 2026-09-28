@@ -149,3 +149,73 @@ describe("the addon underneath", () => {
     await caller.close();
   });
 });
+
+// The caller's seal report (macula's DESIGN_E2E_SEAL_REPORT, macula-go v0.19.0):
+// that the exchange behind a result was sealed, to which provider and key.
+describe("the seal report", () => {
+  it("says a call to a provider that names its key went sealed, to that provider and key", async () => {
+    const provider = await node(0, 1);
+    const procedure = provider.ownProcedure("reported");
+    const served = await provider.serve(env.realmId, procedure, (r) => ({ echoed: r.payload }));
+    const caller = await node(1);
+    const { result, report } = await caller.callReport(env.realmId, procedure, { word: "hush" });
+    expect(result).toEqual({ echoed: { word: "hush" } });
+    expect(report.sealed).toBe(1);
+    expect(report.provider).toBe(provider.nodeId());
+    expect(report.sealKeyId).toMatch(/^[0-9a-f]{16}$/);
+    await served.stop();
+    await provider.close();
+    await caller.close();
+  });
+
+  it("says a call to a provider that names no key went in the clear, with no key id", async () => {
+    const provider = await node(0);
+    const procedure = provider.ownProcedure("reported_clear");
+    const served = await provider.serve(env.realmId, procedure, () => 1);
+    const caller = await node(1);
+    const { result, report } = await caller.callReport(env.realmId, procedure, {});
+    expect(result).toBe(1);
+    expect(report).toEqual({ sealed: 0, provider: provider.nodeId() });
+    await served.stop();
+    await provider.close();
+    await caller.close();
+  });
+
+  it("settles a stream's report on the provider's first chunk, keeps it after the end, and gives the provider none", async () => {
+    const provider = await node(0, 1);
+    const procedure = provider.ownProcedure("reported_watch");
+    let providerSide: unknown = null;
+    const served = await provider.serveStream(env.realmId, procedure, StreamMode.Server, async (s) => {
+      providerSide = (() => { try { return s.report(); } catch (e) { return e; } })();
+      await new Promise((r) => setTimeout(r, 500));
+      await s.send(new TextEncoder().encode("one"));
+    }, { confidential: "required" });
+    const caller = await node(1);
+    const stream = await caller.openStream(env.realmId, procedure, StreamMode.Server, {}, { confidential: "required" });
+    const early = (() => { try { return stream.report(); } catch (e) { return e; } })();
+    expect(early).toBeInstanceOf(MaculaError);
+    expect((early as MaculaError).kind).toBe("not_settled");
+    expect((await stream.recv({ timeoutMs: 5_000 })).kind).toBe("data");
+    const settled = stream.report();
+    expect(settled.sealed).toBe(1);
+    expect(settled.provider).toBe(provider.nodeId());
+    expect(settled.sealKeyId).toMatch(/^[0-9a-f]{16}$/);
+    for (let i = 0; i < 3; i++) if ((await stream.recv({ timeoutMs: 5_000 })).kind === "end") break;
+    expect(stream.report()).toEqual(settled);
+    expect(providerSide).toBeInstanceOf(MaculaError);
+    expect((providerSide as MaculaError).kind).toBe("not_a_caller");
+    await stream.free();
+    await served.stop();
+    await provider.close();
+    await caller.close();
+  });
+
+  it("is refused as an option on openStream, where a stream reports through report()", async () => {
+    const caller = await node(1);
+    const refused = await caller.openStream(env.realmId, caller.ownProcedure("x"), StreamMode.Server, {},
+      { report: 1 } as never).catch((e) => e);
+    expect(refused).toBeInstanceOf(MaculaError);
+    expect(refused.kind).toBe("invalid_argument");
+    await caller.close();
+  });
+});
