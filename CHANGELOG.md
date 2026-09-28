@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-09-28
+
 ### Added
 
 - Sealed calls and streams: macula 13's end-to-end payload confidentiality
