@@ -16,8 +16,9 @@ function callOptionsJson(provider, confidential, report) {
         o.provider = hex(id32(provider, "provider"));
     if (confidential !== undefined)
         o.confidential = confidential;
-    // Handed on as given, so the ABI refuses what it does not take (report on a
-    // stream open) rather than it vanishing here.
+    // Handed on as given: callReport sends 1, and openStream hands on whatever
+    // it was given, so the ABI refuses a report on a stream open rather than it
+    // vanishing here. call sends none.
     if (report !== undefined)
         o.report = report;
     return JSON.stringify(o);

@@ -175,7 +175,7 @@ describe("the seal report", () => {
     const caller = await node(1);
     const { result, report } = await caller.callReport(env.realmId, procedure, {});
     expect(result).toBe(1);
-    expect(report).toEqual({ sealed: 0, provider: provider.nodeId() });
+    expect(report).toStrictEqual({ sealed: 0, provider: provider.nodeId() });
     await served.stop();
     await provider.close();
     await caller.close();
@@ -185,9 +185,13 @@ describe("the seal report", () => {
     const provider = await node(0, 1);
     const procedure = provider.ownProcedure("reported_watch");
     let providerSide: unknown = null;
+    // The provider holds its chunk until the caller has seen the report
+    // unsettled, so the order is by construction, not by a timer.
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
     const served = await provider.serveStream(env.realmId, procedure, StreamMode.Server, async (s) => {
       providerSide = (() => { try { return s.report(); } catch (e) { return e; } })();
-      await new Promise((r) => setTimeout(r, 500));
+      await released;
       await s.send(new TextEncoder().encode("one"));
     }, { confidential: "required" });
     const caller = await node(1);
@@ -195,15 +199,33 @@ describe("the seal report", () => {
     const early = (() => { try { return stream.report(); } catch (e) { return e; } })();
     expect(early).toBeInstanceOf(MaculaError);
     expect((early as MaculaError).kind).toBe("not_settled");
+    release();
     expect((await stream.recv({ timeoutMs: 5_000 })).kind).toBe("data");
     const settled = stream.report();
     expect(settled.sealed).toBe(1);
     expect(settled.provider).toBe(provider.nodeId());
     expect(settled.sealKeyId).toMatch(/^[0-9a-f]{16}$/);
-    for (let i = 0; i < 3; i++) if ((await stream.recv({ timeoutMs: 5_000 })).kind === "end") break;
+    expect((await stream.recv({ timeoutMs: 5_000 }))?.kind).toBe("end");
     expect(stream.report()).toEqual(settled);
     expect(providerSide).toBeInstanceOf(MaculaError);
     expect((providerSide as MaculaError).kind).toBe("not_a_caller");
+    await stream.free();
+    await served.stop();
+    await provider.close();
+    await caller.close();
+  });
+
+  it("has none for a sealed stream the provider ends before any chunk or reply", async () => {
+    const provider = await node(0, 1);
+    const procedure = provider.ownProcedure("ended_unsettled");
+    const served = await provider.serveStream(env.realmId, procedure, StreamMode.Server, async () => {},
+      { confidential: "required" });
+    const caller = await node(1);
+    const stream = await caller.openStream(env.realmId, procedure, StreamMode.Server, {}, { confidential: "required" });
+    expect((await stream.recv({ timeoutMs: 5_000 }))?.kind).toBe("end");
+    const none = (() => { try { return stream.report(); } catch (e) { return e; } })();
+    expect(none).toBeInstanceOf(MaculaError);
+    expect((none as MaculaError).kind).toBe("not_settled");
     await stream.free();
     await served.stop();
     await provider.close();
