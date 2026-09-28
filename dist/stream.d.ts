@@ -1,5 +1,5 @@
 import { type Handle } from "./binding.js";
-import { type BytesOutput, type JsonValue } from "./wire.js";
+import { type BytesOutput, type JsonValue, type SealReport } from "./wire.js";
 /** The three stream modes: the provider sends (server), the caller sends and
  * the provider replies (client), or both send (bidi). */
 export declare enum StreamMode {
@@ -39,6 +39,12 @@ export declare class Stream {
     constructor(handle: Handle, bytes: BytesOutput | undefined);
     /** The stream's open. */
     request(): StreamRequest;
+    /** The caller's seal report for this stream (see SealReport). It settles on
+     * the provider's first chunk or reply opened under the stream's key (on a
+     * clear stream, its first chunk, reply or end) and is kept after the stream
+     * ends. Before that, and on a stream that ended first, it throws a
+     * MaculaError of kind not_settled; on a served stream, not_a_caller. */
+    report(): SealReport;
     /** Sends a raw chunk. */
     send(chunk: Uint8Array): Promise<void>;
     /** Sends a structured chunk. */

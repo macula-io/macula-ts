@@ -89,6 +89,7 @@ interface Native {
   streamAbort(stream: Handle, code: string, message: string): Promise<void>;
   streamRecv(stream: Handle, timeoutMs: number): Promise<string>;
   streamRequest(stream: Handle): string;
+  streamReport(stream: Handle): string;
   streamFree(stream: Handle): Promise<void>;
 }
 

@@ -39,6 +39,7 @@ export {
   DEFAULT_CALL_TIMEOUT_MS,
   type Confidential,
   type ServedConfidential,
+  type SealReport,
   type JsonValue,
   type BytesOutput,
   type Id,

@@ -76,6 +76,23 @@ export declare class ConfidentialityError extends MaculaError {
  * never calls one that names none; a procedure served `off` is served in the
  * clear. A sealed call never falls back to the clear. */
 export type Confidential = "preferred" | "required";
+/** What a caller's seal report says about the exchange behind a result
+ * (macula's DESIGN_E2E_SEAL_REPORT): `sealed` 1 when the request was sealed to
+ * the provider's advertised KEM key and the answer opened under that key, 0
+ * when it went in the clear; `provider`, the node_id it was addressed to, as
+ * hex; `sealKeyId`, the key's 8-byte id as hex, only when sealed. It states
+ * that sealing ran on that exchange, nothing more. */
+export interface SealReport {
+    readonly sealed: 0 | 1;
+    readonly provider: string;
+    readonly sealKeyId?: string;
+}
+/** A report as the ABI carries it. */
+export declare function sealReport(r: {
+    sealed: 0 | 1;
+    provider: string;
+    seal_key_id?: string;
+}): SealReport;
 export type ServedConfidential = Confidential | "off";
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */

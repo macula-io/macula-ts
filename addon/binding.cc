@@ -1012,6 +1012,19 @@ Napi::Value StreamRequest(const Napi::CallbackInfo& info) {
   return Napi::String::New(env, TakeString(json));
 }
 
+// streamReport(stream) -> the caller stream's seal report as JSON, or throws
+// the ABI's error (not_settled, not_a_caller). Since macula-go v0.19.0.
+Napi::Value StreamReport(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  bool ok = false;
+  macula_handle h = ToHandle(env, info[0], &ok);
+  if (!ok) return env.Null();
+  char* errOut = nullptr;
+  char* json = macula_stream_report(h, &errOut);
+  if (ThrowIfErr(env, errOut)) return env.Null();
+  return Napi::String::New(env, TakeString(json));
+}
+
 Napi::Value StreamFree(const Napi::CallbackInfo& info) {
   bool ok = false;
   macula_handle h = ToHandle(info.Env(), info[0], &ok);
@@ -1072,6 +1085,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("streamReply", Napi::Function::New(env, StreamReply));
   exports.Set("streamAbort", Napi::Function::New(env, StreamAbort));
   exports.Set("streamRecv", Napi::Function::New(env, StreamRecv));
+  exports.Set("streamReport", Napi::Function::New(env, StreamReport));
   exports.Set("streamRequest", Napi::Function::New(env, StreamRequest));
   exports.Set("streamFree", Napi::Function::New(env, StreamFree));
   return exports;

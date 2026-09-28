@@ -8,14 +8,18 @@
 import { native } from "./binding.js";
 import { Stream } from "./stream.js";
 import { DEFAULT_CONTENT_TIMEOUT_MS, mcid50 } from "./content.js";
-import { DEFAULT_CALL_TIMEOUT_MS, MaculaError, bytesOut, hex, id32, } from "./wire.js";
+import { DEFAULT_CALL_TIMEOUT_MS, MaculaError, bytesOut, hex, sealReport, id32, } from "./wire.js";
 /** A call's or a stream's options, as macula_pool_call_opts takes them. */
-function callOptionsJson(provider, confidential) {
+function callOptionsJson(provider, confidential, report) {
     const o = {};
     if (provider !== undefined)
         o.provider = hex(id32(provider, "provider"));
     if (confidential !== undefined)
         o.confidential = confidential;
+    // Handed on as given, so the ABI refuses what it does not take (report on a
+    // stream open) rather than it vanishing here.
+    if (report !== undefined)
+        o.report = report;
     return JSON.stringify(o);
 }
 /** A served procedure's options, as macula_pool_serve_opts takes them. */
@@ -125,6 +129,15 @@ export class Pool {
         const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
         return bytesOut(JSON.parse(result), options.bytes);
     }
+    /** call, with the caller's seal report: whether the exchange behind the
+     * result was sealed, to which provider and key (see SealReport). The result
+     * is call's; an error is thrown as call throws it, with no report. After a
+     * sealed_refused and one reseal, the report names the reseal's key. */
+    async callReport(realm, procedure, payload = {}, options = {}) {
+        bytesOut(null, options.bytes);
+        const reply = JSON.parse(await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential, 1), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS));
+        return { result: bytesOut(reply.result, options.bytes), report: sealReport(reply) };
+    }
     /** The procedure's trusted providers, freshest first. */
     async providers(realm, procedure, options = {}) {
         return JSON.parse(await native.poolProviders(this.live(), id32(realm, "realm"), procedure, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)) ?? [];
@@ -192,7 +205,7 @@ export class Pool {
      * ConfidentialityError here. */
     async openStream(realm, procedure, mode, payload = {}, options = {}) {
         bytesOut(null, options.bytes);
-        const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential), options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+        const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential, options.report), options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
         return new Stream(handle, options.bytes);
     }
     /** The verified record under key, or null when there is none. */

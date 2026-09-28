@@ -110,6 +110,11 @@ export class ConfidentialityError extends MaculaError {
         this.name = "ConfidentialityError";
     }
 }
+/** A report as the ABI carries it. */
+export function sealReport(r) {
+    return r.seal_key_id === undefined ? { sealed: r.sealed, provider: r.provider }
+        : { sealed: r.sealed, provider: r.provider, sealKeyId: r.seal_key_id };
+}
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */
 export function nativeError(e) {

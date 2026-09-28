@@ -3,7 +3,7 @@
 // stream of its own, released on every path; frames are signed by each side
 // and verified before they are handed on.
 import { native, type Handle } from "./binding.js";
-import { StreamError, bytesOut, type BytesOutput, type JsonValue } from "./wire.js";
+import { StreamError, bytesOut, sealReport, type BytesOutput, type JsonValue, type SealReport } from "./wire.js";
 
 /** The three stream modes: the provider sends (server), the caller sends and
  * the provider replies (client), or both send (bidi). */
@@ -43,6 +43,15 @@ export class Stream {
     const r = JSON.parse(native.streamRequest(this.live()));
     return { caller: r.caller, realm: r.realm, procedure: r.procedure, payload: bytesOut(r.payload, this.bytes),
       deadlineMs: r.deadline_ms, sealed: r.sealed };
+  }
+
+  /** The caller's seal report for this stream (see SealReport). It settles on
+   * the provider's first chunk or reply opened under the stream's key (on a
+   * clear stream, its first chunk, reply or end) and is kept after the stream
+   * ends. Before that, and on a stream that ended first, it throws a
+   * MaculaError of kind not_settled; on a served stream, not_a_caller. */
+  report(): SealReport {
+    return sealReport(JSON.parse(native.streamReport(this.live())));
   }
 
   /** Sends a raw chunk. */

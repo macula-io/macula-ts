@@ -2,7 +2,7 @@ import { type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
 import { type ContentOptions, type Mcid } from "./content.js";
-import { type Confidential, type ServedConfidential, type BytesOutput, type Id, type JsonValue } from "./wire.js";
+import { type Confidential, type SealReport, type ServedConfidential, type BytesOutput, type Id, type JsonValue } from "./wire.js";
 /** A station to link to, pinned by the node_id it must prove. */
 export interface Seed {
     readonly host: string;
@@ -136,6 +136,19 @@ export declare class Pool {
         timeoutMs?: number;
         bytes?: BytesOutput;
     }): Promise<JsonValue>;
+    /** call, with the caller's seal report: whether the exchange behind the
+     * result was sealed, to which provider and key (see SealReport). The result
+     * is call's; an error is thrown as call throws it, with no report. After a
+     * sealed_refused and one reseal, the report names the reseal's key. */
+    callReport(realm: Id, procedure: string, payload?: JsonValue, options?: {
+        provider?: Id;
+        confidential?: Confidential;
+        timeoutMs?: number;
+        bytes?: BytesOutput;
+    }): Promise<{
+        result: JsonValue;
+        report: SealReport;
+    }>;
     /** The procedure's trusted providers, freshest first. */
     providers(realm: Id, procedure: string, options?: {
         timeoutMs?: number;
