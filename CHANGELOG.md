@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Sealed calls and streams: macula 13's end-to-end payload confidentiality
+  (E2E seal scheme 1), through macula-go v0.18.0's shared ABI
+  (`macula_pool_call_opts`, `_open_stream_opts`, `_serve_opts`,
+  `_serve_stream_opts`).
+  - `Pool.call` and `Pool.openStream` take `confidential`: `"preferred"` (the
+    default) or `"required"`, decided from the provider's verified
+    advertisement only.
+  - `Pool.serve` and `Pool.serveStream` take `confidential`: `"preferred"`
+    (the default), `"required"` (refuses every clear call; needs
+    `kemAdvertise`) or `"off"`.
+  - `PoolOptions.kemAdvertise: 0 | 1`, **0 by default**: 1 gives the node an
+    in-memory KEM keyring and names its current key in its confidential
+    procedures' advertisements. Turning it on is each provider's decision,
+    once its callers run macula 13, macula-go 0.18 or this release.
+  - `Request.sealed` and `StreamRequest.sealed` (0 or 1): whether the call or
+    session came sealed. The payload is the opened plaintext either way.
+  - `ConfidentialityError` (a `MaculaError` of kind `confidentiality`) with
+    `reason` (`no_kem_key`, `key_mismatch`, `reply_not_opened`,
+    `clear_answer_to_sealed`, `kem_advertise_disabled`), `named` and `found`.
+  - `src/sealing.test.ts` runs them through two teststations: a sealed call
+    and a sealed stream cross them, and each refusal is the reason above.
+
+### Changed
+
+- **Calls to a provider that names a KEM key are now sealed automatically**,
+  since `"preferred"` is the default; one that names none is still called in
+  the clear. A caller learns that its call went sealed only from
+  `"required"` succeeding: the reply does not say.
+- The addon binds only the `*_opts` functions for calls, streams and serving;
+  its bindings of `macula_pool_call`, `_open_stream`, `_serve` and
+  `_serve_stream` are gone. The public API is unchanged apart from the
+  additions above.
+
 ## [0.23.0] - 2026-09-27
 
 ### Added

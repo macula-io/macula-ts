@@ -98,11 +98,37 @@ export class MaculaError extends Error {
   }
 }
 
+/** A call or stream that could not be kept confidential (macula-go v0.18.0,
+ * cabi/CONTRACT.md "Confidentiality"): `no_kem_key` (the provider names no
+ * key where one is required, or one this node cannot seal to),
+ * `key_mismatch` (the provider's advertisement names another key than its
+ * refusal did: `named` and `found`), `reply_not_opened` (a sealed answer that
+ * does not open), `clear_answer_to_sealed` (a clear answer that nothing clear
+ * may give) or `kem_advertise_disabled` (serving `required` on a pool
+ * without kemAdvertise). `named` and `found` are key ids as hex, or null. */
+export class ConfidentialityError extends MaculaError {
+  constructor(readonly reason: string, readonly named: string | null, readonly found: string | null, message: string) {
+    super("confidentiality", message);
+    this.name = "ConfidentialityError";
+  }
+}
+
+/** Whether a call, a stream or a served procedure is sealed (macula 13's E2E
+ * seal scheme 1): `preferred` seals whenever the provider's advertisement
+ * names a KEM key and calls one that names none in the clear, `required`
+ * never calls one that names none; a procedure served `off` is served in the
+ * clear. A sealed call never falls back to the clear. */
+export type Confidential = "preferred" | "required";
+export type ServedConfidential = Confidential | "off";
+
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */
 export function nativeError(e: unknown): Error {
   const text = e instanceof Error ? e.message : String(e);
-  let error: { kind?: unknown; message?: unknown; code?: unknown; detail?: unknown; failures?: unknown };
+  let error: {
+    kind?: unknown; message?: unknown; code?: unknown; detail?: unknown; failures?: unknown;
+    reason?: unknown; named?: unknown; found?: unknown;
+  };
   try {
     error = JSON.parse(text);
   } catch {
@@ -121,6 +147,9 @@ export function nativeError(e: unknown): Error {
       return new NotSharedError();
     case "unavailable":
       return new ContentUnavailableError(Array.isArray(error.failures) ? error.failures.map(String).join("; ") : message);
+    case "confidentiality":
+      return new ConfidentialityError(String(error.reason ?? ""), typeof error.named === "string" ? error.named : null,
+        typeof error.found === "string" ? error.found : null, message);
     default:
       return new MaculaError(error.kind, message);
   }

@@ -57,7 +57,7 @@ interface Native {
   poolClose(pool: Handle): Promise<void>;
   poolNodeId(pool: Handle): Uint8Array;
   poolStatus(pool: Handle): string;
-  poolCall(pool: Handle, realm: Uint8Array, procedure: string, payloadJson: string, provider: Uint8Array | null,
+  poolCall(pool: Handle, realm: Uint8Array, procedure: string, payloadJson: string, optionsJson: string,
     timeoutMs: number): Promise<string>;
   poolProviders(pool: Handle, realm: Uint8Array, procedure: string, timeoutMs: number): Promise<string>;
   poolPublish(pool: Handle, realm: Uint8Array, topic: string, payloadJson: string, ttlMs: number): Promise<void>;
@@ -72,14 +72,15 @@ interface Native {
   poolUnshareContent(pool: Handle, realm: Uint8Array, mcid: Uint8Array, timeoutMs: number): Promise<void>;
   poolGetContent(pool: Handle, realm: Uint8Array, mcid: Uint8Array, optionsJson: string, timeoutMs: number): Promise<Uint8Array>;
 
-  poolServe(pool: Handle, realm: Uint8Array, procedure: string, listener: Listener): Promise<Handle>;
-  poolServeStream(pool: Handle, realm: Uint8Array, procedure: string, mode: number, listener: Listener): Promise<Handle>;
+  poolServe(pool: Handle, realm: Uint8Array, procedure: string, optionsJson: string, listener: Listener): Promise<Handle>;
+  poolServeStream(pool: Handle, realm: Uint8Array, procedure: string, mode: number, optionsJson: string,
+    listener: Listener): Promise<Handle>;
   pendingReply(pending: Handle, resultJson: string): void;
   pendingError(pending: Handle, message: string): void;
   servedStop(served: Handle): Promise<void>;
 
   poolOpenStream(pool: Handle, realm: Uint8Array, procedure: string, mode: number, payloadJson: string,
-    provider: Uint8Array | null, deadlineMs: number, timeoutMs: number): Promise<Handle>;
+    optionsJson: string, deadlineMs: number, timeoutMs: number): Promise<Handle>;
   streamSendBytes(stream: Handle, data: Uint8Array): Promise<void>;
   streamSendJson(stream: Handle, valueJson: string): Promise<void>;
   streamCloseSend(stream: Handle): Promise<void>;

@@ -21,13 +21,15 @@ export type StreamEvent =
   | { readonly kind: "end"; readonly role: "send" | "both" }
   | { readonly kind: "reply"; readonly payload: JsonValue };
 
-/** A stream's open: who opened it, where, and its payload. */
+/** A stream's open: who opened it, where, its payload, and whether it came
+ * sealed (payload is the opened plaintext either way). */
 export interface StreamRequest {
   readonly caller: string;
   readonly realm: string;
   readonly procedure: string;
   readonly payload: JsonValue;
   readonly deadlineMs: number;
+  readonly sealed: 0 | 1;
 }
 
 export class Stream {
@@ -40,7 +42,7 @@ export class Stream {
   request(): StreamRequest {
     const r = JSON.parse(native.streamRequest(this.live()));
     return { caller: r.caller, realm: r.realm, procedure: r.procedure, payload: bytesOut(r.payload, this.bytes),
-      deadlineMs: r.deadline_ms };
+      deadlineMs: r.deadline_ms, sealed: r.sealed };
   }
 
   /** Sends a raw chunk. */
