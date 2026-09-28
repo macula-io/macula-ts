@@ -200,13 +200,13 @@ describe("the seal report", () => {
     expect(early).toBeInstanceOf(MaculaError);
     expect((early as MaculaError).kind).toBe("not_settled");
     release();
-    expect((await stream.recv({ timeoutMs: 5_000 })).kind).toBe("data");
+    expect((await stream.recv({ timeoutMs: 5_000 }))?.kind).toBe("data");
     const settled = stream.report();
     expect(settled.sealed).toBe(1);
     expect(settled.provider).toBe(provider.nodeId());
     expect(settled.sealKeyId).toMatch(/^[0-9a-f]{16}$/);
     expect((await stream.recv({ timeoutMs: 5_000 }))?.kind).toBe("end");
-    expect(stream.report()).toEqual(settled);
+    expect(stream.report()).toStrictEqual(settled);
     expect(providerSide).toBeInstanceOf(MaculaError);
     expect((providerSide as MaculaError).kind).toBe("not_a_caller");
     await stream.free();
