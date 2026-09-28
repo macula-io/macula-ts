@@ -45,6 +45,7 @@ describe("a sealed call", () => {
       .toBe(provider.nodeId());
     const nobody = await caller.call(env.realmId, procedure, {}, { provider: other.nodeId() }).catch((e) => e);
     expect(nobody).toBeInstanceOf(MaculaError);
+    expect(nobody.kind).toBe("no_provider");
     await served.stop();
     await provider.close();
     await other.close();

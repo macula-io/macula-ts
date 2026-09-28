@@ -46,8 +46,8 @@ All notable changes to this project will be documented in this file.
 - The addon binds only the `*_opts` functions for calls, streams and serving;
   its bindings of `macula_pool_call`, `_open_stream`, `_serve` and
   `_serve_stream` are gone, and it refuses an options argument that is not a
-  string with a `TypeError` rather than reading it as no options. The public API is unchanged apart from the
-  additions above.
+  string with a `TypeError` rather than reading it as no options. The public
+  API is unchanged apart from the additions above.
 
 ## [0.23.0] - 2026-09-27
 
