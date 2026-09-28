@@ -16,7 +16,9 @@ All notable changes to this project will be documented in this file.
     default) or `"required"`, decided from the provider's verified
     advertisement only.
   - `Pool.serve` and `Pool.serveStream` take `confidential`: `"preferred"`
-    (the default), `"required"` (refuses every clear call; needs
+    (the default: with `kemAdvertise` a clear call is taken only while the
+    procedure's last keyless advertisement could still be served, then
+    refused `sealed_required`), `"required"` (refuses every clear call; needs
     `kemAdvertise`) or `"off"`.
   - `PoolOptions.kemAdvertise: 0 | 1`, **0 by default**: 1 gives the node an
     in-memory KEM keyring and names its current key in its confidential

@@ -158,9 +158,12 @@ export class Pool {
      * DHT; a procedure in this node's own namespace (ownProcedure) needs
      * neither, and another node's namespace is refused. `confidential`:
      * "preferred" (the default) names the pool's KEM key when it has
-     * kemAdvertise and still takes a clear call; "required" refuses every
-     * clear call (sealed_required) and needs kemAdvertise; "off" serves in the
-     * clear. */
+     * kemAdvertise, and takes a clear call only while the procedure's last
+     * keyless advertisement could still be served, then refuses it
+     * (sealed_required), so a caller older than macula 13, macula-go 0.18 or
+     * this release cannot call it after that; without kemAdvertise it names
+     * no key and serves in the clear. "required" refuses every clear call
+     * (sealed_required) and needs kemAdvertise; "off" serves in the clear. */
     async serve(realm, procedure, handler, options = {}) {
         bytesOut(null, options.bytes);
         const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, serveOptionsJson(options.confidential), (d) => {
