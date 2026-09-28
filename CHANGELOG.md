@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-09-28
+
+### Fixed
+
+- **A provider's handler is entered at most once per call** (macula-go v0.18.1,
+  #8). The pool moved to the next provider after any failure but an answer, a
+  timeout included, so a handler slower than one provider's share of the
+  deadline was entered again at the next one: a side effect ran twice, and the
+  caller got a timeout. The pool now moves on only when a provider's station
+  cannot be reached, before anything is sent, and the slow answer comes back.
+  A consequence: a station's relay error for a provider that has left (its
+  advertisement can live up to 5 minutes) now ends the call instead of moving
+  it to the next provider. `src/pool.test.ts` holds it (seen red on v0.18.0).
+- **Nothing goes out past the caller's deadline** (macula-go v0.18.2, #12). A
+  call or stream open at the very end of the deadline was sent with a provider
+  deadline up to 5 s past the caller's; now it is refused before anything is
+  written.
+- Built on macula-go v0.18.2's shared library; its C ABI is unchanged from
+  v0.18.0.
+
 ## [0.24.0] - 2026-09-28
 
 ### Added
