@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-09-28
+
 ### Added
 
 - **The caller's seal report** (macula's `DESIGN_E2E_SEAL_REPORT`, through
