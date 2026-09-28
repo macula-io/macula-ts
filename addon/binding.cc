@@ -344,6 +344,14 @@ void CleanupPoller(void* arg) {
   if (raw->thread.joinable()) raw->thread.join();
 }
 
+// RequireString: an options argument must be a string, so a caller passing
+// anything else fails loudly instead of being read as no options.
+bool RequireString(const Napi::CallbackInfo& info, size_t i) {
+  if (info.Length() > i && info[i].IsString()) return true;
+  Napi::TypeError::New(info.Env(), "expected an options JSON string").ThrowAsJavaScriptException();
+  return false;
+}
+
 bool RequireFunction(const Napi::CallbackInfo& info, size_t i) {
   if (info.Length() > i && info[i].IsFunction()) return true;
   Napi::TypeError::New(info.Env(), "expected a callback function").ThrowAsJavaScriptException();
@@ -644,7 +652,7 @@ Napi::Value PoolCall(const Napi::CallbackInfo& info) {
   bool ok = false;
   macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm;
-  if (!ok || !Arg32(info, 1, &realm)) return info.Env().Null();
+  if (!ok || !Arg32(info, 1, &realm) || !RequireString(info, 4)) return info.Env().Null();
   std::string procedure = ArgString(info, 2), payload = ArgString(info, 3), opts = ArgString(info, 4);
   int64_t timeout = ArgInt(info, 5);
   return Queue(info.Env(), Job::Result::kString, [=](Job& job) mutable {
@@ -836,7 +844,9 @@ Napi::Value PoolServe(const Napi::CallbackInfo& info) {
   bool ok = false;
   macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm;
-  if (!ok || !Arg32(info, 1, &realm) || !RequireFunction(info, 4)) return info.Env().Null();
+  if (!ok || !Arg32(info, 1, &realm) || !RequireString(info, 3) || !RequireFunction(info, 4)) {
+    return info.Env().Null();
+  }
   std::string procedure = ArgString(info, 2), opts = ArgString(info, 3);
   return StartListener(info, 4, Poller::Kind::kServed, "macula-serve", [=](char** errOut) mutable {
     return macula_pool_serve_opts(h, Ptr(realm), C(procedure), C(opts), errOut);
@@ -850,7 +860,9 @@ Napi::Value PoolServeStream(const Napi::CallbackInfo& info) {
   bool ok = false;
   macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm;
-  if (!ok || !Arg32(info, 1, &realm) || !RequireFunction(info, 5)) return info.Env().Null();
+  if (!ok || !Arg32(info, 1, &realm) || !RequireString(info, 4) || !RequireFunction(info, 5)) {
+    return info.Env().Null();
+  }
   std::string procedure = ArgString(info, 2), opts = ArgString(info, 4);
   int32_t mode = static_cast<int32_t>(ArgInt(info, 3));
   return StartListener(info, 5, Poller::Kind::kServed, "macula-serve-stream", [=](char** errOut) mutable {
@@ -894,7 +906,7 @@ Napi::Value PoolOpenStream(const Napi::CallbackInfo& info) {
   bool ok = false;
   macula_handle h = ToHandle(info.Env(), info[0], &ok);
   std::vector<uint8_t> realm;
-  if (!ok || !Arg32(info, 1, &realm)) return info.Env().Null();
+  if (!ok || !Arg32(info, 1, &realm) || !RequireString(info, 5)) return info.Env().Null();
   std::string procedure = ArgString(info, 2), payload = ArgString(info, 4), opts = ArgString(info, 5);
   int32_t mode = static_cast<int32_t>(ArgInt(info, 3));
   int64_t deadline = ArgInt(info, 6), timeout = ArgInt(info, 7);

@@ -25,7 +25,7 @@ export class Stream {
     request() {
         const r = JSON.parse(native.streamRequest(this.live()));
         return { caller: r.caller, realm: r.realm, procedure: r.procedure, payload: bytesOut(r.payload, this.bytes),
-            deadlineMs: r.deadline_ms };
+            deadlineMs: r.deadline_ms, sealed: r.sealed };
     }
     /** Sends a raw chunk. */
     async send(chunk) {

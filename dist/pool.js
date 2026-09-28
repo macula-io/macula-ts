@@ -9,6 +9,19 @@ import { native } from "./binding.js";
 import { Stream } from "./stream.js";
 import { DEFAULT_CONTENT_TIMEOUT_MS, mcid50 } from "./content.js";
 import { DEFAULT_CALL_TIMEOUT_MS, MaculaError, bytesOut, hex, id32, } from "./wire.js";
+/** A call's or a stream's options, as macula_pool_call_opts takes them. */
+function callOptionsJson(provider, confidential) {
+    const o = {};
+    if (provider !== undefined)
+        o.provider = hex(id32(provider, "provider"));
+    if (confidential !== undefined)
+        o.confidential = confidential;
+    return JSON.stringify(o);
+}
+/** A served procedure's options, as macula_pool_serve_opts takes them. */
+function serveOptionsJson(confidential) {
+    return JSON.stringify(confidential === undefined ? {} : { confidential });
+}
 /** macula 12's record types. */
 export var RecordType;
 (function (RecordType) {
@@ -80,6 +93,7 @@ export class Pool {
             max_direct_links: options.maxDirectLinks ?? 0,
             respawn_delay_ms: options.respawnDelayMs ?? 0,
             timeout_ms: options.timeoutMs ?? 0,
+            kem_advertise: options.kemAdvertise ?? 0,
         };
         return new Pool(await native.poolConnect(key.live(), JSON.stringify(seedJson), JSON.stringify(opts)));
     }
@@ -100,11 +114,15 @@ export class Pool {
         return links.map((l) => ({ station: l.station, host: l.host, port: l.port, direct: l.direct === 1, up: l.up === 1 }));
     }
     /** Calls procedure in realm at a provider (any trusted one unless
-     * `provider` names one) by direct dial. A provider's ERROR is thrown as a
-     * ProviderError, a station's relay error as a RelayError. */
+     * `provider` names one) by direct dial. The call is sealed to the
+     * provider's advertised KEM key whenever its advertisement names one
+     * (`confidential` "preferred", the default); "required" never calls a
+     * provider that names none. A provider's ERROR is thrown as a
+     * ProviderError, a station's relay error as a RelayError, a call that
+     * could not be kept confidential as a ConfidentialityError. */
     async call(realm, procedure, payload = {}, options = {}) {
         bytesOut(null, options.bytes);
-        const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+        const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
         return bytesOut(JSON.parse(result), options.bytes);
     }
     /** The procedure's trusted providers, freshest first. */
@@ -138,10 +156,14 @@ export class Pool {
      * error goes back as a handler_error with its message. An org procedure
      * needs the realm's key pinned and the org's delegation to this node in the
      * DHT; a procedure in this node's own namespace (ownProcedure) needs
-     * neither, and another node's namespace is refused. */
+     * neither, and another node's namespace is refused. `confidential`:
+     * "preferred" (the default) names the pool's KEM key when it has
+     * kemAdvertise and still takes a clear call; "required" refuses every
+     * clear call (sealed_required) and needs kemAdvertise; "off" serves in the
+     * clear. */
     async serve(realm, procedure, handler, options = {}) {
         bytesOut(null, options.bytes);
-        const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, (d) => {
+        const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, serveOptionsJson(options.confidential), (d) => {
             if (d.kind !== "request")
                 return;
             void answer(d, handler, options.bytes);
@@ -150,10 +172,11 @@ export class Pool {
     }
     /** Serves procedure in realm as a stream of mode: handler drives each
      * session. The stream is closed when the handler returns without ending
-     * it, aborted with code error when it throws, and released either way. */
+     * it, aborted with code error when it throws, and released either way.
+     * `confidential` as serve's. */
     async serveStream(realm, procedure, mode, handler, options = {}) {
         bytesOut(null, options.bytes);
-        const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode, (d) => {
+        const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode, serveOptionsJson(options.confidential), (d) => {
             if (d.kind !== "request")
                 return;
             void runStream(new Stream(d.handle, options.bytes), handler);
@@ -161,10 +184,12 @@ export class Pool {
         return new Served(handle);
     }
     /** Opens a stream of mode on procedure in realm at a provider, by direct
-     * dial. A refusal arrives on its first recv(). */
+     * dial, sealed as call is (`confidential`). A refusal arrives on its first
+     * recv(); a stream that could not be kept confidential is a
+     * ConfidentialityError here. */
     async openStream(realm, procedure, mode, payload = {}, options = {}) {
         bytesOut(null, options.bytes);
-        const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode, JSON.stringify(payload), options.provider === undefined ? null : id32(options.provider, "provider"), options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+        const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential), options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
         return new Stream(handle, options.bytes);
     }
     /** The verified record under key, or null when there is none. */
@@ -240,7 +265,7 @@ export class Pool {
 async function answer(d, handler, bytes) {
     const r = JSON.parse(d.json);
     const request = { caller: r.caller, realm: r.realm, procedure: r.procedure,
-        payload: bytesOut(r.payload, bytes), deadlineMs: r.deadline_ms };
+        payload: bytesOut(r.payload, bytes), deadlineMs: r.deadline_ms, sealed: r.sealed };
     try {
         native.pendingReply(d.handle, JSON.stringify(await handler(request)));
     }

@@ -41,8 +41,10 @@ export function hex(bytes) {
 }
 /** A provider's own ERROR for a call: `handler_error` with the handler's
  * text, `temporary_relay_failure` for a handler that crashed,
- * `unknown_next_peer` for a procedure it does not serve, or an admission
- * refusal (`expired`, `request_copy`, `caller_quota`, ...). */
+ * `unknown_next_peer` for a procedure it does not serve, `sealed_refused`
+ * for a sealed call it could not open even resealed once (detail: the key id
+ * it holds now as hex, or empty when it holds none), or an admission refusal
+ * (`expired`, `request_copy`, `caller_quota`, ...). */
 export class ProviderError extends Error {
     code;
     detail;
@@ -88,6 +90,26 @@ export class MaculaError extends Error {
         this.name = "MaculaError";
     }
 }
+/** A call or stream that could not be kept confidential (macula-go v0.18.0,
+ * cabi/CONTRACT.md "Confidentiality"): `no_kem_key` (the provider names no
+ * key where one is required, or one this node cannot seal to),
+ * `key_mismatch` (the provider's advertisement names another key than its
+ * refusal did: `named` and `found`), `reply_not_opened` (a sealed answer that
+ * does not open), `clear_answer_to_sealed` (a clear answer that nothing clear
+ * may give) or `kem_advertise_disabled` (serving `required` on a pool
+ * without kemAdvertise). `named` and `found` are key ids as hex, or null. */
+export class ConfidentialityError extends MaculaError {
+    reason;
+    named;
+    found;
+    constructor(reason, named, found, message) {
+        super("confidentiality", message);
+        this.reason = reason;
+        this.named = named;
+        this.found = found;
+        this.name = "ConfidentialityError";
+    }
+}
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */
 export function nativeError(e) {
@@ -112,6 +134,8 @@ export function nativeError(e) {
             return new NotSharedError();
         case "unavailable":
             return new ContentUnavailableError(Array.isArray(error.failures) ? error.failures.map(String).join("; ") : message);
+        case "confidentiality":
+            return new ConfidentialityError(String(error.reason ?? ""), typeof error.named === "string" ? error.named : null, typeof error.found === "string" ? error.found : null, message);
         default:
             return new MaculaError(error.kind, message);
     }

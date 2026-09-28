@@ -42,9 +42,10 @@ export interface PoolOptions {
   /** 1: the node holds a KEM keyring (in memory, rotated daily) and names its
    * current key in the advertisements of its confidential procedures, so
    * callers seal to it. 0 (the default): it names none and is called in the
-   * clear. Turning it on is each provider's own decision, once its callers
-   * run macula 13, macula-go 0.18 or @macula-io/ts 0.24: an older caller
-   * cannot call a procedure served `required`. */
+   * clear. Turning it on is each provider's own decision, once every
+   * station it serves through runs macula 12.11 or later and its callers run
+   * macula 13, macula-go 0.18 or @macula-io/ts 0.24: an older caller cannot
+   * call a procedure served `required`. */
   readonly kemAdvertise?: 0 | 1;
 }
 

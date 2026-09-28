@@ -26,8 +26,10 @@ export declare function id32(id: Id, what?: string): Uint8Array;
 export declare function hex(bytes: Uint8Array): string;
 /** A provider's own ERROR for a call: `handler_error` with the handler's
  * text, `temporary_relay_failure` for a handler that crashed,
- * `unknown_next_peer` for a procedure it does not serve, or an admission
- * refusal (`expired`, `request_copy`, `caller_quota`, ...). */
+ * `unknown_next_peer` for a procedure it does not serve, `sealed_refused`
+ * for a sealed call it could not open even resealed once (detail: the key id
+ * it holds now as hex, or empty when it holds none), or an admission refusal
+ * (`expired`, `request_copy`, `caller_quota`, ...). */
 export declare class ProviderError extends Error {
     readonly code: string;
     readonly detail: string;
@@ -54,6 +56,27 @@ export declare class MaculaError extends Error {
     readonly kind: string;
     constructor(kind: string, message: string);
 }
+/** A call or stream that could not be kept confidential (macula-go v0.18.0,
+ * cabi/CONTRACT.md "Confidentiality"): `no_kem_key` (the provider names no
+ * key where one is required, or one this node cannot seal to),
+ * `key_mismatch` (the provider's advertisement names another key than its
+ * refusal did: `named` and `found`), `reply_not_opened` (a sealed answer that
+ * does not open), `clear_answer_to_sealed` (a clear answer that nothing clear
+ * may give) or `kem_advertise_disabled` (serving `required` on a pool
+ * without kemAdvertise). `named` and `found` are key ids as hex, or null. */
+export declare class ConfidentialityError extends MaculaError {
+    readonly reason: string;
+    readonly named: string | null;
+    readonly found: string | null;
+    constructor(reason: string, named: string | null, found: string | null, message: string);
+}
+/** Whether a call, a stream or a served procedure is sealed (macula 13's E2E
+ * seal scheme 1): `preferred` seals whenever the provider's advertisement
+ * names a KEM key and calls one that names none in the clear, `required`
+ * never calls one that names none; a procedure served `off` is served in the
+ * clear. A sealed call never falls back to the clear. */
+export type Confidential = "preferred" | "required";
+export type ServedConfidential = Confidential | "off";
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */
 export declare function nativeError(e: unknown): Error;

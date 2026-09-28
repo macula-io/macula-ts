@@ -19,14 +19,23 @@ All notable changes to this project will be documented in this file.
   - `PoolOptions.kemAdvertise: 0 | 1`, **0 by default**: 1 gives the node an
     in-memory KEM keyring and names its current key in its confidential
     procedures' advertisements. Turning it on is each provider's decision,
-    once its callers run macula 13, macula-go 0.18 or this release.
+    once every station it serves through runs macula 12.11 or later and its
+    callers run macula 13, macula-go 0.18 or this release.
   - `Request.sealed` and `StreamRequest.sealed` (0 or 1): whether the call or
     session came sealed. The payload is the opened plaintext either way.
   - `ConfidentialityError` (a `MaculaError` of kind `confidentiality`) with
     `reason` (`no_kem_key`, `key_mismatch`, `reply_not_opened`,
     `clear_answer_to_sealed`, `kem_advertise_disabled`), `named` and `found`.
-  - `src/sealing.test.ts` runs them through two teststations: a sealed call
-    and a sealed stream cross them, and each refusal is the reason above.
+  - A provider that cannot open a sealed call, resealed once, answers a
+    `ProviderError` of code `sealed_refused`, its `detail` the key id it holds
+    now (hex, or empty when it holds none).
+  - `src/sealing.test.ts` runs them through macula-go's two in-process
+    teststations: a sealed call and a sealed stream from a caller on one to a
+    provider on the other, a call pinned to its provider, and the refusals
+    `no_kem_key` (a call and a stream), `kem_advertise_disabled` (serve) and
+    `invalid_argument` (a call asking `"off"`). `key_mismatch`,
+    `reply_not_opened` and `clear_answer_to_sealed` need a misbehaving
+    provider and are not exercised here.
 
 ### Changed
 
@@ -36,7 +45,8 @@ All notable changes to this project will be documented in this file.
   `"required"` succeeding: the reply does not say.
 - The addon binds only the `*_opts` functions for calls, streams and serving;
   its bindings of `macula_pool_call`, `_open_stream`, `_serve` and
-  `_serve_stream` are gone. The public API is unchanged apart from the
+  `_serve_stream` are gone, and it refuses an options argument that is not a
+  string with a `TypeError` rather than reading it as no options. The public API is unchanged apart from the
   additions above.
 
 ## [0.23.0] - 2026-09-27

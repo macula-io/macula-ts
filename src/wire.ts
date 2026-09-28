@@ -61,8 +61,10 @@ export function hex(bytes: Uint8Array): string {
 
 /** A provider's own ERROR for a call: `handler_error` with the handler's
  * text, `temporary_relay_failure` for a handler that crashed,
- * `unknown_next_peer` for a procedure it does not serve, or an admission
- * refusal (`expired`, `request_copy`, `caller_quota`, ...). */
+ * `unknown_next_peer` for a procedure it does not serve, `sealed_refused`
+ * for a sealed call it could not open even resealed once (detail: the key id
+ * it holds now as hex, or empty when it holds none), or an admission refusal
+ * (`expired`, `request_copy`, `caller_quota`, ...). */
 export class ProviderError extends Error {
   constructor(readonly code: string, readonly detail: string) {
     super(`macula-ts: the provider answered ${code}${detail ? `: ${detail}` : ""}`);

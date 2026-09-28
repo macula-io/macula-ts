@@ -4,6 +4,7 @@
 // clear, and what cannot be kept confidential fails as a ConfidentialityError.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startStations, type TestStations } from "../test/station.js";
+import { native } from "./binding.js";
 import { ConfidentialityError, MaculaError, NodeKey, Pool, StreamMode, type Seed } from "./index.js";
 
 let env: TestStations;
@@ -19,7 +20,7 @@ beforeAll(async () => {
 afterAll(() => env.stop());
 
 describe("a sealed call", () => {
-  it("reaches a provider that names its key across the stations, which see it sealed", async () => {
+  it("reaches a provider that names its key, from another station, sealed required and by default", async () => {
     const provider = await node(0, 1);
     const procedure = provider.ownProcedure("sealed_echo");
     const served = await provider.serve(env.realmId, procedure, (r) => ({ echoed: r.payload, sealed: r.sealed }),
@@ -31,6 +32,22 @@ describe("a sealed call", () => {
       .toEqual({ echoed: { word: "again" }, sealed: 1 });
     await served.stop();
     await provider.close();
+    await caller.close();
+  });
+
+  it("goes to the provider pinned, alongside confidential", async () => {
+    const provider = await node(0, 1);
+    const other = await node(0, 1);
+    const procedure = provider.ownProcedure("pinned");
+    const served = await provider.serve(env.realmId, procedure, () => provider.nodeId());
+    const caller = await node(1);
+    expect(await caller.call(env.realmId, procedure, {}, { provider: provider.nodeId(), confidential: "required" }))
+      .toBe(provider.nodeId());
+    const nobody = await caller.call(env.realmId, procedure, {}, { provider: other.nodeId() }).catch((e) => e);
+    expect(nobody).toBeInstanceOf(MaculaError);
+    await served.stop();
+    await provider.close();
+    await other.close();
     await caller.close();
   });
 
@@ -114,6 +131,20 @@ describe("a sealed stream", () => {
     expect(refused.reason).toBe("no_kem_key");
     await served.stop();
     await provider.close();
+    await caller.close();
+  });
+});
+
+describe("the addon underneath", () => {
+  it("refuses options that are not a JSON string, rather than reading them as none", async () => {
+    const caller = await node(1);
+    const pool = (caller as unknown as { handle: bigint }).handle;
+    const realm = Buffer.from(env.realmId, "hex");
+    const wrong = new Uint8Array(32) as unknown as string;
+    expect(() => native.poolCall(pool, realm, "x", "{}", wrong, 1_000)).toThrow(TypeError);
+    expect(() => native.poolOpenStream(pool, realm, "x", StreamMode.Server, "{}", wrong, 0, 1_000)).toThrow(TypeError);
+    expect(() => native.poolServe(pool, realm, "x", wrong, () => {})).toThrow(TypeError);
+    expect(() => native.poolServeStream(pool, realm, "x", StreamMode.Server, wrong, () => {})).toThrow(TypeError);
     await caller.close();
   });
 });

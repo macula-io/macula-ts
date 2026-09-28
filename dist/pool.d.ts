@@ -2,7 +2,7 @@ import { type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
 import { type ContentOptions, type Mcid } from "./content.js";
-import { type BytesOutput, type Id, type JsonValue } from "./wire.js";
+import { type Confidential, type ServedConfidential, type BytesOutput, type Id, type JsonValue } from "./wire.js";
 /** A station to link to, pinned by the node_id it must prove. */
 export interface Seed {
     readonly host: string;
@@ -22,6 +22,14 @@ export interface PoolOptions {
     readonly respawnDelayMs?: number;
     /** How long connect waits for a first link, 30 s by default. */
     readonly timeoutMs?: number;
+    /** 1: the node holds a KEM keyring (in memory, rotated daily) and names its
+     * current key in the advertisements of its confidential procedures, so
+     * callers seal to it. 0 (the default): it names none and is called in the
+     * clear. Turning it on is each provider's own decision, once every
+     * station it serves through runs macula 12.11 or later and its callers run
+     * macula 13, macula-go 0.18 or @macula-io/ts 0.24: an older caller cannot
+     * call a procedure served `required`. */
+    readonly kemAdvertise?: 0 | 1;
 }
 /** One of the pool's links. */
 export interface LinkStatus {
@@ -53,6 +61,9 @@ export interface Request {
     readonly procedure: string;
     readonly payload: JsonValue;
     readonly deadlineMs: number;
+    /** 1 when the call came sealed; payload is the opened plaintext either
+     * way. */
+    readonly sealed: 0 | 1;
 }
 /** A verified DHT record: its type, signer's key id, times, payload, and wire
  * bytes (tagged). */
@@ -113,10 +124,15 @@ export declare class Pool {
     /** Every link the pool holds. */
     status(): LinkStatus[];
     /** Calls procedure in realm at a provider (any trusted one unless
-     * `provider` names one) by direct dial. A provider's ERROR is thrown as a
-     * ProviderError, a station's relay error as a RelayError. */
+     * `provider` names one) by direct dial. The call is sealed to the
+     * provider's advertised KEM key whenever its advertisement names one
+     * (`confidential` "preferred", the default); "required" never calls a
+     * provider that names none. A provider's ERROR is thrown as a
+     * ProviderError, a station's relay error as a RelayError, a call that
+     * could not be kept confidential as a ConfidentialityError. */
     call(realm: Id, procedure: string, payload?: JsonValue, options?: {
         provider?: Id;
+        confidential?: Confidential;
         timeoutMs?: number;
         bytes?: BytesOutput;
     }): Promise<JsonValue>;
@@ -139,20 +155,30 @@ export declare class Pool {
      * error goes back as a handler_error with its message. An org procedure
      * needs the realm's key pinned and the org's delegation to this node in the
      * DHT; a procedure in this node's own namespace (ownProcedure) needs
-     * neither, and another node's namespace is refused. */
+     * neither, and another node's namespace is refused. `confidential`:
+     * "preferred" (the default) names the pool's KEM key when it has
+     * kemAdvertise and still takes a clear call; "required" refuses every
+     * clear call (sealed_required) and needs kemAdvertise; "off" serves in the
+     * clear. */
     serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>, options?: {
+        confidential?: ServedConfidential;
         bytes?: BytesOutput;
     }): Promise<Served>;
     /** Serves procedure in realm as a stream of mode: handler drives each
      * session. The stream is closed when the handler returns without ending
-     * it, aborted with code error when it throws, and released either way. */
+     * it, aborted with code error when it throws, and released either way.
+     * `confidential` as serve's. */
     serveStream(realm: Id, procedure: string, mode: StreamMode, handler: (stream: Stream, request: StreamRequest) => void | Promise<void>, options?: {
+        confidential?: ServedConfidential;
         bytes?: BytesOutput;
     }): Promise<Served>;
     /** Opens a stream of mode on procedure in realm at a provider, by direct
-     * dial. A refusal arrives on its first recv(). */
+     * dial, sealed as call is (`confidential`). A refusal arrives on its first
+     * recv(); a stream that could not be kept confidential is a
+     * ConfidentialityError here. */
     openStream(realm: Id, procedure: string, mode: StreamMode, payload?: JsonValue, options?: {
         provider?: Id;
+        confidential?: Confidential;
         deadlineMs?: number;
         timeoutMs?: number;
         bytes?: BytesOutput;
