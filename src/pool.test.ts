@@ -75,6 +75,30 @@ describe("calls", () => {
     await caller.close();
   });
 
+  // macula-go#8: a handler slower than one candidate's share of the deadline
+  // was entered again at the next provider, so a side effect ran twice and the
+  // caller timed out. At most once per call, and the slow answer comes back.
+  it("enter a provider's handler at most once, however slow, and bring its answer back", async () => {
+    const procedure = `${env.org}/slow`;
+    let entries = 0;
+    const handler = async () => {
+      entries += 1;
+      await new Promise((r) => setTimeout(r, 3_000));
+      return "done";
+    };
+    const providers = [await node(0, true), await node(1, true)];
+    const served = await Promise.all(providers.map((p) => p.serve(env.realmId, procedure, handler)));
+    const caller = await node(0);
+    await eventually("both providers found", async () =>
+      (await caller.providers(env.realmId, procedure)).length === 2);
+    expect(await caller.call(env.realmId, procedure, {}, { timeoutMs: 4_000 })).toBe("done");
+    await new Promise((r) => setTimeout(r, 3_500));
+    expect(entries).toBe(1);
+    await Promise.all(served.map((s) => s.stop()));
+    await Promise.all(providers.map((p) => p.close()));
+    await caller.close();
+  }, 20_000);
+
   it("refuse a realm whose key is not pinned, and find no provider for what nobody serves", async () => {
     const caller = await node(0);
     await expect(caller.call("11".repeat(32), `${env.org}/echo`, {})).rejects.toThrow(/realm key/);
