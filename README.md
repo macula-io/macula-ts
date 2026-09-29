@@ -247,7 +247,9 @@ release so two versions of this package never share one), because node-gyp links
 does not start the Go runtime of a MinGW-built static archive. `.github/workflows/prebuild-matrix.yml` builds
 each from source on a real GitHub-hosted runner for that platform (cgo needs
 the platform's own C toolchain, so no cross-compiling), loads it and generates
-a key with it before uploading it. The release workflow attests each prebuild
+a key with it before uploading it. The Linux prebuilds are built on Ubuntu 22.04
+(glibc 2.35, libstdc++ `GLIBCXX_3.4.30`) and also loaded in Debian 12
+(`node:24-bookworm`), so they run on Debian 12, Ubuntu 22.04 and anything newer. The release workflow attests each prebuild
 (build provenance) and packs all five into the package it publishes; CI runs
 the same matrix on every push, then installs the packed package into an empty
 project and checks the install compiled nothing. Prebuilds are never committed

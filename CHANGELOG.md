@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **macula-go v0.20.0** (native/MACULA_GO, a26b90a): the links speak
+  handshake v5 (the session bound to the connection's TLS exporter), fall back
+  to v4 once for a station that has not moved to v5, and refuse a downgrade
+  from a station already seen on v5 (the link ends `v5_downgrade_refused`).
+  It also carries the macula#53 fix. No change to the C ABI or this package's
+  API.
+
+### Fixed
+
+- **The Linux prebuilds load on Debian 12 and Ubuntu 22.04** (macula-ts#12).
+  They were built on Ubuntu 24.04 and needed libstdc++'s `GLIBCXX_3.4.31`, so
+  0.25.0 (and @macula-io/mcp 0.37.0 through it) failed to load on bookworm
+  with "version `GLIBCXX_3.4.31' not found". They are built on Ubuntu 22.04
+  now, and CI loads each one in `node:24-bookworm` before it is uploaded.
+
 ## [0.25.0] - 2026-09-28
 
 ### Added
