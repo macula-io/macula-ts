@@ -18,3 +18,8 @@ prebuilds/
 
 # OS
 .DS_Store
+
+# Stray build output at the repo root: native/build/ and build/ are the
+# intended locations (scripts/build-native.sh writes there). This guards a
+# go-build run that landed the cabi archive here.
+/cabi/
