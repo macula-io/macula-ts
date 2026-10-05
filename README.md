@@ -167,6 +167,7 @@ call and session to JavaScript through a `ThreadSafeFunction`.
 | Primitive | Caller | Provider | Notes |
 |---|---|---|---|
 | Node keys (`NodeKey`) | ✅ | ✅ | `pq_hybrid` (the fleet's) or `pq_pure`; key files readable by the owner only; `sign` and `NodeKey.verify`, pq_hybrid checked against the LAMPS draft's own vector and cross-verified with macula 12.7.0 |
+| Signed objects (`verifySignedObject`) | ✅ | | macula's `{key, tbs, signature}`, verified under a label and profile to the signer's node id (derived from the verified key) and the signed fields; one that does not verify throws `UnverifiedError` with its reason. Checked against the RAG service contract's frozen vector, both profiles |
 | Pool of station links (`Pool.connect`) | ✅ | ✅ | Seeds pinned by node_id; realm keys pinned; links redialed with subscriptions and served procedures replayed |
 | Calls by direct dial (`call`, `providers`) | ✅ | ✅ | `serve`: a thrown error goes back as `handler_error`; errors arrive as `ProviderError` / `RelayError` |
 | A node's own namespace (`ownProcedure`) | ✅ | ✅ | `~<node_id>/<name>`: served and called with no org and no realm key; the node's signature authorizes it |

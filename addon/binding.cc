@@ -520,6 +520,21 @@ Napi::Value Verify(const Napi::CallbackInfo& info) {
   return Napi::Boolean::New(env, valid == 1);
 }
 
+// signedObjectVerify(label, object, profile) -> string: a signed object that
+// carries its signer's key, verified as macula_signed_object:verify/3 does
+// (since macula-go v0.22.0). A verification is a public-key operation, quick
+// enough to run on the calling thread, like verify.
+Napi::Value SignedObjectVerify(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::string label = ArgString(info, 0);
+  std::vector<uint8_t> object = ArgBytes(info, 1);
+  std::string profile = ArgString(info, 2);
+  char* errOut = nullptr;
+  std::string out = TakeString(macula_signed_object_verify(C(label), Ptr(object), object.size(), C(profile), &errOut));
+  if (ThrowIfErr(env, errOut)) return env.Null();
+  return Napi::String::New(env, out);
+}
+
 // keyDeviceRequestProof(key, realm, procedure, requestJson, rule) ->
 // Promise<string>: a realm proof v2 (macula-realm#29), signed off the event
 // loop like keySign.
@@ -1054,6 +1069,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("keyOwnershipProof", Napi::Function::New(env, KeyOwnershipProof));
   exports.Set("ownershipProofMessage", Napi::Function::New(env, OwnershipProofMessage));
   exports.Set("verify", Napi::Function::New(env, Verify));
+  exports.Set("signedObjectVerify", Napi::Function::New(env, SignedObjectVerify));
   exports.Set("keyFree", Napi::Function::New(env, KeyFree));
   exports.Set("poolConnect", Napi::Function::New(env, PoolConnect));
   exports.Set("poolClose", Napi::Function::New(env, PoolClose));

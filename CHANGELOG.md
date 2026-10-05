@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.0] - 2026-10-05
+
+### Added
+
+- **`verifySignedObject(label, object, profile)`**: a macula signed object
+  that carries its key (`{key, tbs, signature}`), verified as
+  `macula_signed_object:verify/3` does, to the signer's node id (lowercase
+  hex, derived from the verified key), its key, the tbs bytes and the decoded
+  fields. One that does not verify throws `UnverifiedError` with `reason`
+  `malformed`, `signature_invalid` or `alg_mismatch`. Checked against the RAG
+  service contract's frozen signed-corpus vector (macula-rag), both profiles.
+  This is how a client checks the operator signature on an mcl-rag corpus.
+
+### Changed
+
+- **macula-go v0.22.0** (native/MACULA_GO, dc23a8e): adds
+  `macula_signed_object_verify` to the C ABI. Nothing else in the ABI changed.
+
 ## [0.26.0] - 2026-09-29
 
 ### Changed

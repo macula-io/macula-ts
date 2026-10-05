@@ -141,6 +141,16 @@ export function sealReport(r: { sealed: 0 | 1; provider: string; seal_key_id?: s
 }
 export type ServedConfidential = Confidential | "off";
 
+/** A signed object that did not verify (macula-go "unverified"): `reason` is
+ * "malformed" (its shape, its key's form for the profile, or its tbs),
+ * "signature_invalid" or "alg_mismatch". */
+export class UnverifiedError extends Error {
+  constructor(readonly reason: string) {
+    super(`signed object not verified: ${reason}`);
+    this.name = "UnverifiedError";
+  }
+}
+
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */
 export function nativeError(e: unknown): Error {
@@ -167,6 +177,8 @@ export function nativeError(e: unknown): Error {
       return new NotSharedError();
     case "unavailable":
       return new ContentUnavailableError(Array.isArray(error.failures) ? error.failures.map(String).join("; ") : message);
+    case "unverified":
+      return new UnverifiedError(String(error.reason ?? ""));
     case "confidentiality":
       return new ConfidentialityError(String(error.reason ?? ""), typeof error.named === "string" ? error.named : null,
         typeof error.found === "string" ? error.found : null, message);

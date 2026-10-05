@@ -30,12 +30,14 @@ export {
   type Mcid,
 } from "./content.js";
 export { Stream, StreamMode, type StreamEvent, type StreamRequest } from "./stream.js";
+export { verifySignedObject, type VerifiedObject } from "./signed_object.js";
 export {
   ProviderError,
   RelayError,
   StreamError,
   MaculaError,
   ConfidentialityError,
+  UnverifiedError,
   DEFAULT_CALL_TIMEOUT_MS,
   type Confidential,
   type ServedConfidential,
