@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.29.0] - 2026-10-06
+
+UCAN-gated calls, streams and serving (macula 12's D7), through the C ABI
+macula-go has offered since v0.17.0 (macula-architecture#9).
+
+### Added
+
+- `NodeKey.ucan(audience, caps, expS, { nbf, nnc, fct, prf })` mints a UCAN
+  for the node that presents it; `caps` is a list of `{ with, can }`, each
+  `with` an MRI. `Ucan.proofId(token)` names a delegated token's parent in
+  its child's `prf`.
+- `call`, `callReport` and `openStream` take `ucan` and `proofs` (the chain's
+  parents). An empty token, or proofs with no token, is refused before
+  anything is sent.
+- `serve` and `serveStream` take `policy`: `Ucan.ucanRequired(issuer)` or
+  `Ucan.realmMemberRequired(keyId, can)`. A refused call is a `ProviderError`,
+  a refused open a `StreamError`, of code `unauthorized`; neither reaches the
+  handler.
+
 ## [0.28.0] - 2026-10-05
 
 Every connection now settles on SecP384r1MLKEM1024, the one hybrid key

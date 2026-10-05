@@ -1,5 +1,6 @@
 import { type Handle } from "./binding.js";
 import { type Id, type JsonValue } from "./wire.js";
+import type { Capability } from "./ucan.js";
 /** A crypto profile: "pq_hybrid" (the fleet's) or "pq_pure". */
 export type Profile = "pq_hybrid" | "pq_pure";
 /**
@@ -93,6 +94,16 @@ export declare class NodeKey {
     ownershipProof(realm: Id, procedure: string, payload: {
         [field: string]: JsonValue;
     }): Promise<OwnershipProven>;
+    /** A UCAN this key grants the node audience (macula's D7): caps until expS
+     * (Unix seconds). A token is minted for the node that presents it. `prf`
+     * names a delegated token's parent by Ucan.proofId (at most one); `nbf`,
+     * `nnc` and `fct` are the token's own fields. */
+    ucan(audience: Id, caps: readonly Capability[], expS: number, options?: {
+        nbf?: number;
+        nnc?: string;
+        fct?: JsonValue;
+        prf?: readonly string[];
+    }): Promise<string>;
     /** The exact bytes an ownership proof v2 signs for identity (a node_id), at
      * timestampMs with a 16-byte nonce, over payload's fields: all of it but
      * "asserted_by" and a text "caller", as a verifier reads a delivered

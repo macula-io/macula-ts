@@ -1,6 +1,7 @@
 import { type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
+import type { ServePolicy } from "./ucan.js";
 import { type ContentOptions, type Mcid } from "./content.js";
 import { type Confidential, type SealReport, type ServedConfidential, type BytesOutput, type Id, type JsonValue } from "./wire.js";
 /** A station to link to, pinned by the node_id it must prove. */
@@ -129,10 +130,15 @@ export declare class Pool {
      * (`confidential` "preferred", the default); "required" never calls a
      * provider that names none. A provider's ERROR is thrown as a
      * ProviderError, a station's relay error as a RelayError, a call that
-     * could not be kept confidential as a ConfidentialityError. */
+     * could not be kept confidential as a ConfidentialityError. `ucan` presents
+     * a token minted for this node to a gated procedure, with `proofs`, its
+     * chain's parents; a gated provider that refuses it answers a ProviderError
+     * of code "unauthorized". An open procedure ignores any token. */
     call(realm: Id, procedure: string, payload?: JsonValue, options?: {
         provider?: Id;
         confidential?: Confidential;
+        ucan?: string;
+        proofs?: readonly string[];
         timeoutMs?: number;
         bytes?: BytesOutput;
     }): Promise<JsonValue>;
@@ -143,6 +149,8 @@ export declare class Pool {
     callReport(realm: Id, procedure: string, payload?: JsonValue, options?: {
         provider?: Id;
         confidential?: Confidential;
+        ucan?: string;
+        proofs?: readonly string[];
         timeoutMs?: number;
         bytes?: BytesOutput;
     }): Promise<{
@@ -175,26 +183,35 @@ export declare class Pool {
      * (sealed_required), so a caller older than macula 13, macula-go 0.18 or
      * this release cannot call it after that; without kemAdvertise it names
      * no key and serves in the clear. "required" refuses every clear call
-     * (sealed_required) and needs kemAdvertise; "off" serves in the clear. */
+     * (sealed_required) and needs kemAdvertise; "off" serves in the clear.
+     * `policy` (Ucan.ucanRequired, Ucan.realmMemberRequired) serves only
+     * callers whose UCAN chain it accepts; a refused call never reaches the
+     * handler. */
     serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>, options?: {
         confidential?: ServedConfidential;
+        policy?: ServePolicy;
         bytes?: BytesOutput;
     }): Promise<Served>;
     /** Serves procedure in realm as a stream of mode: handler drives each
      * session. The stream is closed when the handler returns without ending
      * it, aborted with code error when it throws, and released either way.
-     * `confidential` as serve's. */
+     * `confidential` and `policy` as serve's. */
     serveStream(realm: Id, procedure: string, mode: StreamMode, handler: (stream: Stream, request: StreamRequest) => void | Promise<void>, options?: {
         confidential?: ServedConfidential;
+        policy?: ServePolicy;
         bytes?: BytesOutput;
     }): Promise<Served>;
     /** Opens a stream of mode on procedure in realm at a provider, by direct
      * dial, sealed as call is (`confidential`). A refusal arrives on its first
      * recv(); a stream that could not be kept confidential is a
-     * ConfidentialityError here. */
+     * ConfidentialityError here. `ucan` and `proofs` as call's; a gated
+     * provider's refusal arrives on the first recv() as a StreamError of code
+     * "unauthorized". */
     openStream(realm: Id, procedure: string, mode: StreamMode, payload?: JsonValue, options?: {
         provider?: Id;
         confidential?: Confidential;
+        ucan?: string;
+        proofs?: readonly string[];
         deadlineMs?: number;
         timeoutMs?: number;
         bytes?: BytesOutput;

@@ -10,12 +10,21 @@ import { Stream } from "./stream.js";
 import { DEFAULT_CONTENT_TIMEOUT_MS, mcid50 } from "./content.js";
 import { DEFAULT_CALL_TIMEOUT_MS, MaculaError, bytesOut, hex, sealReport, id32, } from "./wire.js";
 /** A call's or a stream's options, as macula_pool_call_opts takes them. */
-function callOptionsJson(provider, confidential, report) {
+function callOptionsJson(provider, confidential, presented, report) {
     const o = {};
     if (provider !== undefined)
         o.provider = hex(id32(provider, "provider"));
     if (confidential !== undefined)
         o.confidential = confidential;
+    if (presented.ucan === "")
+        throw new TypeError("@macula-io/ts: a UCAN is never empty; leave it out for none");
+    if (presented.ucan !== undefined)
+        o.ucan = presented.ucan;
+    if (presented.proofs !== undefined && presented.proofs.length > 0) {
+        if (presented.ucan === undefined)
+            throw new TypeError("@macula-io/ts: proofs go with the UCAN they prove");
+        o.proofs = presented.proofs;
+    }
     // Handed on as given: callReport sends 1, and openStream hands on whatever
     // it was given, so the ABI refuses a report on a stream open rather than it
     // vanishing here. call sends none.
@@ -24,8 +33,13 @@ function callOptionsJson(provider, confidential, report) {
     return JSON.stringify(o);
 }
 /** A served procedure's options, as macula_pool_serve_opts takes them. */
-function serveOptionsJson(confidential) {
-    return JSON.stringify(confidential === undefined ? {} : { confidential });
+function serveOptionsJson(confidential, policy) {
+    const o = {};
+    if (confidential !== undefined)
+        o.confidential = confidential;
+    if (policy !== undefined)
+        o.policy = policy;
+    return JSON.stringify(o);
 }
 /** macula 12's record types. */
 export var RecordType;
@@ -124,10 +138,13 @@ export class Pool {
      * (`confidential` "preferred", the default); "required" never calls a
      * provider that names none. A provider's ERROR is thrown as a
      * ProviderError, a station's relay error as a RelayError, a call that
-     * could not be kept confidential as a ConfidentialityError. */
+     * could not be kept confidential as a ConfidentialityError. `ucan` presents
+     * a token minted for this node to a gated procedure, with `proofs`, its
+     * chain's parents; a gated provider that refuses it answers a ProviderError
+     * of code "unauthorized". An open procedure ignores any token. */
     async call(realm, procedure, payload = {}, options = {}) {
         bytesOut(null, options.bytes);
-        const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+        const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential, options), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
         return bytesOut(JSON.parse(result), options.bytes);
     }
     /** call, with the caller's seal report: whether the exchange behind the
@@ -136,7 +153,7 @@ export class Pool {
      * sealed_refused and one reseal, the report names the reseal's key. */
     async callReport(realm, procedure, payload = {}, options = {}) {
         bytesOut(null, options.bytes);
-        const reply = JSON.parse(await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential, 1), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS));
+        const reply = JSON.parse(await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential, options, 1), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS));
         return { result: bytesOut(reply.result, options.bytes), report: sealReport(reply) };
     }
     /** The procedure's trusted providers, freshest first. */
@@ -177,10 +194,13 @@ export class Pool {
      * (sealed_required), so a caller older than macula 13, macula-go 0.18 or
      * this release cannot call it after that; without kemAdvertise it names
      * no key and serves in the clear. "required" refuses every clear call
-     * (sealed_required) and needs kemAdvertise; "off" serves in the clear. */
+     * (sealed_required) and needs kemAdvertise; "off" serves in the clear.
+     * `policy` (Ucan.ucanRequired, Ucan.realmMemberRequired) serves only
+     * callers whose UCAN chain it accepts; a refused call never reaches the
+     * handler. */
     async serve(realm, procedure, handler, options = {}) {
         bytesOut(null, options.bytes);
-        const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, serveOptionsJson(options.confidential), (d) => {
+        const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, serveOptionsJson(options.confidential, options.policy), (d) => {
             if (d.kind !== "request")
                 return;
             void answer(d, handler, options.bytes);
@@ -190,10 +210,10 @@ export class Pool {
     /** Serves procedure in realm as a stream of mode: handler drives each
      * session. The stream is closed when the handler returns without ending
      * it, aborted with code error when it throws, and released either way.
-     * `confidential` as serve's. */
+     * `confidential` and `policy` as serve's. */
     async serveStream(realm, procedure, mode, handler, options = {}) {
         bytesOut(null, options.bytes);
-        const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode, serveOptionsJson(options.confidential), (d) => {
+        const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode, serveOptionsJson(options.confidential, options.policy), (d) => {
             if (d.kind !== "request")
                 return;
             void runStream(new Stream(d.handle, options.bytes), handler);
@@ -203,10 +223,12 @@ export class Pool {
     /** Opens a stream of mode on procedure in realm at a provider, by direct
      * dial, sealed as call is (`confidential`). A refusal arrives on its first
      * recv(); a stream that could not be kept confidential is a
-     * ConfidentialityError here. */
+     * ConfidentialityError here. `ucan` and `proofs` as call's; a gated
+     * provider's refusal arrives on the first recv() as a StreamError of code
+     * "unauthorized". */
     async openStream(realm, procedure, mode, payload = {}, options = {}) {
         bytesOut(null, options.bytes);
-        const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential, options.report), options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+        const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode, JSON.stringify(payload), callOptionsJson(options.provider, options.confidential, options, options.report), options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
         return new Stream(handle, options.bytes);
     }
     /** The verified record under key, or null when there is none. */

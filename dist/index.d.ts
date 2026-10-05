@@ -3,4 +3,5 @@ export { Pool, Subscription, Served, RecordType, type Seed, type PoolOptions, ty
 export { NotSharedError, ContentUnavailableError, DEFAULT_CONTENT_TIMEOUT_MS, type ContentOptions, type Mcid, } from "./content.js";
 export { Stream, StreamMode, type StreamEvent, type StreamRequest } from "./stream.js";
 export { verifySignedObject, type VerifiedObject } from "./signed_object.js";
+export { Ucan, type Capability, type ServePolicy } from "./ucan.js";
 export { ProviderError, RelayError, StreamError, MaculaError, ConfidentialityError, UnverifiedError, DEFAULT_CALL_TIMEOUT_MS, type Confidential, type ServedConfidential, type SealReport, type JsonValue, type BytesOutput, type Id, } from "./wire.js";

@@ -23,6 +23,8 @@ interface Native {
     deviceRequestMessage(publicKey: Uint8Array, realm: Uint8Array, procedure: string, timestampMs: number, nonce: Uint8Array, requestJson: string, rule: number): Uint8Array;
     keyOwnershipProof(key: Handle, realm: Uint8Array, procedure: string, payloadJson: string): Promise<string>;
     ownershipProofMessage(identity: Uint8Array, realm: Uint8Array, procedure: string, timestampMs: number, nonce: Uint8Array, fieldsJson: string): Uint8Array;
+    keyUcan(key: Handle, audience: Uint8Array, capsJson: string, expS: number, optionsJson: string): Promise<string>;
+    ucanProofId(token: string): string;
     keyFree(key: Handle): void;
     verify(data: Uint8Array, signature: Uint8Array, publicKey: Uint8Array, profile: string): boolean;
     signedObjectVerify(label: string, object: Uint8Array, profile: string): string;

@@ -25,10 +25,9 @@
 > P-384, which meets CNSA 2.0 and BSI TR-02102; signed requests), over macula-go's
 > pool. Calls and streams by direct dial, serving (under an org or in a node's
 > own namespace), publish/subscribe, the DHT and node-served content are
-> tested against in-process macula 12 stations on every `npm test`.
-> UCAN-gated calls are not here yet; see [Not yet
-> implemented](#not-yet-implemented). Releases before 0.18.0 speak the retired
-> 10.x wire and cannot reach the current fleet.
+> tested against in-process macula 12 stations on every `npm test`, as are
+> UCAN-gated calls, streams and serving. Releases before 0.18.0 speak the
+> retired 10.x wire and cannot reach the current fleet.
 
 ## What is this?
 
@@ -174,17 +173,12 @@ call and session to JavaScript through a `ThreadSafeFunction`.
 | A node's own namespace (`ownProcedure`) | ✅ | ✅ | `~<node_id>/<name>`: served and called with no org and no realm key; the node's signature authorizes it |
 | Streams (`openStream`, `serveStream`) | ✅ | ✅ | Server, client and bidi; a QUIC stream per session, released on every path |
 | Sealed calls and streams (`confidential`, `kemAdvertise`) | ✅ | ✅ | macula 13's E2E seal scheme 1 through macula-go v0.18.0: a call or stream is sealed to the provider's advertised KEM key whenever its advertisement names one (`"preferred"`, the default), `"required"` never calls a provider that names none, and what could not be kept confidential is a `ConfidentialityError` with its `reason`. A provider names its key only with `kemAdvertise: 1` (off by default: turn it on once every station runs macula 12.11 or later and its callers run macula 13, macula-go 0.18 or this release); it serves `"preferred"` (with `kemAdvertise`, clear calls are taken only while its last keyless advertisement could still be served, then refused `sealed_required`), `"required"` or `"off"`, and each request says `sealed: 0 \| 1`. A provider that cannot open a sealed call twice answers a `ProviderError` of code `sealed_refused`, its `detail` the key id it holds now (hex, or empty when it holds none). `Pool.callReport` (a call's result with its seal report) and `Stream.report()` tell a caller afterwards whether the exchange went sealed, to which provider and key (`sealed: 0 \| 1`, `provider`, `sealKeyId`; macula-go v0.19.0). The report says sealing ran on that exchange, nothing more |
+| UCANs (`NodeKey.ucan`, `Ucan`, `ucan`/`proofs`, `policy`) | ✅ | ✅ | macula 12's D7 through macula-go v0.17.0's C ABI: `NodeKey.ucan(audience, caps, expS, {prf})` mints a token for the node that presents it (`caps` a list of `{with, can}`, each `with` an MRI), and `Ucan.proofId` names a delegated token's parent. `call`, `callReport` and `openStream` present `ucan` with `proofs`, its chain's parents; an empty token, or proofs without one, is refused before anything is sent. `serve` and `serveStream` take `policy`: `Ucan.ucanRequired(issuer)` (a chain rooted at that node's identity key) or `Ucan.realmMemberRequired(keyId, can)` (rooted at that realm key, granting that can). libmacula checks each call and open before it reaches the handler: a refused call is a `ProviderError`, a refused open a `StreamError`, of code `unauthorized` (`malformed_frame` for a proof no token names). Tested against in-process stations: no token, a token for another node and one from another root refused; a direct grant and a one-level delegation served |
 | Publish/subscribe | ✅ | ✅ | Signed publications, delivered once across links |
 | DHT (`findRecord`, `findRecords`, `findRecordsByType`, `putRecord`) | ✅ | — | Records verified before they are handed on |
 | Realm proof v2 (`NodeKey.deviceRequestProof`) | ✅ | — | macula-realm#29: a join session over HTTP (`"http"`, the realm's JSON rule) or a membership UCAN over the mesh (`"mesh"`), with its device_info and ttl_seconds, the realm and the procedure signed, and a nonce; the realm's own vector reproduced through macula-go's encoder |
 | Ownership proof v2 (`NodeKey.ownershipProof`) | ✅ | — | mcl-om#7: the payload's `asserted_by`, binding every field a handler reads, the procedure, the realm, a timestamp and a nonce; a payload carrying `caller` is refused; mcl_om's own vector reproduced, and a payload signed here and delivered through a station accepted by mcl_om 0.32.0's `verify_asserted_by` |
 | Node-served content (`shareContent`, `unshareContent`, `getContent`) | ✅ | ✅ | macula 12.6.0 (D27): shared on the node's own `~<node_id>/content_v1` and announced; a fetch checks the block, the manifest and every chunk against the content id, bounded, with no realm key; `NotSharedError` / `ContentUnavailableError` |
-
-## Not yet implemented
-
-- **UCAN-gated calls and serving.** macula 12 uses post-quantum UCANs
-  (macula-go#2). Calls carry no token yet, and a gated procedure cannot be
-  served.
 
 ## Testing
 

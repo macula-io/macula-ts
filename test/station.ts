@@ -13,6 +13,8 @@ export interface TestStations {
   readonly stations: ReadonlyArray<{ host: string; port: number; node_id: string }>;
   readonly realmId: string;
   readonly realmKey: string;
+  /** The realm's name, whose SHA-256 is realmId: a UCAN grants in it by name. */
+  readonly realmName: string;
   readonly org: string;
   /** The org delegates its procedures to the node. */
   admit(nodeId: string): Promise<void>;
@@ -42,6 +44,7 @@ export async function startStations(): Promise<TestStations> {
     stations: info.stations,
     realmId: info.realm_id,
     realmKey: info.realm_key,
+    realmName: info.realm_name,
     org: info.org,
     async admit(nodeId: string) {
       const reply = await ask(`admit ${nodeId}`);

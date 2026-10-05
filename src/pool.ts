@@ -8,6 +8,7 @@
 import { native, type Delivery, type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
+import type { ServePolicy } from "./ucan.js";
 import { DEFAULT_CONTENT_TIMEOUT_MS, mcid50, type ContentOptions, type Mcid } from "./content.js";
 import {
   DEFAULT_CALL_TIMEOUT_MS,
@@ -89,11 +90,25 @@ export interface Request {
   readonly sealed: 0 | 1;
 }
 
+/** What a caller presents to a gated procedure: a UCAN minted for this node,
+ * and its chain's parents (each token a proof the chain names). */
+interface Presented {
+  ucan?: string;
+  proofs?: readonly string[];
+}
+
 /** A call's or a stream's options, as macula_pool_call_opts takes them. */
-function callOptionsJson(provider: Id | undefined, confidential: Confidential | undefined, report?: unknown): string {
-  const o: { provider?: string; confidential?: string; report?: unknown } = {};
+function callOptionsJson(provider: Id | undefined, confidential: Confidential | undefined, presented: Presented,
+  report?: unknown): string {
+  const o: { provider?: string; confidential?: string; ucan?: string; proofs?: readonly string[]; report?: unknown } = {};
   if (provider !== undefined) o.provider = hex(id32(provider, "provider"));
   if (confidential !== undefined) o.confidential = confidential;
+  if (presented.ucan === "") throw new TypeError("@macula-io/ts: a UCAN is never empty; leave it out for none");
+  if (presented.ucan !== undefined) o.ucan = presented.ucan;
+  if (presented.proofs !== undefined && presented.proofs.length > 0) {
+    if (presented.ucan === undefined) throw new TypeError("@macula-io/ts: proofs go with the UCAN they prove");
+    o.proofs = presented.proofs;
+  }
   // Handed on as given: callReport sends 1, and openStream hands on whatever
   // it was given, so the ABI refuses a report on a stream open rather than it
   // vanishing here. call sends none.
@@ -102,8 +117,11 @@ function callOptionsJson(provider: Id | undefined, confidential: Confidential | 
 }
 
 /** A served procedure's options, as macula_pool_serve_opts takes them. */
-function serveOptionsJson(confidential: ServedConfidential | undefined): string {
-  return JSON.stringify(confidential === undefined ? {} : { confidential });
+function serveOptionsJson(confidential: ServedConfidential | undefined, policy: ServePolicy | undefined): string {
+  const o: { confidential?: ServedConfidential; policy?: ServePolicy } = {};
+  if (confidential !== undefined) o.confidential = confidential;
+  if (policy !== undefined) o.policy = policy;
+  return JSON.stringify(o);
 }
 
 /** A verified DHT record: its type, signer's key id, times, payload, and wire
@@ -215,13 +233,17 @@ export class Pool {
    * (`confidential` "preferred", the default); "required" never calls a
    * provider that names none. A provider's ERROR is thrown as a
    * ProviderError, a station's relay error as a RelayError, a call that
-   * could not be kept confidential as a ConfidentialityError. */
+   * could not be kept confidential as a ConfidentialityError. `ucan` presents
+   * a token minted for this node to a gated procedure, with `proofs`, its
+   * chain's parents; a gated provider that refuses it answers a ProviderError
+   * of code "unauthorized". An open procedure ignores any token. */
   async call(realm: Id, procedure: string, payload: JsonValue = {},
-    options: { provider?: Id; confidential?: Confidential; timeoutMs?: number; bytes?: BytesOutput } = {}):
+    options: { provider?: Id; confidential?: Confidential; ucan?: string; proofs?: readonly string[]; timeoutMs?: number;
+      bytes?: BytesOutput } = {}):
     Promise<JsonValue> {
     bytesOut(null, options.bytes);
     const result = await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload),
-      callOptionsJson(options.provider, options.confidential), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
+      callOptionsJson(options.provider, options.confidential, options), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
     return bytesOut(JSON.parse(result), options.bytes);
   }
 
@@ -230,11 +252,12 @@ export class Pool {
    * is call's; an error is thrown as call throws it, with no report. After a
    * sealed_refused and one reseal, the report names the reseal's key. */
   async callReport(realm: Id, procedure: string, payload: JsonValue = {},
-    options: { provider?: Id; confidential?: Confidential; timeoutMs?: number; bytes?: BytesOutput } = {}):
+    options: { provider?: Id; confidential?: Confidential; ucan?: string; proofs?: readonly string[]; timeoutMs?: number;
+      bytes?: BytesOutput } = {}):
     Promise<{ result: JsonValue; report: SealReport }> {
     bytesOut(null, options.bytes);
     const reply = JSON.parse(await native.poolCall(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload),
-      callOptionsJson(options.provider, options.confidential, 1), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS));
+      callOptionsJson(options.provider, options.confidential, options, 1), options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS));
     return { result: bytesOut(reply.result, options.bytes), report: sealReport(reply) };
   }
 
@@ -282,12 +305,15 @@ export class Pool {
    * (sealed_required), so a caller older than macula 13, macula-go 0.18 or
    * this release cannot call it after that; without kemAdvertise it names
    * no key and serves in the clear. "required" refuses every clear call
-   * (sealed_required) and needs kemAdvertise; "off" serves in the clear. */
+   * (sealed_required) and needs kemAdvertise; "off" serves in the clear.
+   * `policy` (Ucan.ucanRequired, Ucan.realmMemberRequired) serves only
+   * callers whose UCAN chain it accepts; a refused call never reaches the
+   * handler. */
   async serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>,
-    options: { confidential?: ServedConfidential; bytes?: BytesOutput } = {}): Promise<Served> {
+    options: { confidential?: ServedConfidential; policy?: ServePolicy; bytes?: BytesOutput } = {}): Promise<Served> {
     bytesOut(null, options.bytes);
     const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure,
-      serveOptionsJson(options.confidential),
+      serveOptionsJson(options.confidential, options.policy),
       (d: Delivery) => {
         if (d.kind !== "request") return;
         void answer(d, handler, options.bytes);
@@ -298,13 +324,13 @@ export class Pool {
   /** Serves procedure in realm as a stream of mode: handler drives each
    * session. The stream is closed when the handler returns without ending
    * it, aborted with code error when it throws, and released either way.
-   * `confidential` as serve's. */
+   * `confidential` and `policy` as serve's. */
   async serveStream(realm: Id, procedure: string, mode: StreamMode,
     handler: (stream: Stream, request: StreamRequest) => void | Promise<void>,
-    options: { confidential?: ServedConfidential; bytes?: BytesOutput } = {}): Promise<Served> {
+    options: { confidential?: ServedConfidential; policy?: ServePolicy; bytes?: BytesOutput } = {}): Promise<Served> {
     bytesOut(null, options.bytes);
     const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode,
-      serveOptionsJson(options.confidential),
+      serveOptionsJson(options.confidential, options.policy),
       (d: Delivery) => {
         if (d.kind !== "request") return;
         void runStream(new Stream(d.handle, options.bytes), handler);
@@ -315,13 +341,17 @@ export class Pool {
   /** Opens a stream of mode on procedure in realm at a provider, by direct
    * dial, sealed as call is (`confidential`). A refusal arrives on its first
    * recv(); a stream that could not be kept confidential is a
-   * ConfidentialityError here. */
+   * ConfidentialityError here. `ucan` and `proofs` as call's; a gated
+   * provider's refusal arrives on the first recv() as a StreamError of code
+   * "unauthorized". */
   async openStream(realm: Id, procedure: string, mode: StreamMode, payload: JsonValue = {},
-    options: { provider?: Id; confidential?: Confidential; deadlineMs?: number; timeoutMs?: number; bytes?: BytesOutput } = {}):
+    options: { provider?: Id; confidential?: Confidential; ucan?: string; proofs?: readonly string[]; deadlineMs?: number;
+      timeoutMs?: number; bytes?: BytesOutput } = {}):
     Promise<Stream> {
     bytesOut(null, options.bytes);
     const handle = await native.poolOpenStream(this.live(), id32(realm, "realm"), procedure, mode,
-      JSON.stringify(payload), callOptionsJson(options.provider, options.confidential, (options as { report?: unknown }).report),
+      JSON.stringify(payload), callOptionsJson(options.provider, options.confidential, options,
+        (options as { report?: unknown }).report),
       options.deadlineMs ?? 0, options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS);
     return new Stream(handle, options.bytes);
   }

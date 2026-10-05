@@ -535,6 +535,36 @@ Napi::Value SignedObjectVerify(const Napi::CallbackInfo& info) {
   return Napi::String::New(env, out);
 }
 
+// keyUcan(key, audience, capsJson, expS, optionsJson) -> Promise<string>: a
+// UCAN key grants the node audience (macula's D7; since macula-go v0.17.0),
+// optionsJson "" for none. Signed off the event loop like keySign.
+Napi::Value KeyUcan(const Napi::CallbackInfo& info) {
+  bool ok = false;
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> audience;
+  if (!ok || !Arg32(info, 1, &audience)) return info.Env().Null();
+  std::string caps = ArgString(info, 2);
+  int64_t exp = ArgInt(info, 3);
+  std::string options = ArgString(info, 4);
+  return Queue(info.Env(), Job::Result::kString, [=](Job& job) mutable {
+    char* errOut = nullptr;
+    char* token = macula_ucan_create(h, Ptr(audience), C(caps), exp, options.empty() ? nullptr : C(options), &errOut);
+    job.text = TakeString(token);
+    job.Fail(errOut);
+  });
+}
+
+// ucanProofId(token) -> string: the proof id a child token's prf names token
+// by (lowercase hex SHA-384 of its text), a hash, so on the calling thread.
+Napi::Value UcanProofId(const Napi::CallbackInfo& info) {
+  Napi::Env env = info.Env();
+  std::string token = ArgString(info, 0);
+  char* errOut = nullptr;
+  std::string out = TakeString(macula_ucan_proof_id(C(token), &errOut));
+  if (ThrowIfErr(env, errOut)) return env.Null();
+  return Napi::String::New(env, out);
+}
+
 // keyDeviceRequestProof(key, realm, procedure, requestJson, rule) ->
 // Promise<string>: a realm proof v2 (macula-realm#29), signed off the event
 // loop like keySign.
@@ -1068,6 +1098,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("deviceRequestMessage", Napi::Function::New(env, DeviceRequestMessage));
   exports.Set("keyOwnershipProof", Napi::Function::New(env, KeyOwnershipProof));
   exports.Set("ownershipProofMessage", Napi::Function::New(env, OwnershipProofMessage));
+  exports.Set("keyUcan", Napi::Function::New(env, KeyUcan));
+  exports.Set("ucanProofId", Napi::Function::New(env, UcanProofId));
   exports.Set("verify", Napi::Function::New(env, Verify));
   exports.Set("signedObjectVerify", Napi::Function::New(env, SignedObjectVerify));
   exports.Set("keyFree", Napi::Function::New(env, KeyFree));

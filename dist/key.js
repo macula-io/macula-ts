@@ -95,6 +95,28 @@ export class NodeKey {
         const signed = await native.keyOwnershipProof(this.live(), id32(realm, "realm"), procedure, JSON.stringify(payload));
         return JSON.parse(signed);
     }
+    /** A UCAN this key grants the node audience (macula's D7): caps until expS
+     * (Unix seconds). A token is minted for the node that presents it. `prf`
+     * names a delegated token's parent by Ucan.proofId (at most one); `nbf`,
+     * `nnc` and `fct` are the token's own fields. */
+    async ucan(audience, caps, expS, options = {}) {
+        if (!Number.isSafeInteger(expS))
+            throw new TypeError("@macula-io/ts: a UCAN's expiry is whole Unix seconds");
+        const o = {};
+        if (options.nbf !== undefined) {
+            // NaN and Infinity would go out as null, which mints no not-before at all.
+            if (!Number.isSafeInteger(options.nbf))
+                throw new TypeError("@macula-io/ts: a UCAN's nbf is whole Unix seconds");
+            o.nbf = options.nbf;
+        }
+        if (options.nnc !== undefined)
+            o.nnc = options.nnc;
+        if (options.fct !== undefined)
+            o.fct = options.fct;
+        if (options.prf !== undefined && options.prf.length > 0)
+            o.prf = options.prf;
+        return native.keyUcan(this.live(), id32(audience, "audience"), JSON.stringify(caps), expS, Object.keys(o).length === 0 ? "" : JSON.stringify(o));
+    }
     /** The exact bytes an ownership proof v2 signs for identity (a node_id), at
      * timestampMs with a 16-byte nonce, over payload's fields: all of it but
      * "asserted_by" and a text "caller", as a verifier reads a delivered
