@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.28.0] - 2026-10-05
+
+Every connection now settles on SecP384r1MLKEM1024, the one hybrid key
+exchange group that meets both CNSA 2.0 (ML-KEM-1024 with P-384) and BSI
+TR-02102 (hybrid only). Before, this SDK landed on SecP256r1MLKEM768 with every
+station ([#15](https://github.com/macula-io/macula-ts/issues/15)).
+
+### Changed
+
+- The native library is built from macula-go v0.23.0 (`native/MACULA_GO`),
+  whose dial offers SecP384r1MLKEM1024 alone and refuses a handshake that
+  settled on any other group. Go's crypto/tls ignores the order of its group
+  list and offered SecP256r1MLKEM768 first, and a station's rustls takes the
+  client's first group, so the two-group list of v0.22.0 always negotiated
+  SecP256r1MLKEM768. A station that accepts only SecP256r1MLKEM768 now fails in
+  the handshake; every macula 12 station accepts SecP384r1MLKEM1024.
+
 ## [0.27.1] - 2026-10-05
 
 ### Fixed

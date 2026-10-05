@@ -19,9 +19,10 @@
 
 ---
 
-> **Status, 2026-09-26:** on the **macula 12** wire (post-quantum: ML-DSA-87
+> **Status, 2026-10-05:** on the **macula 12** wire (post-quantum: ML-DSA-87
 > identities, as the ML-DSA-87 + RSA-PSS-4096 composite in `pq_hybrid`, the
-> fleet's profile; ML-KEM hybrid key exchange; signed requests), over macula-go's
+> fleet's profile; key exchange on SecP384r1MLKEM1024 alone, ML-KEM-1024 with
+> P-384, which meets CNSA 2.0 and BSI TR-02102; signed requests), over macula-go's
 > pool. Calls and streams by direct dial, serving (under an org or in a node's
 > own namespace), publish/subscribe, the DHT and node-served content are
 > tested against in-process macula 12 stations on every `npm test`.
