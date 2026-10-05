@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.27.1] - 2026-10-05
+
+### Fixed
+
+- The committed `dist/` is the build of 0.27.0's `src/`. 0.27.0's tag carried a
+  stale `dist/`, so its release refused to publish (the check that `dist/` is a
+  fresh build) and 0.27.0 never reached npm. 0.27.1 is 0.27.0 as it should have
+  shipped.
+
 ## [0.27.0] - 2026-10-05
 
 ### Added

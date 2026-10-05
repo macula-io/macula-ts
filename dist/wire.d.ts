@@ -94,6 +94,13 @@ export declare function sealReport(r: {
     seal_key_id?: string;
 }): SealReport;
 export type ServedConfidential = Confidential | "off";
+/** A signed object that did not verify (macula-go "unverified"): `reason` is
+ * "malformed" (its shape, its key's form for the profile, or its tbs),
+ * "signature_invalid" or "alg_mismatch". */
+export declare class UnverifiedError extends Error {
+    readonly reason: string;
+    constructor(reason: string);
+}
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */
 export declare function nativeError(e: unknown): Error;

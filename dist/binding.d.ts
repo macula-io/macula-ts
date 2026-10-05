@@ -25,6 +25,7 @@ interface Native {
     ownershipProofMessage(identity: Uint8Array, realm: Uint8Array, procedure: string, timestampMs: number, nonce: Uint8Array, fieldsJson: string): Uint8Array;
     keyFree(key: Handle): void;
     verify(data: Uint8Array, signature: Uint8Array, publicKey: Uint8Array, profile: string): boolean;
+    signedObjectVerify(label: string, object: Uint8Array, profile: string): string;
     poolConnect(key: Handle, seedsJson: string, optionsJson: string): Promise<Handle>;
     poolClose(pool: Handle): Promise<void>;
     poolNodeId(pool: Handle): Uint8Array;
