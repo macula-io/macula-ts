@@ -28,3 +28,13 @@ SDK signed with a pq_hybrid key made for the run, which macula verified (and
 refused altered); `macula_signed/` is one macula signed with a key of its own,
 which this SDK verifies. Each holds `m.bin`, `pk.bin` (the key as carried) and
 `s.bin`. The script prints the macula and OTP versions it ran.
+
+## `rag_signed_corpus/`
+
+`signed_corpus.json`, copied byte for byte from macula-io/macula-rag at
+`ef6c536` (`test/vectors/signed_corpus.json`, the RAG service contract's
+frozen vector, the same file macula-go's cabi tests carry): a corpus hash
+signed as a macula signed object under the label `macula-rag corpus v1`, once
+per profile, by a synthetic key. Each entry has `profile`, `signed_by` (the
+signer's node id, hex), `corpus_hash` and `signature_base64`.
+`src/signed_object.test.ts` pins it by sha256 (`aafafb02b18cb2afa816ec4fdef38b8a2e1a0cba5faba86227b759cbd790b0bf`).
