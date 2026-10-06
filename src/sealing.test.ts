@@ -7,6 +7,12 @@ import { startStations, type TestStations } from "../test/station.js";
 import { native } from "./binding.js";
 import { ConfidentialityError, MaculaError, NodeKey, Pool, StreamMode, type Seed } from "./index.js";
 
+// Starting the stations, and every test here (each dials them), takes seconds
+// on a CPU-capped runner (macula-ts#16): explicit timeouts, generous enough for
+// one, short enough that a hang still fails.
+const STARTING_STATIONS_MS = 60_000;
+const DIALS = { timeout: 30_000 };
+
 let env: TestStations;
 const seed = (i: number): Seed => ({ host: env.stations[i]!.host, port: env.stations[i]!.port, nodeId: env.stations[i]!.node_id });
 
@@ -16,10 +22,10 @@ async function node(station: number, kemAdvertise: 0 | 1 = 0): Promise<Pool> {
 
 beforeAll(async () => {
   env = await startStations();
-});
+}, STARTING_STATIONS_MS);
 afterAll(() => env.stop());
 
-describe("a sealed call", () => {
+describe("a sealed call", DIALS, () => {
   it("reaches a provider that names its key, from another station, sealed required and by default", async () => {
     const provider = await node(0, 1);
     const procedure = provider.ownProcedure("sealed_echo");
@@ -76,7 +82,7 @@ describe("a sealed call", () => {
   });
 });
 
-describe("serving confidentially", () => {
+describe("serving confidentially", DIALS, () => {
   it("required needs kemAdvertise, and says so", async () => {
     const provider = await node(0);
     const refused = await provider.serve(env.realmId, provider.ownProcedure("x"), () => 1, { confidential: "required" })
@@ -98,7 +104,7 @@ describe("serving confidentially", () => {
   });
 });
 
-describe("a sealed stream", () => {
+describe("a sealed stream", DIALS, () => {
   it("opens sealed to a provider that names its key, and its session says so", async () => {
     const provider = await node(0, 1);
     const procedure = provider.ownProcedure("sealed_count");
@@ -136,7 +142,7 @@ describe("a sealed stream", () => {
   });
 });
 
-describe("the addon underneath", () => {
+describe("the addon underneath", DIALS, () => {
   it("refuses options that are not a JSON string, rather than reading them as none", async () => {
     const caller = await node(1);
     const pool = (caller as unknown as { handle: bigint }).handle;
@@ -152,7 +158,7 @@ describe("the addon underneath", () => {
 
 // The caller's seal report (macula's DESIGN_E2E_SEAL_REPORT, macula-go v0.19.0):
 // that the exchange behind a result was sealed, to which provider and key.
-describe("the seal report", () => {
+describe("the seal report", DIALS, () => {
   it("says a call to a provider that names its key went sealed, to that provider and key", async () => {
     const provider = await node(0, 1);
     const procedure = provider.ownProcedure("reported");

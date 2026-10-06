@@ -6,7 +6,7 @@
 // that verify under it; and signatures cross both ways with macula 12.x
 // (test/fixtures/macula_12_cross, written by scripts/cross-verify-macula.sh).
 // No station is needed.
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -41,6 +41,14 @@ function flipped(bytes: Uint8Array, at: number): Uint8Array {
 }
 
 const withByte = (bytes: Uint8Array, byte: number): Uint8Array => Uint8Array.from([...bytes, byte]);
+
+// The generated pq_hybrid key, made once before the tests: ML-DSA-87 plus
+// RSA-4096 key generation takes seconds on a CPU-capped runner (macula-ts#16).
+let generated: NodeKey;
+beforeAll(async () => {
+  generated = await NodeKey.generate("pq_hybrid");
+}, 120_000);
+afterAll(() => generated.free());
 
 // A pq_hybrid identity key file (macula-go's seed form): the magic, the
 // purpose (identity, 1), the profile (pq_hybrid, 2) and two halves, each its
@@ -111,12 +119,10 @@ describe("the LAMPS draft's vector", () => {
   });
 
   it("verifies a generated pq_hybrid key's signature under its public key only", async () => {
-    const key = await NodeKey.generate("pq_hybrid");
     const message = new TextEncoder().encode("a fact");
-    const signature = await key.sign(message);
-    expect(NodeKey.verify(message, signature, key.publicKey(), "pq_hybrid")).toBe(true);
+    const signature = await generated.sign(message);
+    expect(NodeKey.verify(message, signature, generated.publicKey(), "pq_hybrid")).toBe(true);
     expect(NodeKey.verify(message, signature, await draft("pk.bin"), "pq_hybrid")).toBe(false);
-    key.free();
   });
 });
 

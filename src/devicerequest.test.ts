@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { JOIN_SESSION_PROCEDURE, MEMBERSHIP_UCAN_PROCEDURE, NodeKey } from "./key.js";
 
 // Realm proof v2 (macula-realm#29) through the FFI: the realm's own vector,
@@ -9,6 +9,14 @@ import { JOIN_SESSION_PROCEDURE, MEMBERSHIP_UCAN_PROCEDURE, NodeKey } from "./ke
 // built by macula-go's encoder, never a JavaScript CBOR library.
 
 const ioMacula = createHash("sha256").update("io.macula").digest();
+
+// One key for the file, made before the tests: key generation takes seconds on
+// a CPU-capped runner (macula-ts#16), and no test here needs a key of its own.
+let key: NodeKey;
+beforeAll(async () => {
+  key = await NodeKey.generate("pq_pure");
+}, 60_000);
+afterAll(() => key.free());
 
 describe("a device request proof", () => {
   it("signs the realm's vector, byte for byte", () => {
@@ -25,21 +33,16 @@ describe("a device request proof", () => {
   });
 
   it("verifies over the request it names, and over nothing else", async () => {
-    const key = await NodeKey.generate("pq_pure");
-    try {
-      const request = { public_key: Buffer.from(key.publicKey()).toString("base64"), ttl_seconds: 3600 };
-      const proof = await key.deviceRequestProof(ioMacula, MEMBERSHIP_UCAN_PROCEDURE, { ...request, proof: { v: 1 } }, "mesh");
-      expect(proof.v).toBe(2);
-      expect(proof.nonce).toMatch(/^[0-9a-f]{32}$/);
-      const signed = (r: typeof request) => NodeKey.deviceRequestMessage(key.publicKey(), ioMacula, MEMBERSHIP_UCAN_PROCEDURE,
-        proof.timestamp, Buffer.from(proof.nonce, "hex"), r, "mesh");
-      const signature = Buffer.from(proof.signature, "hex");
-      expect(NodeKey.verify(signed(request), signature, key.publicKey(), "pq_pure")).toBe(true);
-      expect(NodeKey.verify(signed({ ...request, ttl_seconds: 86400 }), signature, key.publicKey(), "pq_pure")).toBe(false);
-      const again = await key.deviceRequestProof(ioMacula, MEMBERSHIP_UCAN_PROCEDURE, request, "mesh");
-      expect(again.nonce).not.toBe(proof.nonce);
-    } finally {
-      key.free();
-    }
+    const request = { public_key: Buffer.from(key.publicKey()).toString("base64"), ttl_seconds: 3600 };
+    const proof = await key.deviceRequestProof(ioMacula, MEMBERSHIP_UCAN_PROCEDURE, { ...request, proof: { v: 1 } }, "mesh");
+    expect(proof.v).toBe(2);
+    expect(proof.nonce).toMatch(/^[0-9a-f]{32}$/);
+    const signed = (r: typeof request) => NodeKey.deviceRequestMessage(key.publicKey(), ioMacula, MEMBERSHIP_UCAN_PROCEDURE,
+      proof.timestamp, Buffer.from(proof.nonce, "hex"), r, "mesh");
+    const signature = Buffer.from(proof.signature, "hex");
+    expect(NodeKey.verify(signed(request), signature, key.publicKey(), "pq_pure")).toBe(true);
+    expect(NodeKey.verify(signed({ ...request, ttl_seconds: 86400 }), signature, key.publicKey(), "pq_pure")).toBe(false);
+    const again = await key.deviceRequestProof(ioMacula, MEMBERSHIP_UCAN_PROCEDURE, request, "mesh");
+    expect(again.nonce).not.toBe(proof.nonce);
   });
 });

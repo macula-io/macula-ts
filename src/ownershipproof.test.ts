@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NodeKey, type Profile } from "./key.js";
 import { MaculaError, type JsonValue } from "./wire.js";
 
@@ -20,6 +20,15 @@ const fields: { [field: string]: JsonValue } = {
 };
 const nonce = Uint8Array.from({ length: 16 }, (_, i) => i);
 
+// One key per profile for the file, made before the tests: pq_hybrid's
+// ML-DSA-87 plus RSA-4096 key generation takes seconds on a CPU-capped runner
+// (macula-ts#16).
+const keys = {} as Record<Profile, NodeKey>;
+beforeAll(async () => {
+  [keys.pq_pure, keys.pq_hybrid] = await Promise.all([NodeKey.generate("pq_pure"), NodeKey.generate("pq_hybrid")]);
+}, 120_000);
+afterAll(() => Object.values(keys).forEach((key) => key.free()));
+
 describe("an ownership proof", () => {
   it("signs mcl_om's vector, byte for byte, and an Erlang key's signature over it verifies", () => {
     const got = NodeKey.ownershipProofMessage(vector("identity.hex"), ioMacula, PROCEDURE, 1790000000000, nonce, fields);
@@ -34,37 +43,28 @@ describe("an ownership proof", () => {
   });
 
   it.each<Profile>(["pq_pure", "pq_hybrid"])("is, in %s, a payload whose asserted_by verifies over the fields it sends, and over nothing else", async (profile) => {
-    const key = await NodeKey.generate(profile);
-    try {
-      const payload = await key.ownershipProof(ioMacula, PROCEDURE, fields);
-      // As Pool.call puts it on the wire.
-      const { asserted_by: block, ...rest } = JSON.parse(JSON.stringify(payload)) as typeof payload;
-      expect(rest).toEqual(fields);
-      expect(block.identity).toBe(key.nodeIdHex());
-      expect(block.proof.v).toBe(2);
-      expect(block.proof.nonce).toMatch(/^[0-9a-f]{32}$/);
-      expect(Math.abs(block.proof.timestamp - Date.now())).toBeLessThan(60_000);
-      expect(block.proof.public).toBe(Buffer.from(key.publicKey()).toString("hex"));
-      const signed = (f: typeof fields) => NodeKey.ownershipProofMessage(key.nodeId(), ioMacula, PROCEDURE,
-        block.proof.timestamp, Buffer.from(block.proof.nonce, "hex"), f);
-      const signature = Buffer.from(block.proof.signature, "hex");
-      expect(NodeKey.verify(signed(rest), signature, key.publicKey(), profile)).toBe(true);
-      expect(NodeKey.verify(signed({ ...rest, weight: 4 }), signature, key.publicKey(), profile)).toBe(false);
-      const again = await key.ownershipProof(ioMacula, PROCEDURE, payload);
-      expect(again.asserted_by.proof.nonce).not.toBe(block.proof.nonce);
-    } finally {
-      key.free();
-    }
-  }, 120_000);
+    const key = keys[profile];
+    const payload = await key.ownershipProof(ioMacula, PROCEDURE, fields);
+    // As Pool.call puts it on the wire.
+    const { asserted_by: block, ...rest } = JSON.parse(JSON.stringify(payload)) as typeof payload;
+    expect(rest).toEqual(fields);
+    expect(block.identity).toBe(key.nodeIdHex());
+    expect(block.proof.v).toBe(2);
+    expect(block.proof.nonce).toMatch(/^[0-9a-f]{32}$/);
+    expect(Math.abs(block.proof.timestamp - Date.now())).toBeLessThan(60_000);
+    expect(block.proof.public).toBe(Buffer.from(key.publicKey()).toString("hex"));
+    const signed = (f: typeof fields) => NodeKey.ownershipProofMessage(key.nodeId(), ioMacula, PROCEDURE,
+      block.proof.timestamp, Buffer.from(block.proof.nonce, "hex"), f);
+    const signature = Buffer.from(block.proof.signature, "hex");
+    expect(NodeKey.verify(signed(rest), signature, key.publicKey(), profile)).toBe(true);
+    expect(NodeKey.verify(signed({ ...rest, weight: 4 }), signature, key.publicKey(), profile)).toBe(false);
+    const again = await key.ownershipProof(ioMacula, PROCEDURE, payload);
+    expect(again.asserted_by.proof.nonce).not.toBe(block.proof.nonce);
+  });
 
   it("refuses a payload carrying caller, which a station replaces", async () => {
-    const key = await NodeKey.generate("pq_pure");
-    try {
-      const refused = key.ownershipProof(ioMacula, PROCEDURE, { ...fields, caller: "someone" });
-      await expect(refused).rejects.toBeInstanceOf(MaculaError);
-      await expect(refused).rejects.toMatchObject({ kind: "invalid_argument", message: expect.stringMatching(/caller/) });
-    } finally {
-      key.free();
-    }
+    const refused = keys.pq_pure.ownershipProof(ioMacula, PROCEDURE, { ...fields, caller: "someone" });
+    await expect(refused).rejects.toBeInstanceOf(MaculaError);
+    await expect(refused).rejects.toMatchObject({ kind: "invalid_argument", message: expect.stringMatching(/caller/) });
   });
 });

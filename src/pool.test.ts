@@ -8,6 +8,12 @@ import { join } from "node:path";
 import { startStations, type TestStations } from "../test/station.js";
 import { ContentUnavailableError, NodeKey, NotSharedError, Pool, ProviderError, RecordType, StreamMode, type Seed } from "./index.js";
 
+// Starting the stations, and every test here (each dials them), takes seconds
+// on a CPU-capped runner (macula-ts#16): explicit timeouts, generous enough for
+// one, short enough that a hang still fails.
+const STARTING_STATIONS_MS = 60_000;
+const DIALS = { timeout: 30_000 };
+
 let env: TestStations;
 const seed = (i: number): Seed => ({ host: env.stations[i]!.host, port: env.stations[i]!.port, nodeId: env.stations[i]!.node_id });
 const trust = () => [{ realm: env.realmId, key: env.realmKey }];
@@ -37,10 +43,10 @@ async function eventually(what: string, ok: () => Promise<boolean>): Promise<voi
 
 beforeAll(async () => {
   env = await startStations();
-});
+}, STARTING_STATIONS_MS);
 afterAll(() => env.stop());
 
-describe("NodeKey", () => {
+describe("NodeKey", DIALS, () => {
   it("is saved readable by its owner only and loads back as the same node", async () => {
     const dir = await mkdtemp(join(tmpdir(), "macula-ts-key-"));
     const path = join(dir, "node.key");
@@ -53,7 +59,7 @@ describe("NodeKey", () => {
   });
 });
 
-describe("calls", () => {
+describe("calls", DIALS, () => {
   it("reach a provider on another station by direct dial, and bring its error back as a ProviderError", async () => {
     const provider = await node(0, true);
     const procedure = `${env.org}/echo`;
@@ -107,7 +113,7 @@ describe("calls", () => {
   });
 });
 
-describe("a node's own namespace", () => {
+describe("a node's own namespace", DIALS, () => {
   it("is served and called with no realm key pinned on either side", async () => {
     const provider = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
     const ring = provider.ownProcedure("ring");
@@ -128,7 +134,7 @@ describe("a node's own namespace", () => {
   });
 });
 
-describe("streams", () => {
+describe("streams", DIALS, () => {
   it("deliver a server stream's chunks and end, and leave nothing relayed", async () => {
     const provider = await node(0, true);
     const procedure = `${env.org}/watch`;
@@ -174,7 +180,7 @@ describe("streams", () => {
   });
 });
 
-describe("pubsub", () => {
+describe("pubsub", DIALS, () => {
   it("delivers a publication once to a subscriber on the same station", async () => {
     const listener = await node(0);
     const publisher = await node(0);
@@ -193,7 +199,7 @@ describe("pubsub", () => {
   });
 });
 
-describe("content", () => {
+describe("content", DIALS, () => {
   const pattern = (n: number) => Uint8Array.from({ length: n }, (_, i) => i % 251);
 
   it("is shared by one node and fetched by another, with no realm key, until it is unshared", async () => {
@@ -224,7 +230,7 @@ describe("content", () => {
   });
 });
 
-describe("DHT", () => {
+describe("DHT", DIALS, () => {
   it("finds the stations' own endpoint records, verified", async () => {
     const p = await node(0);
     const { records, dropped } = await p.findRecordsByType(RecordType.StationEndpoint);
@@ -235,7 +241,7 @@ describe("DHT", () => {
   });
 });
 
-describe("the shared C ABI underneath", () => {
+describe("the shared C ABI underneath", DIALS, () => {
   it("gives bytes as 0x hex by default, and tagged when asked", async () => {
     const provider = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
     const back = provider.ownProcedure("bytes_back");
@@ -265,7 +271,7 @@ describe("the shared C ABI underneath", () => {
   });
 });
 
-describe("listeners over the ABI's inboxes", () => {
+describe("listeners over the ABI's inboxes", DIALS, () => {
   it("reports each link's flags as booleans", async () => {
     const p = await node(0);
     const links = p.status();

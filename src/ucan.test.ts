@@ -6,6 +6,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startStations, type TestStations } from "../test/station.js";
 import { NodeKey, Pool, ProviderError, StreamError, StreamMode, Ucan, type Capability, type Seed } from "./index.js";
 
+// Starting the stations, and every test here (each dials them), takes seconds
+// on a CPU-capped runner (macula-ts#16): explicit timeouts, generous enough for
+// one, short enough that a hang still fails.
+const STARTING_STATIONS_MS = 60_000;
+const DIALS = { timeout: 30_000 };
+
 let env: TestStations;
 const seed = (i: number): Seed => ({ host: env.stations[i]!.host, port: env.stations[i]!.port, nodeId: env.stations[i]!.node_id });
 const trust = () => [{ realm: env.realmId, key: env.realmKey }];
@@ -29,10 +35,10 @@ async function eventually(what: string, ok: () => Promise<boolean>): Promise<voi
 
 beforeAll(async () => {
   env = await startStations();
-});
+}, STARTING_STATIONS_MS);
 afterAll(() => env.stop());
 
-describe("a gated procedure", () => {
+describe("a gated procedure", DIALS, () => {
   it("serves only a caller its root granted, directly or by delegation", async () => {
     const root = await NodeKey.generate("pq_pure");
     const alice = await NodeKey.generate("pq_pure");
@@ -110,7 +116,7 @@ describe("a gated procedure", () => {
   });
 });
 
-describe("what never reaches the wire", () => {
+describe("what never reaches the wire", DIALS, () => {
   it("refuses an empty UCAN, and proofs with no UCAN to prove", async () => {
     const caller = await node(0);
     await expect(caller.call(env.realmId, `${env.org}/echo`, {}, { ucan: "" })).rejects.toThrow(/never empty/);
