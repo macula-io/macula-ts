@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- Tests that make pq_hybrid keys or start in-process stations no longer time
+  out at vitest's 5 s default on a CPU-capped runner (#14, #16): the suite's
+  test and hook timeout is 30 s.
+
 ## [0.29.0] - 2026-10-06
 
 UCAN-gated calls, streams and serving (macula 12's D7), through the C ABI
