@@ -7,8 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Tests that make pq_hybrid keys or start in-process stations no longer time
-  out at vitest's 5 s default on a CPU-capped runner (#14, #16): the suite's
-  test and hook timeout is 30 s.
+  out at vitest's 5 s default on a CPU-capped runner (#14, #16): each file makes
+  its keys once, before its tests, and starting the stations and the tests that
+  dial them have explicit timeouts. vitest's defaults stand for the rest.
 
 ## [0.29.0] - 2026-10-06
 
