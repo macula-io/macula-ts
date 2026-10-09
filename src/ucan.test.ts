@@ -83,6 +83,38 @@ describe("a gated procedure", DIALS, () => {
     alice.free();
     }, 30_000);
 
+  // macula#87: a token's issuer did:key is decoded before its signature is
+  // checked, in time quadratic in its length. macula-go v0.26.0 refuses one
+  // over 4,400 characters before decoding, so an over-long issuer is refused
+  // at once, as unauthorized, without reaching the handler.
+  it("refuses an over-long issuer did:key at once", async () => {
+    const root = await NodeKey.generate("pq_pure");
+    const provider = await node(0, true);
+    const procedure = `${env.org}/gated_long_issuer`;
+    let entered = 0;
+    const served = await provider.serve(env.realmId, procedure, () => {
+      entered++;
+      return {};
+    }, { policy: Ucan.ucanRequired(root.nodeIdHex()) });
+    const caller = await node(1);
+    await eventually("the gated provider is advertised",
+      async () => (await caller.providers(env.realmId, procedure)).length > 0);
+
+    const [header, claims, signature] = (await root.ucan(caller.nodeId(), caps(), inFiveMinutes())).split(".");
+    const forged = { ...JSON.parse(Buffer.from(claims!, "base64url").toString()), iss: `did:key:z${"2".repeat(300_000)}` };
+    const ucan = `${header}.${Buffer.from(JSON.stringify(forged)).toString("base64url")}.${signature}`;
+    const started = Date.now();
+    const call = caller.call(env.realmId, procedure, {}, { ucan });
+    await expect(call).rejects.toMatchObject({ code: "unauthorized" });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(entered).toBe(0);
+
+    await served.stop();
+    await provider.close();
+    await caller.close();
+    root.free();
+  }, 60_000);
+
   it("opens a gated stream only for a caller its root granted", async () => {
     const root = await NodeKey.generate("pq_pure");
     const provider = await node(0, true);

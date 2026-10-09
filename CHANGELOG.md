@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- The native library is built from macula-go v0.26.0 (was v0.23.0) (#17). A
+  UCAN whose issuer did:key is longer than 4,400 characters is refused before
+  it is decoded (macula#87, macula-go#27): base58 decodes in time quadratic in
+  its length, ahead of the signature check, and on v0.23.0 a 300,000-character
+  issuer held the provider past the caller's 5 s timeout; it is now refused
+  `unauthorized` at once. The same library refuses, at every link of a chain, an
+  `exp` more than ten years past now (macula#68, v0.25.0), and `NodeKey.ucan`
+  refuses to mint such an `exp`, or an `nbf` not before it (v0.24.0).
+
 ### Fixed
 
 - Tests that make pq_hybrid keys or start in-process stations no longer time
