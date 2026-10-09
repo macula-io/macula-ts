@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-10-09
+
+The native library from macula-go v0.26.0: the did:key length bound, and
+macula#68's max lifetime at every link.
+
 ### Security
 
 - The native library is built from macula-go v0.26.0 (was v0.23.0) (#17). A
