@@ -43,7 +43,7 @@ function windowsHint() {
     catch {
         return " No prebuild for this platform was found.";
     }
-    const dlls = readdirSync(dir).filter((f) => /^macula-v[0-9.]+\.dll$/.test(f));
+    const dlls = readdirSync(dir).filter((f) => /^macula-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?\.dll$/.test(f));
     return dlls.length === 0
         ? ` macula-go's DLL (macula-<release>.dll) is not there, beside the .node in ${dir}.`
         : ` ${dlls.join(", ")} is there, beside the .node, so the failure is elsewhere.`;

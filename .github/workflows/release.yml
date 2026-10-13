@@ -126,9 +126,19 @@ jobs:
             for (const plat of ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"]) {
               if (!files.some((f) => f.startsWith("prebuilds/" + plat + "/") && f.endsWith(".node"))) throw new Error("no " + plat + " prebuild in the package");
             }
-            if (!files.some((f) => /^prebuilds\/win32-x64\/macula-v[0-9.]+\.dll$/.test(f))) throw new Error("no macula DLL beside the win32 prebuild");
+            if (!files.some((f) => /^prebuilds\/win32-x64\/macula-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?\.dll$/.test(f))) throw new Error("no macula DLL beside the win32 prebuild");
             console.log(files.length + " files, five prebuilds, no build sources");
           '
           rm pack.json
 
-      - run: npm publish --access public --provenance
+      # A pre-release version (0.31.0-rc.1) publishes under the dist-tag next,
+      # so `latest`, what `npm i @macula-io/ts` resolves, stays the last plain
+      # release; npm 11 refuses a pre-release without --tag anyway.
+      - name: Publish
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          case "$version" in
+            *-*) npm publish --access public --provenance --tag next ;;
+            *) npm publish --access public --provenance ;;
+          esac

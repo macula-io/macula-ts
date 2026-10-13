@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.31.0-rc.1] - 2026-10-13
+
+Wire 1.0, a release candidate under the npm dist-tag `next`: `latest` stays
+0.30.0 for the 14.x fleet until wire 1.0 ships there.
+
+### Changed
+
+- The native library is built from macula-go v0.27.0-rc.1 (was v0.26.0), which
+  speaks wire 1.0 (macula 15) and nothing older (macula-go#30): the wire 1.0
+  envelope, handshake version 5 with session proof V2, records 1.0 and the
+  versioned `_dht.*` procedures. A pre-1.0 station does not accept it. The
+  in-process test stations are wire 1.0 too, and every test passes on them.
+- A pre-release version publishes under the dist-tag `next`, never `latest`.
+- On Windows the addon finds macula-go's DLL by a pre-release name too
+  (`macula-v0.27.0-rc.1.dll`), as the release check does.
+
 ## [0.30.0] - 2026-10-09
 
 The native library from macula-go v0.26.0: the did:key length bound, and

@@ -19,6 +19,11 @@
 
 ---
 
+> **Wire 1.0, 0.31.0-rc.1 (npm dist-tag `next`):** built on macula-go
+> v0.27.0-rc.1, it speaks wire 1.0 (macula 15) and nothing older, so it reaches
+> only a wire 1.0 station. `latest` stays 0.30.0, for the 14.x fleet, until
+> wire 1.0 ships there; install the candidate with `@macula-io/ts@next`.
+>
 > **Status, 2026-10-05:** on the **macula 12** wire (post-quantum: ML-DSA-87
 > identities, as the ML-DSA-87 + RSA-PSS-4096 composite in `pq_hybrid`, the
 > fleet's profile; key exchange on SecP384r1MLKEM1024 alone, ML-KEM-1024 with
