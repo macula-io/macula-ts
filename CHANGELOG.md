@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.31.0-rc.2] - 2026-10-14
+
+Sealed groups, a release candidate under the npm dist-tag `next`.
+
+### Added
+
+- **Sealed groups** (macula 13.2's sealed pubsub, #19): `Pool.publishGroup`
+  seals an event under a group's current epoch and `Pool.subscribeGroup` opens
+  its events; each joins the group first, pulling its epoch from the org's
+  distributor over a sealed call with the org's grant (`Group`: `prefix`,
+  `ucan`, `distributor`). An `Event` says `sealed: 1` and `sealKeyId`, or
+  `unopened` with a null payload when it could not be opened. A refusal is a
+  `GroupError` with its `reason`, `group_held` with the `prefix` for a clear
+  publish under a held group. Cross-tested both ways against macula
+  15.0.0-rc.2's own distributor in both profiles (macula-go's
+  `scripts/interop/groups.sh`, `GROUPS_PEER=ts`).
+
+### Changed
+
+- The native library is built from macula-go v0.27.0-rc.3 (was v0.27.0-rc.1),
+  whose C ABI carries sealed groups.
+
 ## [0.31.0-rc.1] - 2026-10-13
 
 Wire 1.0, a release candidate under the npm dist-tag `next`: `latest` stays
