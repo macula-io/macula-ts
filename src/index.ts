@@ -19,6 +19,7 @@ export {
   type LinkStatus,
   type Provider,
   type Event,
+  type Group,
   type Request,
   type DhtRecord,
 } from "./pool.js";
@@ -38,6 +39,7 @@ export {
   StreamError,
   MaculaError,
   ConfidentialityError,
+  GroupError,
   UnverifiedError,
   DEFAULT_CALL_TIMEOUT_MS,
   type Confidential,

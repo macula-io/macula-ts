@@ -54,6 +54,22 @@ export interface Event {
     readonly publishedAt: number;
     readonly payload: JsonValue;
     readonly deliveredVia: string;
+    /** 1 for a sealed group's event, opened under a group subscription; absent
+     * for a clear one. */
+    readonly sealed?: 1;
+    /** The epoch a sealed event was sealed under, its 8-byte id as hex. */
+    readonly sealKeyId?: string;
+    /** Why a sealed event could not be opened (its payload is then null): one
+     * of GroupError's reasons. */
+    readonly unopened?: string;
+}
+/** A sealed group (macula 13.2): its topic prefix, whose second segment is
+ * its org; the org's grant, a UCAN with can "group_keys" minted for this
+ * node; and the distributor's node id when it must be that node. */
+export interface Group {
+    readonly prefix: string;
+    readonly ucan?: string;
+    readonly distributor?: Id;
 }
 /** A served call's request. */
 export interface Request {
@@ -166,6 +182,21 @@ export declare class Pool {
     publish(realm: Id, topic: string, payload: JsonValue, options?: {
         ttlMs?: number;
     }): Promise<void>;
+    /** Publishes payload on topic in realm sealed under group's current epoch,
+     * joining the group first (pulling its epoch from the org's distributor
+     * over a sealed call). A refusal is a GroupError; a clear publish under a
+     * group this pool holds is refused as GroupError `group_held`. */
+    publishGroup(realm: Id, topic: string, payload: JsonValue, group: Group, options?: {
+        ttlMs?: number;
+        timeoutMs?: number;
+    }): Promise<void>;
+    /** Subscribes to topic under group, joining it first: each sealed event
+     * arrives opened (`sealed` 1, `sealKeyId`), or once with `unopened` and a
+     * null payload. Under a `required` group a clear event is not delivered. */
+    subscribeGroup(realm: Id, topic: string, group: Group, onEvent: (event: Event) => void, options?: {
+        timeoutMs?: number;
+        bytes?: BytesOutput;
+    }): Promise<Subscription>;
     /** Subscribes to topic in realm: onEvent hears each verified event once,
      * however many links deliver it. `closed` resolves when the subscription
      * ends, with why or null. */

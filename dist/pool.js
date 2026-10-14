@@ -9,6 +9,18 @@ import { native } from "./binding.js";
 import { Stream } from "./stream.js";
 import { DEFAULT_CONTENT_TIMEOUT_MS, mcid50 } from "./content.js";
 import { DEFAULT_CALL_TIMEOUT_MS, MaculaError, bytesOut, hex, sealReport, id32, } from "./wire.js";
+/** A group as options_json carries it. */
+function groupOptionsJson(g) {
+    const o = { prefix: g.prefix };
+    if (g.ucan !== undefined)
+        o.ucan = g.ucan;
+    if (g.distributor !== undefined)
+        o.distributor = Buffer.from(id32(g.distributor, "distributor")).toString("hex");
+    return JSON.stringify(o);
+}
+/** How long joining a group may take, in milliseconds, when not told: a key
+ * pull's 15 s. */
+const DEFAULT_GROUP_TIMEOUT_MS = 15_000;
 /** A call's or a stream's options, as macula_pool_call_opts takes them. */
 function callOptionsJson(provider, confidential, presented, report) {
     const o = {};
@@ -165,6 +177,29 @@ export class Pool {
     async publish(realm, topic, payload, options = {}) {
         await native.poolPublish(this.live(), id32(realm, "realm"), topic, JSON.stringify(payload), options.ttlMs ?? 0);
     }
+    /** Publishes payload on topic in realm sealed under group's current epoch,
+     * joining the group first (pulling its epoch from the org's distributor
+     * over a sealed call). A refusal is a GroupError; a clear publish under a
+     * group this pool holds is refused as GroupError `group_held`. */
+    async publishGroup(realm, topic, payload, group, options = {}) {
+        await native.poolPublishGroup(this.live(), id32(realm, "realm"), topic, JSON.stringify(payload), groupOptionsJson(group), options.ttlMs ?? 0, options.timeoutMs ?? DEFAULT_GROUP_TIMEOUT_MS);
+    }
+    /** Subscribes to topic under group, joining it first: each sealed event
+     * arrives opened (`sealed` 1, `sealKeyId`), or once with `unopened` and a
+     * null payload. Under a `required` group a clear event is not delivered. */
+    async subscribeGroup(realm, topic, group, onEvent, options = {}) {
+        let settle = () => { };
+        const closed = new Promise((resolve) => (settle = resolve));
+        bytesOut(null, options.bytes);
+        const handle = await native.poolSubscribeGroup(this.live(), id32(realm, "realm"), topic, groupOptionsJson(group), options.timeoutMs ?? DEFAULT_GROUP_TIMEOUT_MS, (d) => {
+            if (d.kind === "closed") {
+                settle(d.json === "" ? null : d.json);
+                return;
+            }
+            onEvent(eventOf(JSON.parse(d.json), options.bytes));
+        });
+        return new Subscription(handle, closed);
+    }
     /** Subscribes to topic in realm: onEvent hears each verified event once,
      * however many links deliver it. `closed` resolves when the subscription
      * ends, with why or null. */
@@ -177,9 +212,7 @@ export class Pool {
                 settle(d.json === "" ? null : d.json);
                 return;
             }
-            const e = JSON.parse(d.json);
-            onEvent({ publisher: e.publisher, realm: e.realm, topic: e.topic, seq: e.seq, publishedAt: e.published_at,
-                payload: bytesOut(e.payload, options.bytes), deliveredVia: e.delivered_via });
+            onEvent(eventOf(JSON.parse(d.json), options.bytes));
         });
         return new Subscription(handle, closed);
     }
@@ -338,5 +371,14 @@ function toRecord(r, bytes) {
 }
 function toRecords(out, bytes) {
     return { records: (out.records ?? []).map((r) => toRecord(r, bytes)), dropped: out.dropped ?? 0 };
+}
+/** An event as the ABI carries it. */
+function eventOf(e, bytes) {
+    const event = { publisher: e.publisher, realm: e.realm, topic: e.topic, seq: e.seq, publishedAt: e.published_at,
+        payload: bytesOut(e.payload, bytes), deliveredVia: e.delivered_via };
+    if (e.sealed !== 1)
+        return event;
+    return e.unopened === undefined ? { ...event, sealed: 1, sealKeyId: e.seal_key_id }
+        : { ...event, sealed: 1, sealKeyId: e.seal_key_id, unopened: e.unopened };
 }
 //# sourceMappingURL=pool.js.map

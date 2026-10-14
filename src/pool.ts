@@ -76,7 +76,36 @@ export interface Event {
   readonly publishedAt: number;
   readonly payload: JsonValue;
   readonly deliveredVia: string;
+  /** 1 for a sealed group's event, opened under a group subscription; absent
+   * for a clear one. */
+  readonly sealed?: 1;
+  /** The epoch a sealed event was sealed under, its 8-byte id as hex. */
+  readonly sealKeyId?: string;
+  /** Why a sealed event could not be opened (its payload is then null): one
+   * of GroupError's reasons. */
+  readonly unopened?: string;
 }
+
+/** A sealed group (macula 13.2): its topic prefix, whose second segment is
+ * its org; the org's grant, a UCAN with can "group_keys" minted for this
+ * node; and the distributor's node id when it must be that node. */
+export interface Group {
+  readonly prefix: string;
+  readonly ucan?: string;
+  readonly distributor?: Id;
+}
+
+/** A group as options_json carries it. */
+function groupOptionsJson(g: Group): string {
+  const o: { prefix: string; ucan?: string; distributor?: string } = { prefix: g.prefix };
+  if (g.ucan !== undefined) o.ucan = g.ucan;
+  if (g.distributor !== undefined) o.distributor = Buffer.from(id32(g.distributor, "distributor")).toString("hex");
+  return JSON.stringify(o);
+}
+
+/** How long joining a group may take, in milliseconds, when not told: a key
+ * pull's 15 s. */
+const DEFAULT_GROUP_TIMEOUT_MS = 15_000;
 
 /** A served call's request. */
 export interface Request {
@@ -273,6 +302,35 @@ export class Pool {
     await native.poolPublish(this.live(), id32(realm, "realm"), topic, JSON.stringify(payload), options.ttlMs ?? 0);
   }
 
+  /** Publishes payload on topic in realm sealed under group's current epoch,
+   * joining the group first (pulling its epoch from the org's distributor
+   * over a sealed call). A refusal is a GroupError; a clear publish under a
+   * group this pool holds is refused as GroupError `group_held`. */
+  async publishGroup(realm: Id, topic: string, payload: JsonValue, group: Group,
+    options: { ttlMs?: number; timeoutMs?: number } = {}): Promise<void> {
+    await native.poolPublishGroup(this.live(), id32(realm, "realm"), topic, JSON.stringify(payload),
+      groupOptionsJson(group), options.ttlMs ?? 0, options.timeoutMs ?? DEFAULT_GROUP_TIMEOUT_MS);
+  }
+
+  /** Subscribes to topic under group, joining it first: each sealed event
+   * arrives opened (`sealed` 1, `sealKeyId`), or once with `unopened` and a
+   * null payload. Under a `required` group a clear event is not delivered. */
+  async subscribeGroup(realm: Id, topic: string, group: Group, onEvent: (event: Event) => void,
+    options: { timeoutMs?: number; bytes?: BytesOutput } = {}): Promise<Subscription> {
+    let settle: (why: string | null) => void = () => {};
+    const closed = new Promise<string | null>((resolve) => (settle = resolve));
+    bytesOut(null, options.bytes);
+    const handle = await native.poolSubscribeGroup(this.live(), id32(realm, "realm"), topic, groupOptionsJson(group),
+      options.timeoutMs ?? DEFAULT_GROUP_TIMEOUT_MS, (d: Delivery) => {
+        if (d.kind === "closed") {
+          settle(d.json === "" ? null : d.json);
+          return;
+        }
+        onEvent(eventOf(JSON.parse(d.json), options.bytes));
+      });
+    return new Subscription(handle, closed);
+  }
+
   /** Subscribes to topic in realm: onEvent hears each verified event once,
    * however many links deliver it. `closed` resolves when the subscription
    * ends, with why or null. */
@@ -287,9 +345,7 @@ export class Pool {
           settle(d.json === "" ? null : d.json);
           return;
         }
-        const e = JSON.parse(d.json);
-        onEvent({ publisher: e.publisher, realm: e.realm, topic: e.topic, seq: e.seq, publishedAt: e.published_at,
-          payload: bytesOut(e.payload, options.bytes), deliveredVia: e.delivered_via });
+        onEvent(eventOf(JSON.parse(d.json), options.bytes));
       });
     return new Subscription(handle, closed);
   }
@@ -472,4 +528,16 @@ function toRecord(r: any, bytes: BytesOutput | undefined): DhtRecord {
 
 function toRecords(out: any, bytes: BytesOutput | undefined): { records: DhtRecord[]; dropped: number } {
   return { records: (out.records ?? []).map((r: any) => toRecord(r, bytes)), dropped: out.dropped ?? 0 };
+}
+
+/** An event as the ABI carries it. */
+function eventOf(e: {
+  publisher: string; realm: string; topic: string; seq: number; published_at: number; payload: JsonValue;
+  delivered_via: string; sealed?: 1; seal_key_id?: string; unopened?: string;
+}, bytes?: BytesOutput): Event {
+  const event: Event = { publisher: e.publisher, realm: e.realm, topic: e.topic, seq: e.seq, publishedAt: e.published_at,
+    payload: bytesOut(e.payload, bytes), deliveredVia: e.delivered_via };
+  if (e.sealed !== 1) return event;
+  return e.unopened === undefined ? { ...event, sealed: 1, sealKeyId: e.seal_key_id }
+    : { ...event, sealed: 1, sealKeyId: e.seal_key_id, unopened: e.unopened };
 }

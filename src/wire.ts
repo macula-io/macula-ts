@@ -151,13 +151,25 @@ export class UnverifiedError extends Error {
   }
 }
 
+/** A sealed group's refusal or failure (macula-go cabi "Sealed groups"):
+ * `reason` is one of `not_a_member`, `membership_unknown`, `unknown_epoch`,
+ * `epoch_expired`, `no_distributor`, `no_group` and `tag_invalid`, or
+ * `group_held` for a clear publish under a group this pool holds, with its
+ * `prefix`. */
+export class GroupError extends MaculaError {
+  constructor(readonly reason: string, readonly prefix: string | null, message: string) {
+    super("group", message);
+    this.name = "GroupError";
+  }
+}
+
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */
 export function nativeError(e: unknown): Error {
   const text = e instanceof Error ? e.message : String(e);
   let error: {
     kind?: unknown; message?: unknown; code?: unknown; detail?: unknown; failures?: unknown;
-    reason?: unknown; named?: unknown; found?: unknown;
+    reason?: unknown; named?: unknown; found?: unknown; prefix?: unknown;
   };
   try {
     error = JSON.parse(text);
@@ -182,6 +194,8 @@ export function nativeError(e: unknown): Error {
     case "confidentiality":
       return new ConfidentialityError(String(error.reason ?? ""), typeof error.named === "string" ? error.named : null,
         typeof error.found === "string" ? error.found : null, message);
+    case "group":
+      return new GroupError(String(error.reason ?? ""), typeof error.prefix === "string" ? error.prefix : null, message);
     default:
       return new MaculaError(error.kind, message);
   }

@@ -101,6 +101,16 @@ export declare class UnverifiedError extends Error {
     readonly reason: string;
     constructor(reason: string);
 }
+/** A sealed group's refusal or failure (macula-go cabi "Sealed groups"):
+ * `reason` is one of `not_a_member`, `membership_unknown`, `unknown_epoch`,
+ * `epoch_expired`, `no_distributor`, `no_group` and `tag_invalid`, or
+ * `group_held` for a clear publish under a group this pool holds, with its
+ * `prefix`. */
+export declare class GroupError extends MaculaError {
+    readonly reason: string;
+    readonly prefix: string | null;
+    constructor(reason: string, prefix: string | null, message: string);
+}
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */
 export declare function nativeError(e: unknown): Error;

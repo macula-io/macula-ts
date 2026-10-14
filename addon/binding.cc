@@ -751,6 +751,36 @@ Napi::Value PoolSubscribe(const Napi::CallbackInfo& info) {
   });
 }
 
+// poolPublishGroup(pool, realm, topic, payloadJson, optionsJson, ttlMs, timeoutMs): sealed under a group's
+// current epoch, joining the group first (macula-go cabi "Sealed groups").
+Napi::Value PoolPublishGroup(const Napi::CallbackInfo& info) {
+  bool ok = false;
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm;
+  if (!ok || !Arg32(info, 1, &realm)) return info.Env().Null();
+  std::string topic = ArgString(info, 2), payload = ArgString(info, 3), options = ArgString(info, 4);
+  int64_t ttl = ArgInt(info, 5), timeout = ArgInt(info, 6);
+  return Queue(info.Env(), Job::Result::kVoid, [=](Job& job) mutable {
+    char* errOut = nullptr;
+    macula_pool_publish_group(h, Ptr(realm), C(topic), C(payload), C(options), ttl, timeout, 0, &errOut);
+    job.Fail(errOut);
+  });
+}
+
+// poolSubscribeGroup(pool, realm, topic, optionsJson, timeoutMs, callback) -> Promise<handle>: a subscription under
+// a group, joining it first; its events arrive opened, or once unopened.
+Napi::Value PoolSubscribeGroup(const Napi::CallbackInfo& info) {
+  bool ok = false;
+  macula_handle h = ToHandle(info.Env(), info[0], &ok);
+  std::vector<uint8_t> realm;
+  if (!ok || !Arg32(info, 1, &realm) || !RequireFunction(info, 5)) return info.Env().Null();
+  std::string topic = ArgString(info, 2), options = ArgString(info, 3);
+  int64_t timeout = ArgInt(info, 4);
+  return StartListener(info, 5, Poller::Kind::kSubscription, "macula-subscription", [=](char** errOut) mutable {
+    return macula_pool_subscribe_group(h, Ptr(realm), C(topic), C(options), timeout, 0, errOut);
+  });
+}
+
 // subscriptionDropped(subscription) -> number: events the inbox dropped
 // because the listener was behind.
 Napi::Value SubscriptionDropped(const Napi::CallbackInfo& info) {
@@ -1111,6 +1141,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
   exports.Set("poolProviders", Napi::Function::New(env, PoolProviders));
   exports.Set("poolPublish", Napi::Function::New(env, PoolPublish));
   exports.Set("poolSubscribe", Napi::Function::New(env, PoolSubscribe));
+  exports.Set("poolPublishGroup", Napi::Function::New(env, PoolPublishGroup));
+  exports.Set("poolSubscribeGroup", Napi::Function::New(env, PoolSubscribeGroup));
   exports.Set("subscriptionStop", Napi::Function::New(env, SubscriptionStop));
   exports.Set("subscriptionDropped", Napi::Function::New(env, SubscriptionDropped));
   exports.Set("poolFindRecord", Napi::Function::New(env, PoolFindRecord));
