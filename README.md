@@ -20,8 +20,8 @@
 
 ---
 
-> **Wire 1.0, 0.31.0-rc.1 (npm dist-tag `next`):** built on macula-go
-> v0.27.0-rc.1, it speaks wire 1.0 (macula 15) and nothing older, so it reaches
+> **Wire 1.0, 0.31.0-rc.3 (npm dist-tag `next`):** built on macula-go
+> v0.27.0-rc.5, it speaks wire 1.0 (macula 15) and nothing older, so it reaches
 > only a wire 1.0 station. `latest` stays 0.30.0, for the 14.x fleet, until
 > wire 1.0 ships there; install the candidate with `@macula-io/ts@next`.
 >
@@ -173,7 +173,7 @@ call and session to JavaScript through a `ThreadSafeFunction`.
 | Primitive | Caller | Provider | Notes |
 |---|---|---|---|
 | Node keys (`NodeKey`) | ✅ | ✅ | `pq_hybrid` (the fleet's) or `pq_pure`; key files readable by the owner only; `sign` and `NodeKey.verify`, pq_hybrid checked against the LAMPS draft's own vector and cross-verified with macula 12.7.0 |
-| Signed objects (`verifySignedObject`) | ✅ | | macula's `{key, tbs, signature}`, verified under a label and profile to the signer's node id (derived from the verified key) and the signed fields; one that does not verify throws `UnverifiedError` with its reason. Checked against the RAG service contract's frozen vector, both profiles |
+| Signed objects (`verifySignedObject`) | ✅ | | macula's `{key, tbs, signature}`, verified under a label and profile to the signer's node id (derived from the verified key) and the signed fields; one that does not verify throws `UnverifiedError` with its reason, and an alg other than the profile's is `alg_mismatch` before any signature work (macula#104). Checked against the RAG service contract's frozen vector, both profiles |
 | Pool of station links (`Pool.connect`) | ✅ | ✅ | Seeds pinned by node_id; realm keys pinned; links redialed with subscriptions and served procedures replayed |
 | Calls by direct dial (`call`, `providers`) | ✅ | ✅ | `serve`: a thrown error goes back as `handler_error`; errors arrive as `ProviderError` / `RelayError` |
 | A node's own namespace (`ownProcedure`) | ✅ | ✅ | `~<node_id>/<name>`: served and called with no org and no realm key; the node's signature authorizes it |

@@ -4,6 +4,31 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.31.0-rc.3] - 2026-10-17
+
+A signed object reads its alg before its signature, a release candidate under
+the npm dist-tag `next`.
+
+### Security
+
+- **`verifySignedObject` refuses a foreign algorithm before any signature
+  verification** (macula#104), through macula-go v0.27.0-rc.5: the tbs is
+  decoded and its alg checked against the profile before the ML-DSA-87 verify.
+  An object naming another profile's algorithm, or one no verifier is
+  registered for, is an `UnverifiedError` with reason `alg_mismatch`, under any
+  signature. Before, either under a bad signature was `signature_invalid`, and
+  an unregistered alg under a verifying signature a `MaculaError` of kind
+  `failed`.
+
+### Changed
+
+- The native library is built from macula-go v0.27.0-rc.5 (was v0.27.0-rc.3).
+  It also carries rc.4: `Pool.serve` and `Pool.subscribe` return once a
+  station has accepted the registration, and a refusal or no answer within 30
+  seconds is a `MaculaError` of kind `refused`. `Pool.subscribe` with no link
+  up is a `MaculaError` of kind `failed` ("no link"), as `Pool.serve` already
+  was, where it used to return a subscription that attached on redial.
+
 ## [0.31.0-rc.2] - 2026-10-14
 
 Sealed groups, a release candidate under the npm dist-tag `next`.

@@ -2,8 +2,9 @@
 // as macula_signed_object:verify/3 reads it (macula-go v0.22.0,
 // macula_signed_object_verify). The signature covers label || 0x00 ||
 // SHA-384(key) || tbs, so an object verifies only under the label it was signed
-// under; tbs is decoded only after the signature verifies, and its alg must name
-// the profile's algorithm.
+// under. tbs is decoded and its alg must name the profile's algorithm before the
+// signature is checked (macula-go v0.27.0-rc.5, macula#104), so an object naming
+// another algorithm costs no signature verification and is alg_mismatch.
 //
 // The node id returned is derived from the VERIFIED key. A caller that wants
 // "signed by P" compares it with the P it chose (a pinned provider), never with
@@ -20,7 +21,8 @@ export interface VerifiedObject {
   readonly key: Uint8Array;
   /** The signed bytes, as received. */
   readonly tbs: Uint8Array;
-  /** The tbs map, decoded after the signature verified. */
+  /** The tbs map, decoded under the decoding rule; returned only once the
+   * signature verified. */
   readonly fields: JsonValue;
 }
 

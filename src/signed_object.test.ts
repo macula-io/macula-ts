@@ -56,6 +56,25 @@ describe("verifySignedObject", () => {
     expect(catchErr(() => verifySignedObject(LABEL, altered, v!.profile))).toBeInstanceOf(UnverifiedError);
   });
 
+  // macula#104: alg is read before the signature, so an object naming another
+  // profile's algorithm, or one no verifier is registered for, is refused as
+  // alg_mismatch on that cheap read, under a signature that does not verify.
+  it("refuses a foreign or unregistered alg before the signature, as alg_mismatch", async () => {
+    for (const v of await vectors()) {
+      const { key, signature } = carriedObject(object(v));
+      const bad = signature.slice();
+      bad[0]! ^= 0xff;
+      for (const alg of [algOf(other(v.profile)), "ML-DSA-65"]) {
+        const tbs = cborMap([[cborText("alg"), cborText(alg)]]);
+        const forged = cborMap([[cborText("key"), cborBytes(key)], [cborText("tbs"), cborBytes(tbs)],
+          [cborText("signature"), cborBytes(bad)]]);
+        const err = catchErr(() => verifySignedObject(LABEL, forged, v.profile));
+        expect(err, `${v.profile} naming ${alg}`).toBeInstanceOf(UnverifiedError);
+        expect((err as UnverifiedError).reason).toBe("alg_mismatch");
+      }
+    }
+  });
+
   it("refuses an empty label as an argument, not as an unverified object", async () => {
     const [v] = await vectors();
     const err = catchErr(() => verifySignedObject("", object(v!), v!.profile));
@@ -71,4 +90,49 @@ function catchErr(f: () => unknown): unknown {
     return e;
   }
   throw new Error("expected a throw");
+}
+
+const algOf = (p: Profile): string => (p === "pq_pure" ? "ML-DSA-87" : "ML-DSA-87-PS384");
+
+// The little CBOR these tests build and read: definite lengths, text keys,
+// byte and text strings, a map of them.
+function cborHead(major: number, n: number): Uint8Array {
+  const m = major << 5;
+  if (n < 24) return Uint8Array.of(m | n);
+  if (n < 0x100) return Uint8Array.of(m | 24, n);
+  if (n < 0x10000) return Uint8Array.of(m | 25, n >> 8, n & 0xff);
+  return Uint8Array.of(m | 26, n >>> 24, (n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
+}
+const cborBytes = (b: Uint8Array): Uint8Array => Buffer.concat([cborHead(2, b.length), b]);
+const cborText = (t: string): Uint8Array => {
+  const utf8 = Buffer.from(t, "utf8");
+  return Buffer.concat([cborHead(3, utf8.length), utf8]);
+};
+const cborMap = (entries: [Uint8Array, Uint8Array][]): Uint8Array =>
+  new Uint8Array(Buffer.concat([cborHead(5, entries.length), ...entries.flat()]));
+
+/** The key and signature of a signed object's CBOR, {key, tbs, signature}. */
+function carriedObject(b: Uint8Array): { key: Uint8Array; signature: Uint8Array } {
+  let at = 0;
+  const length = (): number => {
+    const info = b[at]! & 0x1f;
+    at += 1;
+    if (info < 24) return info;
+    const size = 1 << (info - 24);
+    let n = 0;
+    for (let i = 0; i < size; i += 1) n = n * 256 + b[at + i]!;
+    at += size;
+    return n;
+  };
+  const string = (): Uint8Array => {
+    const n = length();
+    at += n;
+    return b.subarray(at - n, at);
+  };
+  const fields = new Map<string, Uint8Array>();
+  for (let n = length(); n > 0; n -= 1) {
+    const name = Buffer.from(string()).toString("utf8");
+    fields.set(name, string());
+  }
+  return { key: fields.get("key")!, signature: fields.get("signature")! };
 }

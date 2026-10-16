@@ -1,6 +1,6 @@
 {
   "name": "@macula-io/ts",
-  "version": "0.31.0-rc.2",
+  "version": "0.31.0-rc.3",
   "description": "TypeScript SDK for the Macula mesh, over macula-go's shared C ABI",
   "license": "Apache-2.0",
   "keywords": [
