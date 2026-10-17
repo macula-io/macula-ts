@@ -202,7 +202,9 @@ export class Pool {
     }
     /** Subscribes to topic in realm: onEvent hears each verified event once,
      * however many links deliver it. `closed` resolves when the subscription
-     * ends, with why or null. */
+     * ends, with why or null. A station that refuses the subscription, or none
+     * answering within 30 seconds, rejects it with a RefusedError naming the
+     * reason and the station. */
     async subscribe(realm, topic, onEvent, options = {}) {
         let settle = () => { };
         const closed = new Promise((resolve) => (settle = resolve));
@@ -230,7 +232,10 @@ export class Pool {
      * (sealed_required) and needs kemAdvertise; "off" serves in the clear.
      * `policy` (Ucan.ucanRequired, Ucan.realmMemberRequired) serves only
      * callers whose UCAN chain it accepts; a refused call never reaches the
-     * handler. */
+     * handler. A station that refuses the advertisement, or none answering
+     * within 30 seconds, rejects it with a RefusedError naming the reason
+     * (`too_many_providers`, `not_authorized`, `unacknowledged`, ...) and the
+     * station. */
     async serve(realm, procedure, handler, options = {}) {
         bytesOut(null, options.bytes);
         const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, serveOptionsJson(options.confidential, options.policy), (d) => {

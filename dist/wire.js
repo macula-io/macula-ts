@@ -142,6 +142,25 @@ export class GroupError extends MaculaError {
         this.name = "GroupError";
     }
 }
+/** The network refused it (macula-go cabi kind `refused`). For a serve or
+ * subscribe (since macula-go v0.27.0-rc.4, macula#12) the station's verdict:
+ * `reason` is the station's (`too_many_providers`, `advertiser_quota`,
+ * `name_too_long`, `record_refused`, `not_authorized`, `too_many_realms`,
+ * `refused`) or `unacknowledged` when no station answered within 30 seconds,
+ * `registration` is `advertise` or `subscribe`, and `station` the station's
+ * node_id as hex. Any other refusal (an admission, a key) has them null. */
+export class RefusedError extends MaculaError {
+    reason;
+    registration;
+    station;
+    constructor(reason, registration, station, message) {
+        super("refused", message);
+        this.reason = reason;
+        this.registration = registration;
+        this.station = station;
+        this.name = "RefusedError";
+    }
+}
 /** The native layer's error, whose message is the ABI's error JSON, as the
  * class its kind names. */
 export function nativeError(e) {
@@ -172,6 +191,8 @@ export function nativeError(e) {
             return new ConfidentialityError(String(error.reason ?? ""), typeof error.named === "string" ? error.named : null, typeof error.found === "string" ? error.found : null, message);
         case "group":
             return new GroupError(String(error.reason ?? ""), typeof error.prefix === "string" ? error.prefix : null, message);
+        case "refused":
+            return new RefusedError(typeof error.reason === "string" ? error.reason : null, typeof error.registration === "string" ? error.registration : null, typeof error.station === "string" ? error.station : null, message);
         default:
             return new MaculaError(error.kind, message);
     }

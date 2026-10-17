@@ -199,7 +199,9 @@ export declare class Pool {
     }): Promise<Subscription>;
     /** Subscribes to topic in realm: onEvent hears each verified event once,
      * however many links deliver it. `closed` resolves when the subscription
-     * ends, with why or null. */
+     * ends, with why or null. A station that refuses the subscription, or none
+     * answering within 30 seconds, rejects it with a RefusedError naming the
+     * reason and the station. */
     subscribe(realm: Id, topic: string, onEvent: (event: Event) => void, options?: {
         bytes?: BytesOutput;
     }): Promise<Subscription>;
@@ -217,7 +219,10 @@ export declare class Pool {
      * (sealed_required) and needs kemAdvertise; "off" serves in the clear.
      * `policy` (Ucan.ucanRequired, Ucan.realmMemberRequired) serves only
      * callers whose UCAN chain it accepts; a refused call never reaches the
-     * handler. */
+     * handler. A station that refuses the advertisement, or none answering
+     * within 30 seconds, rejects it with a RefusedError naming the reason
+     * (`too_many_providers`, `not_authorized`, `unacknowledged`, ...) and the
+     * station. */
     serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>, options?: {
         confidential?: ServedConfidential;
         policy?: ServePolicy;

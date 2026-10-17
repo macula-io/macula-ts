@@ -5,5 +5,5 @@ export { NotSharedError, ContentUnavailableError, DEFAULT_CONTENT_TIMEOUT_MS, } 
 export { Stream, StreamMode } from "./stream.js";
 export { verifySignedObject } from "./signed_object.js";
 export { Ucan } from "./ucan.js";
-export { ProviderError, RelayError, StreamError, MaculaError, ConfidentialityError, GroupError, UnverifiedError, DEFAULT_CALL_TIMEOUT_MS, } from "./wire.js";
+export { ProviderError, RelayError, StreamError, MaculaError, ConfidentialityError, GroupError, RefusedError, UnverifiedError, DEFAULT_CALL_TIMEOUT_MS, } from "./wire.js";
 //# sourceMappingURL=index.js.map

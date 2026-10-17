@@ -40,6 +40,7 @@ export {
   MaculaError,
   ConfidentialityError,
   GroupError,
+  RefusedError,
   UnverifiedError,
   DEFAULT_CALL_TIMEOUT_MS,
   type Confidential,

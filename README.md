@@ -20,8 +20,8 @@
 
 ---
 
-> **Wire 1.0, 0.31.0-rc.5 (npm dist-tag `next`):** built on macula-go
-> v0.27.0-rc.7, it speaks wire 1.0 (macula 15) and nothing older, so it reaches
+> **Wire 1.0, 0.31.0-rc.6 (npm dist-tag `next`):** built on macula-go
+> v0.27.0-rc.8, it speaks wire 1.0 (macula 15) and nothing older, so it reaches
 > only a wire 1.0 station. `latest` stays 0.30.0, for the 14.x fleet, until
 > wire 1.0 ships there; install the candidate with `@macula-io/ts@next`.
 >
@@ -161,8 +161,10 @@ value crosses as a handle; payloads cross as JSON with no booleans and bytes
 as `{"$bytes": "<base64>"}` both ways (this package turns them into `"0x"`
 hex by default, or leaves them tagged with `bytes: "tagged"`); an error
 crosses as JSON with a fixed kind, which becomes `ProviderError`,
-`RelayError`, `NotSharedError`, `ContentUnavailableError` or a `MaculaError`
-carrying the kind. Every call that does network I/O runs on a worker thread
+`RelayError`, `NotSharedError`, `ContentUnavailableError`,
+`ConfidentialityError`, `GroupError`, `UnverifiedError`, `RefusedError` (a
+station's verdict on a serve or subscribe: its `reason`, the `registration`
+and the `station`'s node_id) or a `MaculaError` carrying the kind. Every call that does network I/O runs on a worker thread
 (`Napi::AsyncWorker`) and returns a Promise. The ABI never calls back into
 Node: each subscription and served procedure has a thread of its own that
 takes from its inbox, with a cancel token of its own, and hands each event,

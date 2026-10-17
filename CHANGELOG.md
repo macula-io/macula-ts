@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.31.0-rc.6] - 2026-10-17
+
+A station's refusal of a serve or subscribe names its reason, a release
+candidate under the npm dist-tag `next`.
+
+### Added
+
+- **A station's refusal of a serve or subscribe is a `RefusedError`** with
+  the station's `reason` (`too_many_providers`, `advertiser_quota`,
+  `name_too_long`, `record_refused`, `not_authorized`, `too_many_realms`,
+  `refused`, or `unacknowledged` when no station answered within 30 seconds),
+  the `registration` (`advertise` or `subscribe`) and the `station`'s node_id
+  as hex, as macula-go's C ABI gives them since v0.27.0-rc.4 (macula#12). It
+  is a `MaculaError` of kind `refused`, so code that matched the kind still
+  does; any other refusal has the three fields null.
+
+### Changed
+
+- The native library is built from macula-go v0.27.0-rc.8 (was
+  v0.27.0-rc.7): a content fetch gives a sharer 2 s for its root answer
+  (macula-go#26). The C ABI adds `root_timeout_ms` to the content options.
+
 ## [0.31.0-rc.5] - 2026-10-17
 
 The STATUS a pool states per binding never steps backward, a release candidate
