@@ -215,7 +215,8 @@ and signs its own, and this SDK verifies it.
 vector (`testdata/ownership_proof_vector`, copied from macula-go at the pinned
 release): the bytes it signs, and an Erlang key's signature over them.
 
-`src/fleet.live.test.ts` runs against one real station and is not part of
+`src/fleet.live.test.ts` runs against one real wire 1.0 station (macula 15;
+a station on the 14.x wire refuses this release's handshake) and is not part of
 `npm test`. It needs `MACULA_TS_LIVE_SEED` (host:port), `MACULA_TS_LIVE_STATION_ID`
 (the station's node_id), `MACULA_TS_LIVE_REALM` and `MACULA_TS_LIVE_REALM_KEY`;
 an unset one fails the run naming it. It reads the DHT, calls `mcl-echo/echo`

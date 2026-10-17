@@ -1,12 +1,13 @@
-// A live run against one macula 12 station (test/live_station.ts): the pool
-// connects pinned, reads the DHT, calls mcl-echo/echo by direct dial, and
-// hears its own publication. Runs only with MACULA_TS_LIVE set (npm run
+// A live run against one wire 1.0 station (macula 15; test/live_station.ts):
+// the pool connects pinned, reads the DHT, calls mcl-echo/echo by direct dial,
+// and hears its own publication, its subscription acknowledged by the station
+// (REGISTER_ACK) before it publishes. Runs only with MACULA_TS_LIVE set (npm run
 // test:live); it puts nothing in the DHT, and publishes once.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { liveStation } from "../test/live_station.js";
 import { NodeKey, Pool, RecordType } from "./index.js";
 
-describe.skipIf(!process.env.MACULA_TS_LIVE)("a live macula 12 station", () => {
+describe.skipIf(!process.env.MACULA_TS_LIVE)("a live wire 1.0 station", () => {
   let pool: Pool;
   const live = process.env.MACULA_TS_LIVE ? liveStation() : undefined;
 
@@ -31,11 +32,10 @@ describe.skipIf(!process.env.MACULA_TS_LIVE)("a live macula 12 station", () => {
     const heard: string[] = [];
     const topic = "mcl-ts/live/check/publication_heard_v1";
     const sub = await pool.subscribe(live!.realm, topic, (e) => heard.push(String(e.payload)));
-    await new Promise((r) => setTimeout(r, 300));
     await pool.publish(live!.realm, topic, "heard");
     const deadline = Date.now() + 10_000;
     while (heard.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     await sub.stop();
     expect(heard).toEqual(["heard"]);
-  }, 30_000);
+  }, 60_000);
 });

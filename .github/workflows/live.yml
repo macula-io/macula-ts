@@ -1,7 +1,9 @@
 name: Live
 
-# Runs the live station test (src/fleet.live.test.ts) against one real macula
-# 12 station. It is dispatched by hand and never runs on push or PR, because a
+# Runs the live station test (src/fleet.live.test.ts) against one real wire
+# 1.0 station (macula 15). This package speaks wire 1.0 and nothing older, so
+# a station still on the 14.x wire refuses its handshake: point it at a wire
+# 1.0 station. It is dispatched by hand and never runs on push or PR, because a
 # station outage or a network hiccup must not make ordinary CI flaky. The
 # station is pinned by its node_id and the realm by its key, all required
 # inputs with no default, so every run names what it trusted.
@@ -14,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       seed:
-        description: "The station, host:port, [v6]:port for IPv6 (MACULA_TS_LIVE_SEED)"
+        description: "A wire 1.0 station, host:port, [v6]:port for IPv6 (MACULA_TS_LIVE_SEED)"
         required: true
         type: string
       station_id:
