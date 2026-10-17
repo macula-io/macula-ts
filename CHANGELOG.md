@@ -4,10 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [0.31.0-rc.3] - 2026-10-17
+## [0.31.0-rc.4] - 2026-10-17
 
 A signed object reads its alg before its signature, a release candidate under
-the npm dist-tag `next`.
+the npm dist-tag `next`. The v0.31.0-rc.3 tag carries the same source but was
+never published: its committed `dist/` was not rebuilt from `src/`.
 
 ### Security
 

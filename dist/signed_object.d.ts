@@ -8,7 +8,8 @@ export interface VerifiedObject {
     readonly key: Uint8Array;
     /** The signed bytes, as received. */
     readonly tbs: Uint8Array;
-    /** The tbs map, decoded after the signature verified. */
+    /** The tbs map, decoded under the decoding rule; returned only once the
+     * signature verified. */
     readonly fields: JsonValue;
 }
 /** Verifies object (the CBOR bytes of a signed object that carries its key)

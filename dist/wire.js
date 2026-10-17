@@ -117,7 +117,8 @@ export function sealReport(r) {
 }
 /** A signed object that did not verify (macula-go "unverified"): `reason` is
  * "malformed" (its shape, its key's form for the profile, or its tbs),
- * "signature_invalid" or "alg_mismatch". */
+ * "signature_invalid" or "alg_mismatch" (an alg other than the profile's,
+ * registered or not, refused before the signature). */
 export class UnverifiedError extends Error {
     reason;
     constructor(reason) {
