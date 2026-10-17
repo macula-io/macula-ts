@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-10-19
+
+The wire 1.0 release, for the fleet's flag day (19 Oct 2026, 18:03 UTC), and
+now npm's `latest`: from then on every live station speaks wire 1.0 (macula
+15) and nothing older, and 0.30.0 can no longer connect. The native library is
+built from macula-go v0.27.0, whose code is v0.27.0-rc.8's; this package's
+code is 0.31.0-rc.6's. The entries for rc.1 to rc.6 below are what changed
+since 0.30.0.
+
 ## [0.31.0-rc.6] - 2026-10-17
 
 A station's refusal of a serve or subscribe names its reason, a release

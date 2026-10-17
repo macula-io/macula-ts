@@ -20,20 +20,16 @@
 
 ---
 
-> **Wire 1.0, 0.31.0-rc.6 (npm dist-tag `next`):** built on macula-go
-> v0.27.0-rc.8, it speaks wire 1.0 (macula 15) and nothing older, so it reaches
-> only a wire 1.0 station. `latest` stays 0.30.0, for the 14.x fleet, until
-> wire 1.0 ships there; install the candidate with `@macula-io/ts@next`.
->
-> **Status, 2026-10-05:** on the **macula 12** wire (post-quantum: ML-DSA-87
-> identities, as the ML-DSA-87 + RSA-PSS-4096 composite in `pq_hybrid`, the
-> fleet's profile; key exchange on SecP384r1MLKEM1024 alone, ML-KEM-1024 with
-> P-384, which meets CNSA 2.0 and BSI TR-02102; signed requests), over macula-go's
-> pool. Calls and streams by direct dial, serving (under an org or in a node's
-> own namespace), publish/subscribe, the DHT and node-served content are
-> tested against in-process macula 12 stations on every `npm test`, as are
-> UCAN-gated calls, streams and serving. Releases before 0.18.0 speak the
-> retired 10.x wire and cannot reach the current fleet.
+> **Status, 2026-10-19:** 0.31.0 speaks **wire 1.0** (macula 15) and nothing
+> older, built on macula-go v0.27.0. The fleet moved to wire 1.0 on 19 Oct 2026 at 18:03 UTC; until then 0.30.0 was the release for the 14.x fleet, and from
+> then on 0.30.0 and everything before it can no longer connect. Post-quantum:
+> ML-DSA-87 identities, as the ML-DSA-87 + RSA-PSS-4096 composite in
+> `pq_hybrid`, the fleet's profile; key exchange on SecP384r1MLKEM1024 alone,
+> ML-KEM-1024 with P-384, which meets CNSA 2.0 and BSI TR-02102; signed
+> requests, over macula-go's pool. Calls and streams by direct dial, serving
+> (under an org or in a node's own namespace), publish/subscribe, the DHT and
+> node-served content are tested against macula-go's in-process wire 1.0
+> stations on every `npm test`, as are UCAN-gated calls, streams and serving.
 
 ## What is this?
 
