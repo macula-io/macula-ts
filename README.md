@@ -20,8 +20,8 @@
 
 ---
 
-> **Wire 1.0, 0.31.0-rc.4 (npm dist-tag `next`):** built on macula-go
-> v0.27.0-rc.5, it speaks wire 1.0 (macula 15) and nothing older, so it reaches
+> **Wire 1.0, 0.31.0-rc.5 (npm dist-tag `next`):** built on macula-go
+> v0.27.0-rc.7, it speaks wire 1.0 (macula 15) and nothing older, so it reaches
 > only a wire 1.0 station. `latest` stays 0.30.0, for the 14.x fleet, until
 > wire 1.0 ships there; install the candidate with `@macula-io/ts@next`.
 >

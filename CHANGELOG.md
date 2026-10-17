@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.31.0-rc.5] - 2026-10-17
+
+The STATUS a pool states per binding never steps backward, a release candidate
+under the npm dist-tag `next`.
+
+### Fixed
+
+- **A pool's STATUS statements carry a strictly increasing `issued_at` per
+  binding** (macula-architecture#22), through macula-go v0.27.0-rc.7. Before,
+  `issued_at` was the wall clock, so after a backward clock step of 15 minutes
+  or more a macula 15.5 or later station dropped the pool's honest statements
+  as stale, and a step of about 45 minutes cost the link. A reissue is now stamped one past the last,
+  while that stays within five minutes of the clock; past that, at the clock,
+  as macula 15.6 does.
+
+### Changed
+
+- The native library is built from macula-go v0.27.0-rc.7 (was v0.27.0-rc.5).
+  The C ABI is unchanged.
+
 ## [0.31.0-rc.4] - 2026-10-17
 
 A signed object reads its alg before its signature, a release candidate under
