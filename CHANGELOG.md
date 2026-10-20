@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- The live run moves to `macula-io/macula-live-tests`, a private repository whose
+  job builds this package from the ref it names and runs `src/fleet.live.test.ts`
+  on a runner with IPv6. `.github/workflows/live.yml` is removed from here: the
+  fleet's stations publish AAAA records only, and a live job cannot run on a
+  repository where a runner with a route to them is not available (macula-ts#20).
+  Running `npm run test:live` by hand is unchanged.
+
 ## [0.31.0] - 2026-10-19
 
 The wire 1.0 release, for the fleet's flag day (19 Oct 2026, 18:03 UTC), and

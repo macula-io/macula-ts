@@ -217,8 +217,10 @@ a station on the 14.x wire refuses this release's handshake) and is not part of
 (the station's node_id), `MACULA_TS_LIVE_REALM` and `MACULA_TS_LIVE_REALM_KEY`;
 an unset one fails the run naming it. It reads the DHT, calls `mcl-echo/echo`
 by direct dial and hears its own publication.
-`.github/workflows/live.yml` runs it when dispatched by hand, on an addon it
-builds from the commit's source.
+The live run is dispatched by hand from
+[`macula-io/macula-live-tests`](https://github.com/macula-io/macula-live-tests),
+which builds this package from the ref it names and runs this test on a runner with
+IPv6, as the fleet's stations publish AAAA records only.
 
 ## Packaging: genuinely zero install-time scripts
 
