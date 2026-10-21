@@ -58,6 +58,17 @@ jobs:
     needs: guard
     uses: ./.github/workflows/docs.yml
 
+  # A dependency the package ships with a published advisory does not publish
+  # (macula-codebase-checks#11). It runs here as well as in ci.yml because a
+  # green main is not a gate on the tag.
+  advisories:
+    needs: guard
+    permissions:
+      contents: read
+    uses: macula-io/macula-ci-images/.github/workflows/dependency-advisories.yml@dbc9533eb409c2118f45110613160060cc582f5d
+    with:
+      ecosystem: node
+
   prebuilds:
     needs: guard
     uses: ./.github/workflows/prebuild-matrix.yml
@@ -70,7 +81,7 @@ jobs:
 
   publish:
     name: publish to npm
-    needs: [test, docs, prebuilds, release-guard]
+    needs: [test, docs, advisories, prebuilds, release-guard]
     runs-on: ubuntu-latest
     permissions:
       id-token: write # npm OIDC Trusted Publishing
