@@ -64,7 +64,7 @@
     "node-gyp": "^13.0.2",
     "prebuildify": "^6.0.1",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.5"
   },
   "engines": {
     "node": ">=24.18.1"
