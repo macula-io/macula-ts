@@ -52,6 +52,12 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+  # The docs check (docs.yml) on the tagged commit: a release whose README or
+  # guides carry a block that no longer matches the package does not publish.
+  docs:
+    needs: guard
+    uses: ./.github/workflows/docs.yml
+
   prebuilds:
     needs: guard
     uses: ./.github/workflows/prebuild-matrix.yml
@@ -64,7 +70,7 @@ jobs:
 
   publish:
     name: publish to npm
-    needs: [test, prebuilds, release-guard]
+    needs: [test, docs, prebuilds, release-guard]
     runs-on: ubuntu-latest
     permissions:
       id-token: write # npm OIDC Trusted Publishing

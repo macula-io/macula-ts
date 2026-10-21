@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- CI type-checks every TypeScript and JavaScript block in the README and guides
+  against the package (`docs.yml`, macula-codebase-checks#8), on every change
+  including doc-only ones, and a release waits on it.
 - The live run moves to `macula-io/macula-live-tests`, a private repository whose
   job builds this package from the ref it names and runs `src/fleet.live.test.ts`
   on a runner with IPv6. `.github/workflows/live.yml` is removed from here: the

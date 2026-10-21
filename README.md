@@ -145,7 +145,7 @@ compatibility layer.
 
 ## Architecture
 
-```
+```text
 src/ (TypeScript API)  ──  addon/binding.cc (N-API)  ──  macula-go cabi (C ABI 1, c-archive)  ──  macula-go pool
 ```
 

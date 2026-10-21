@@ -1,0 +1,22 @@
+# Every TypeScript and JavaScript block in the README and guides type-checks
+# against this package (macula-codebase-checks#8), so a reader who copies an
+# example gets code that matches it. release.yml calls this on the tag and
+# publishes only when it is green.
+name: docs
+
+on:
+  workflow_call:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ts-blocks:
+    name: TypeScript blocks in the docs
+    permissions:
+      contents: read
+    uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-ts.yml@b4cdb8d811dd0ebc409b0e5446ea133cbade936b
