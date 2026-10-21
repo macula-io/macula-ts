@@ -43,6 +43,20 @@ export type OwnershipProven = { [field: string]: JsonValue } & { asserted_by: As
 
 const ruleNumber = (rule: DeviceRequestRule): number => (rule === "http" ? 0 : 1);
 
+/** The optional UCAN fields as the JSON the native layer takes, or "" when there are none. */
+function ucanOptionsJson(options: { nbf?: number; nnc?: string; fct?: JsonValue; prf?: readonly string[] }): string {
+  const o: { nbf?: number; nnc?: string; fct?: JsonValue; prf?: readonly string[] } = {};
+  if (options.nbf !== undefined) {
+    // NaN and Infinity would go out as null, which mints no not-before at all.
+    if (!Number.isSafeInteger(options.nbf)) throw new TypeError("@macula-io/ts: a UCAN's nbf is whole Unix seconds");
+    o.nbf = options.nbf;
+  }
+  if (options.nnc !== undefined) o.nnc = options.nnc;
+  if (options.fct !== undefined) o.fct = options.fct;
+  if (options.prf !== undefined && options.prf.length > 0) o.prf = options.prf;
+  return Object.keys(o).length === 0 ? "" : JSON.stringify(o);
+}
+
 export class NodeKey {
   private constructor(private handle: Handle | null) {}
 
@@ -148,17 +162,7 @@ export class NodeKey {
   async ucan(audience: Id, caps: readonly Capability[], expS: number,
     options: { nbf?: number; nnc?: string; fct?: JsonValue; prf?: readonly string[] } = {}): Promise<string> {
     if (!Number.isSafeInteger(expS)) throw new TypeError("@macula-io/ts: a UCAN's expiry is whole Unix seconds");
-    const o: { nbf?: number; nnc?: string; fct?: JsonValue; prf?: readonly string[] } = {};
-    if (options.nbf !== undefined) {
-      // NaN and Infinity would go out as null, which mints no not-before at all.
-      if (!Number.isSafeInteger(options.nbf)) throw new TypeError("@macula-io/ts: a UCAN's nbf is whole Unix seconds");
-      o.nbf = options.nbf;
-    }
-    if (options.nnc !== undefined) o.nnc = options.nnc;
-    if (options.fct !== undefined) o.fct = options.fct;
-    if (options.prf !== undefined && options.prf.length > 0) o.prf = options.prf;
-    return native.keyUcan(this.live(), id32(audience, "audience"), JSON.stringify(caps), expS,
-      Object.keys(o).length === 0 ? "" : JSON.stringify(o));
+    return native.keyUcan(this.live(), id32(audience, "audience"), JSON.stringify(caps), expS, ucanOptionsJson(options));
   }
 
   /** The exact bytes an ownership proof v2 signs for identity (a node_id), at

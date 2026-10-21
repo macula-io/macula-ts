@@ -103,7 +103,6 @@ interface Native {
 /** The addon for this platform, or an error that says what failed to load. */
 function load(): Native {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     return require("node-gyp-build")(repoRoot) as Native;
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
@@ -118,7 +117,6 @@ function windowsHint(): string {
   if (process.platform !== "win32") return "";
   let dir: string;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     dir = dirname(require("node-gyp-build").path(repoRoot) as string);
   } catch {
     return " No prebuild for this platform was found.";

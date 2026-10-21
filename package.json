@@ -45,6 +45,7 @@
     "build:addon:dev": "npm run build:go && node-gyp rebuild",
     "build:prebuilds": "npm run build:go && prebuildify --napi --strip && npm pkg delete scripts.install",
     "build:ts": "rm -rf dist && tsc",
+    "lint": "eslint src examples",
     "build": "npm run build:addon:dev && npm run build:ts",
     "test": "npm run build:go && vitest run",
     "test:live": "MACULA_TS_LIVE=1 vitest run src/fleet.live.test.ts",
@@ -56,9 +57,13 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@typescript-eslint/eslint-plugin": "^8.72.0",
+    "@typescript-eslint/parser": "^8.72.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "eslint": "^10.13.0",
     "node-gyp": "^13.0.2",
     "prebuildify": "^6.0.1",
-    "typescript": "^7.0.2",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
     "vitest": "^5.0.0"
   },
   "engines": {

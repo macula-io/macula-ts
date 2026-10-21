@@ -105,6 +105,25 @@ export class Served {
         await native.servedStop(this.handle);
     }
 }
+/** Each realm's key as carried, by realm id, in the shape the native layer takes. */
+function realmTrustJson(trust) {
+    const out = {};
+    for (const t of trust ?? []) {
+        out[hex(id32(t.realm, "a realm id"))] = typeof t.key === "string" ? t.key : hex(t.key);
+    }
+    return out;
+}
+/** The pool's connect options as the JSON the native layer takes. */
+function poolOptionsJson(options) {
+    return JSON.stringify({
+        realm_trust: realmTrustJson(options.realmTrust),
+        replication_factor: options.replicationFactor ?? 0,
+        max_direct_links: options.maxDirectLinks ?? 0,
+        respawn_delay_ms: options.respawnDelayMs ?? 0,
+        timeout_ms: options.timeoutMs ?? 0,
+        kem_advertise: options.kemAdvertise ?? 0,
+    });
+}
 export class Pool {
     handle;
     closed = false;
@@ -114,19 +133,7 @@ export class Pool {
     /** Links the key's node to every seed, and resolves once one link is up. */
     static async connect(key, seeds, options = {}) {
         const seedJson = seeds.map((s) => ({ host: s.host, port: s.port, node_id: hex(id32(s.nodeId, "a seed's nodeId")) }));
-        const realmTrust = {};
-        for (const t of options.realmTrust ?? []) {
-            realmTrust[hex(id32(t.realm, "a realm id"))] = typeof t.key === "string" ? t.key : hex(t.key);
-        }
-        const opts = {
-            realm_trust: realmTrust,
-            replication_factor: options.replicationFactor ?? 0,
-            max_direct_links: options.maxDirectLinks ?? 0,
-            respawn_delay_ms: options.respawnDelayMs ?? 0,
-            timeout_ms: options.timeoutMs ?? 0,
-            kem_advertise: options.kemAdvertise ?? 0,
-        };
-        return new Pool(await native.poolConnect(key.live(), JSON.stringify(seedJson), JSON.stringify(opts)));
+        return new Pool(await native.poolConnect(key.live(), JSON.stringify(seedJson), poolOptionsJson(options)));
     }
     /** The node_id the pool links as. */
     nodeId() {

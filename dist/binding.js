@@ -21,7 +21,6 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 /** The addon for this platform, or an error that says what failed to load. */
 function load() {
     try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
         return require("node-gyp-build")(repoRoot);
     }
     catch (e) {
@@ -37,7 +36,6 @@ function windowsHint() {
         return "";
     let dir;
     try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
         dir = dirname(require("node-gyp-build").path(repoRoot));
     }
     catch {

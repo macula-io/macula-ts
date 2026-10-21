@@ -161,22 +161,27 @@ export class RefusedError extends MaculaError {
         this.name = "RefusedError";
     }
 }
-/** The native layer's error, whose message is the ABI's error JSON, as the
- * class its kind names. */
-export function nativeError(e) {
-    const text = e instanceof Error ? e.message : String(e);
-    let error;
+/** A string field or null, for the error classes that carry it as such. */
+function optionalString(v) {
+    return typeof v === "string" ? v : null;
+}
+/** The ABI's error JSON, when the text is one; undefined otherwise. */
+function errorPayload(text) {
+    let parsed;
     try {
-        error = JSON.parse(text);
+        parsed = JSON.parse(text);
     }
     catch {
-        return e instanceof Error ? e : new Error(text);
+        return undefined;
     }
-    if (typeof error !== "object" || error === null || typeof error.kind !== "string") {
-        return e instanceof Error ? e : new Error(text);
+    if (typeof parsed !== "object" || parsed === null || typeof parsed.kind !== "string") {
+        return undefined;
     }
-    const message = typeof error.message === "string" ? error.message : error.kind;
-    switch (error.kind) {
+    return parsed;
+}
+/** Provider and station refusals. */
+function transportError(kind, error, message) {
+    switch (kind) {
         case "provider_error":
             return new ProviderError(String(error.code ?? ""), typeof error.detail === "string" ? error.detail : "");
         case "relay_error":
@@ -185,17 +190,46 @@ export function nativeError(e) {
             return new NotSharedError();
         case "unavailable":
             return new ContentUnavailableError(Array.isArray(error.failures) ? error.failures.map(String).join("; ") : message);
+        default:
+            return undefined;
+    }
+}
+function confidentialityError(error, message) {
+    return new ConfidentialityError(String(error.reason ?? ""), typeof error.named === "string" ? error.named : null, typeof error.found === "string" ? error.found : null, message);
+}
+function groupError(error, message) {
+    return new GroupError(String(error.reason ?? ""), typeof error.prefix === "string" ? error.prefix : null, message);
+}
+/** Verification, confidentiality and group refusals. */
+function securityError(kind, error, message) {
+    switch (kind) {
         case "unverified":
             return new UnverifiedError(String(error.reason ?? ""));
         case "confidentiality":
-            return new ConfidentialityError(String(error.reason ?? ""), typeof error.named === "string" ? error.named : null, typeof error.found === "string" ? error.found : null, message);
+            return confidentialityError(error, message);
         case "group":
-            return new GroupError(String(error.reason ?? ""), typeof error.prefix === "string" ? error.prefix : null, message);
-        case "refused":
-            return new RefusedError(typeof error.reason === "string" ? error.reason : null, typeof error.registration === "string" ? error.registration : null, typeof error.station === "string" ? error.station : null, message);
+            return groupError(error, message);
         default:
-            return new MaculaError(error.kind, message);
+            return undefined;
     }
+}
+/** The station's own refusal, with its registration and station when it named them. */
+function refusedError(error, message) {
+    return new RefusedError(optionalString(error.reason), optionalString(error.registration), optionalString(error.station), message);
+}
+/** The native layer's error, whose message is the ABI's error JSON, as the
+ * class its kind names. */
+export function nativeError(e) {
+    const text = e instanceof Error ? e.message : String(e);
+    const error = errorPayload(text);
+    if (error === undefined)
+        return e instanceof Error ? e : new Error(text);
+    const kind = error.kind;
+    const message = typeof error.message === "string" ? error.message : kind;
+    const known = transportError(kind, error, message) ?? securityError(kind, error, message);
+    if (known !== undefined)
+        return known;
+    return kind === "refused" ? refusedError(error, message) : new MaculaError(kind, message);
 }
 /** How long a call waits, in milliseconds, when not told: macula's 5 s. */
 export const DEFAULT_CALL_TIMEOUT_MS = 5_000;

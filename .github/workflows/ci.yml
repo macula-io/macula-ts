@@ -11,6 +11,21 @@ permissions:
   contents: read
 
 jobs:
+  # The structural floor for the TypeScript sources
+  # (macula-codebase-checks#9): deep nesting and tangled functions fail the
+  # build. The thresholds are declared in eslint.config.mjs, with no baseline
+  # and no inline disables. --ignore-scripts: lint needs no native addon.
+  lint:
+    name: structural floor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+
   test:
     # Builds and tests on linux-x64; prebuilds (below) builds every platform.
     runs-on: ubuntu-latest
