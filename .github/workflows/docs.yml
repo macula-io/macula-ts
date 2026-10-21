@@ -20,3 +20,9 @@ jobs:
     permissions:
       contents: read
     uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-ts.yml@4c0e8c4d0578d1ffad7d953e4eed94d2d2391ad5
+    with:
+      # The Node this package supports and every other job of this repository
+      # uses. The check reads the typings the package's own tree produces, so it
+      # runs on the same Node the package is built and tested on, not the
+      # workflow's default.
+      node-version: '24.20.0'
