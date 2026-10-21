@@ -19,4 +19,4 @@ jobs:
     name: TypeScript blocks in the docs
     permissions:
       contents: read
-    uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-ts.yml@b4cdb8d811dd0ebc409b0e5446ea133cbade936b
+    uses: macula-io/macula-ci-images/.github/workflows/doc-snippets-ts.yml@4c0e8c4d0578d1ffad7d953e4eed94d2d2391ad5
