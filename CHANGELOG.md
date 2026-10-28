@@ -25,13 +25,15 @@ package's own code is 0.31.0's.
 
 ### What this release does not change
 
-- Sealing is the default where the provider names a key, and only there. With `confidentiality:
-  "preferred"` (the default) a call or stream is sealed whenever the advertisement carries a KEM
-  key, and a provider that names none is still called clear; `"required"` never calls such a
-  provider. Refusing a clear call unless the caller opts out is not in this release.
-- On the serving side, a streaming procedure served with no policy is still advertised open:
-  `serveStream` takes the policy in an optional options object, and omitting it serves any caller
-  (macula-ts#27).
+- Sealing is the default where the provider names a key, and only there. A provider names a KEM key
+  only when it opts in with `kemAdvertise: 1`, which is off by default, so two pools on default
+  options talk in the clear. With `confidentiality: "preferred"` (the default) a call or stream is
+  sealed whenever the advertisement carries a key, and a provider that names none is still called
+  clear; `"required"` never calls such a provider. Refusing a clear call unless the caller opts out
+  is not in this release.
+- On the serving side, a procedure served with no policy is advertised open, unary and streaming
+  alike: `serve` and `serveStream` both take the policy in an optional options object, and omitting
+  it serves any caller (macula-ts#27 for streams, macula-ts#30 for unary).
 
 
 ## [0.31.0] - 2026-10-19
