@@ -4,15 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- CI type-checks every TypeScript and JavaScript block in the README and guides
-  against the package (`docs.yml`, macula-codebase-checks#8), on every change
-  including doc-only ones, and a release waits on it.
-- The live run moves to `macula-io/macula-live-tests`, a private repository whose
-  job builds this package from the ref it names and runs `src/fleet.live.test.ts`
-  on a runner with IPv6. `.github/workflows/live.yml` is removed from here: the
-  fleet's stations publish AAAA records only, and a live job cannot run on a
-  repository where a runner with a route to them is not available (macula-ts#20).
-  Running `npm run test:live` by hand is unchanged.
+## [0.32.0] - 2026-10-29
+
+The native library is built from macula-go v0.29.0, the release that carries the A0 contract; the
+package's own code is 0.31.0's.
+
+### Changed
+
+- **A call a keyed provider refuses `sealed_required` is resealed and answered**, instead of failing
+  on a stale keyless candidate: the caller seals again to the key in the refusal's signed tbs, which
+  is the key the provider holds now (macula-go v0.29.0, macula-ts#24).
+- CI type-checks every TypeScript and JavaScript block in the README and guides against the package
+  (`docs.yml`, macula-codebase-checks#8), on every change including doc-only ones, and a release
+  waits on it.
+- The live run moved to `macula-io/macula-live-tests`, a private repository whose job builds this
+  package from the ref it names and runs `src/fleet.live.test.ts` on a runner with IPv6.
+  `.github/workflows/live.yml` is removed from here: the fleet's stations publish AAAA records only,
+  and a live job cannot run on a repository where a runner with a route to them is not available
+  (macula-ts#20). Running `npm run test:live` by hand is unchanged.
+
+### What this release does not change
+
+- Sealing is the default where the provider names a key, and only there. With `confidentiality:
+  "preferred"` (the default) a call or stream is sealed whenever the advertisement carries a KEM
+  key, and a provider that names none is still called clear; `"required"` never calls such a
+  provider. Refusing a clear call unless the caller opts out is not in this release.
+- On the serving side, a streaming procedure served with no policy is still advertised open:
+  `serveStream` takes the policy in an optional options object, and omitting it serves any caller
+  (macula-ts#27).
+
 
 ## [0.31.0] - 2026-10-19
 
