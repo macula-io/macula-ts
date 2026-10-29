@@ -4,10 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [0.32.0] - 2026-10-29
+## [0.32.1] - 2026-10-29
 
 The native library is built from macula-go v0.29.0, the release that carries the A0 contract; the
 package's own code is 0.31.0's.
+
+0.32.0 exists only as a git tag and has no package: npm refused the publish with a 409 from its
+transparency log (an equivalent entry already existed), so nothing was ever served for it and this
+release is its content, unchanged, under a version npm will take.
 
 ### Changed
 
