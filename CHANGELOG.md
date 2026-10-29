@@ -27,7 +27,7 @@ package's own code is 0.31.0's.
 
 - Sealing is the default where the provider names a key, and only there. A provider names a KEM key
   only when it opts in with `kemAdvertise: 1`, which is off by default, so two pools on default
-  options talk in the clear. With `confidentiality: "preferred"` (the default) a call or stream is
+  options talk in the clear. With `confidential: "preferred"` (the default) a call or stream is
   sealed whenever the advertisement carries a key, and a provider that names none is still called
   clear; `"required"` never calls such a provider. Refusing a clear call unless the caller opts out
   is not in this release.
