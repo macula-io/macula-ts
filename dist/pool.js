@@ -7,6 +7,7 @@
 // pinned.
 import { native } from "./binding.js";
 import { Stream } from "./stream.js";
+import { itemOf } from "./notice.js";
 import { DEFAULT_CONTENT_TIMEOUT_MS, mcid50 } from "./content.js";
 import { DEFAULT_CALL_TIMEOUT_MS, MaculaError, bytesOut, hex, sealReport, id32, } from "./wire.js";
 /** A group as options_json carries it. */
@@ -193,36 +194,28 @@ export class Pool {
     }
     /** Subscribes to topic under group, joining it first: each sealed event
      * arrives opened (`sealed` 1, `sealKeyId`), or once with `unopened` and a
-     * null payload. Under a `required` group a clear event is not delivered. */
+     * null payload. Under a `required` group a clear event is not delivered.
+     * `onNotice` as subscribe's. */
     async subscribeGroup(realm, topic, group, onEvent, options = {}) {
         let settle = () => { };
         const closed = new Promise((resolve) => (settle = resolve));
         bytesOut(null, options.bytes);
-        const handle = await native.poolSubscribeGroup(this.live(), id32(realm, "realm"), topic, groupOptionsJson(group), options.timeoutMs ?? DEFAULT_GROUP_TIMEOUT_MS, (d) => {
-            if (d.kind === "closed") {
-                settle(d.json === "" ? null : d.json);
-                return;
-            }
-            onEvent(eventOf(JSON.parse(d.json), options.bytes));
-        });
+        const handle = await native.poolSubscribeGroup(this.live(), id32(realm, "realm"), topic, groupOptionsJson(group), options.timeoutMs ?? DEFAULT_GROUP_TIMEOUT_MS, (d) => hear(d, onEvent, options, settle));
         return new Subscription(handle, closed);
     }
     /** Subscribes to topic in realm: onEvent hears each verified event once,
-     * however many links deliver it. `closed` resolves when the subscription
-     * ends, with why or null. A station that refuses the subscription, or none
-     * answering within 30 seconds, rejects it with a RefusedError naming the
-     * reason and the station. */
+     * however many links deliver it. `onNotice` hears a notice that events may
+     * have been missed — a link that carried the subscription ended, or a new
+     * one carries it again and what fell between may be gone — instead of an
+     * event; left out, notices are not reported. `closed` resolves when the
+     * subscription ends, with why or null. A station that refuses the
+     * subscription, or none answering within 30 seconds, rejects it with a
+     * RefusedError naming the reason and the station. */
     async subscribe(realm, topic, onEvent, options = {}) {
         let settle = () => { };
         const closed = new Promise((resolve) => (settle = resolve));
         bytesOut(null, options.bytes);
-        const handle = await native.poolSubscribe(this.live(), id32(realm, "realm"), topic, (d) => {
-            if (d.kind === "closed") {
-                settle(d.json === "" ? null : d.json);
-                return;
-            }
-            onEvent(eventOf(JSON.parse(d.json), options.bytes));
-        });
+        const handle = await native.poolSubscribe(this.live(), id32(realm, "realm"), topic, (d) => hear(d, onEvent, options, settle));
         return new Subscription(handle, closed);
     }
     /** Serves procedure in realm: handler answers each call, and its thrown
@@ -384,6 +377,20 @@ function toRecord(r, bytes) {
 }
 function toRecords(out, bytes) {
     return { records: (out.records ?? []).map((r) => toRecord(r, bytes)), dropped: out.dropped ?? 0 };
+}
+/** One item a subscription handed over: an event to onEvent, a notice that
+ * events may have been missed to onNotice. A notice is never handed on as an
+ * event, whatever its fields say (macula-go v0.30.0). */
+function hear(d, onEvent, options, settle) {
+    if (d.kind === "closed") {
+        settle(d.json === "" ? null : d.json);
+        return;
+    }
+    const item = itemOf(d.json);
+    if ("notice" in item)
+        options.onNotice?.(item.notice);
+    else
+        onEvent(eventOf(item.event, options.bytes));
 }
 /** An event as the ABI carries it. */
 function eventOf(e, bytes) {

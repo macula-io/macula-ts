@@ -9,6 +9,7 @@ import { native, type Delivery, type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
 import type { ServePolicy } from "./ucan.js";
+import { itemOf, type InboxEvent, type Notice } from "./notice.js";
 import { DEFAULT_CONTENT_TIMEOUT_MS, mcid50, type ContentOptions, type Mcid } from "./content.js";
 import {
   DEFAULT_CALL_TIMEOUT_MS,
@@ -324,41 +325,33 @@ export class Pool {
 
   /** Subscribes to topic under group, joining it first: each sealed event
    * arrives opened (`sealed` 1, `sealKeyId`), or once with `unopened` and a
-   * null payload. Under a `required` group a clear event is not delivered. */
+   * null payload. Under a `required` group a clear event is not delivered.
+   * `onNotice` as subscribe's. */
   async subscribeGroup(realm: Id, topic: string, group: Group, onEvent: (event: Event) => void,
-    options: { timeoutMs?: number; bytes?: BytesOutput } = {}): Promise<Subscription> {
+    options: { timeoutMs?: number; onNotice?: (notice: Notice) => void; bytes?: BytesOutput } = {}): Promise<Subscription> {
     let settle: (why: string | null) => void = () => {};
     const closed = new Promise<string | null>((resolve) => (settle = resolve));
     bytesOut(null, options.bytes);
     const handle = await native.poolSubscribeGroup(this.live(), id32(realm, "realm"), topic, groupOptionsJson(group),
-      options.timeoutMs ?? DEFAULT_GROUP_TIMEOUT_MS, (d: Delivery) => {
-        if (d.kind === "closed") {
-          settle(d.json === "" ? null : d.json);
-          return;
-        }
-        onEvent(eventOf(JSON.parse(d.json), options.bytes));
-      });
+      options.timeoutMs ?? DEFAULT_GROUP_TIMEOUT_MS, (d: Delivery) => hear(d, onEvent, options, settle));
     return new Subscription(handle, closed);
   }
 
   /** Subscribes to topic in realm: onEvent hears each verified event once,
-   * however many links deliver it. `closed` resolves when the subscription
-   * ends, with why or null. A station that refuses the subscription, or none
-   * answering within 30 seconds, rejects it with a RefusedError naming the
-   * reason and the station. */
+   * however many links deliver it. `onNotice` hears a notice that events may
+   * have been missed — a link that carried the subscription ended, or a new
+   * one carries it again and what fell between may be gone — instead of an
+   * event; left out, notices are not reported. `closed` resolves when the
+   * subscription ends, with why or null. A station that refuses the
+   * subscription, or none answering within 30 seconds, rejects it with a
+   * RefusedError naming the reason and the station. */
   async subscribe(realm: Id, topic: string, onEvent: (event: Event) => void,
-    options: { bytes?: BytesOutput } = {}): Promise<Subscription> {
+    options: { onNotice?: (notice: Notice) => void; bytes?: BytesOutput } = {}): Promise<Subscription> {
     let settle: (why: string | null) => void = () => {};
     const closed = new Promise<string | null>((resolve) => (settle = resolve));
     bytesOut(null, options.bytes);
     const handle = await native.poolSubscribe(this.live(), id32(realm, "realm"), topic,
-      (d: Delivery) => {
-        if (d.kind === "closed") {
-          settle(d.json === "" ? null : d.json);
-          return;
-        }
-        onEvent(eventOf(JSON.parse(d.json), options.bytes));
-      });
+      (d: Delivery) => hear(d, onEvent, options, settle));
     return new Subscription(handle, closed);
   }
 
@@ -546,11 +539,22 @@ function toRecords(out: any, bytes: BytesOutput | undefined): { records: DhtReco
   return { records: (out.records ?? []).map((r: any) => toRecord(r, bytes)), dropped: out.dropped ?? 0 };
 }
 
+/** One item a subscription handed over: an event to onEvent, a notice that
+ * events may have been missed to onNotice. A notice is never handed on as an
+ * event, whatever its fields say (macula-go v0.30.0). */
+function hear(d: Delivery, onEvent: (event: Event) => void, options: { onNotice?: (notice: Notice) => void; bytes?: BytesOutput },
+  settle: (why: string | null) => void): void {
+  if (d.kind === "closed") {
+    settle(d.json === "" ? null : d.json);
+    return;
+  }
+  const item = itemOf(d.json);
+  if ("notice" in item) options.onNotice?.(item.notice);
+  else onEvent(eventOf(item.event, options.bytes));
+}
+
 /** An event as the ABI carries it. */
-function eventOf(e: {
-  publisher: string; realm: string; topic: string; seq: number; published_at: number; payload: JsonValue;
-  delivered_via: string; sealed?: 1; seal_key_id?: string; unopened?: string;
-}, bytes?: BytesOutput): Event {
+function eventOf(e: InboxEvent, bytes?: BytesOutput): Event {
   const event: Event = { publisher: e.publisher, realm: e.realm, topic: e.topic, seq: e.seq, publishedAt: e.published_at,
     payload: bytesOut(e.payload, bytes), deliveredVia: e.delivered_via };
   if (e.sealed !== 1) return event;

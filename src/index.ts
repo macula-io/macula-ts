@@ -33,6 +33,7 @@ export {
 export { Stream, StreamMode, type StreamEvent, type StreamRequest } from "./stream.js";
 export { verifySignedObject, type VerifiedObject } from "./signed_object.js";
 export { Ucan, type Capability, type ServePolicy } from "./ucan.js";
+export { type Notice } from "./notice.js";
 export {
   ProviderError,
   RelayError,

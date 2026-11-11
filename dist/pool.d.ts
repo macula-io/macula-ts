@@ -2,6 +2,7 @@ import { type Handle } from "./binding.js";
 import { NodeKey } from "./key.js";
 import { Stream, StreamMode, type StreamRequest } from "./stream.js";
 import type { ServePolicy } from "./ucan.js";
+import { type Notice } from "./notice.js";
 import { type ContentOptions, type Mcid } from "./content.js";
 import { type Confidential, type SealReport, type ServedConfidential, type BytesOutput, type Id, type JsonValue } from "./wire.js";
 /** A station to link to, pinned by the node_id it must prove. */
@@ -192,17 +193,23 @@ export declare class Pool {
     }): Promise<void>;
     /** Subscribes to topic under group, joining it first: each sealed event
      * arrives opened (`sealed` 1, `sealKeyId`), or once with `unopened` and a
-     * null payload. Under a `required` group a clear event is not delivered. */
+     * null payload. Under a `required` group a clear event is not delivered.
+     * `onNotice` as subscribe's. */
     subscribeGroup(realm: Id, topic: string, group: Group, onEvent: (event: Event) => void, options?: {
         timeoutMs?: number;
+        onNotice?: (notice: Notice) => void;
         bytes?: BytesOutput;
     }): Promise<Subscription>;
     /** Subscribes to topic in realm: onEvent hears each verified event once,
-     * however many links deliver it. `closed` resolves when the subscription
-     * ends, with why or null. A station that refuses the subscription, or none
-     * answering within 30 seconds, rejects it with a RefusedError naming the
-     * reason and the station. */
+     * however many links deliver it. `onNotice` hears a notice that events may
+     * have been missed — a link that carried the subscription ended, or a new
+     * one carries it again and what fell between may be gone — instead of an
+     * event; left out, notices are not reported. `closed` resolves when the
+     * subscription ends, with why or null. A station that refuses the
+     * subscription, or none answering within 30 seconds, rejects it with a
+     * RefusedError naming the reason and the station. */
     subscribe(realm: Id, topic: string, onEvent: (event: Event) => void, options?: {
+        onNotice?: (notice: Notice) => void;
         bytes?: BytesOutput;
     }): Promise<Subscription>;
     /** Serves procedure in realm: handler answers each call, and its thrown
