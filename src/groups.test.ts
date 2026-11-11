@@ -5,7 +5,7 @@
 // subscription gets it unopened, and refusals come back as GroupError.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startStations, type TestStations } from "../test/station.js";
-import { GroupError, NodeKey, Pool, type Event, type Seed } from "./index.js";
+import { GroupError, NodeKey, Pool, Ucan, type Event, type Seed } from "./index.js";
 
 const STARTING_STATIONS_MS = 60_000;
 const DIALS = { timeout: 60_000 };
@@ -36,7 +36,7 @@ describe("a sealed group", DIALS, () => {
       publish_until: now - 1_000 + 15 * 60_000, accept_until: now - 1_000 + 15 * 60_000 + 65 * 60_000 };
     const served = await distributor.serve(env.realmId, `${env.org}/group_keys_v1`,
       (r) => ({ prefix: (r.payload as { prefix: string }).prefix, policy: "required", epochs: [epoch] }),
-      { confidential: "required" });
+      { policy: Ucan.open(), confidential: "required" });
     const group = { prefix: `${env.realmName}/${env.org}/chat` };
     const topic = `${group.prefix}/said_v1`;
     const publisher = await node();

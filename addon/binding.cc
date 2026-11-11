@@ -1,5 +1,5 @@
 // N-API glue for macula-ts over macula-go's shared C ABI (cabi/macula.h, ABI
-// 1). libmacula.a, built from macula-go's cabi/ at the release in
+// 2). libmacula.a, built from macula-go's cabi/ at the release in
 // native/MACULA_GO (go build -buildmode=c-archive), is linked statically into
 // this addon, so the published .node file is self-contained.
 //
@@ -35,7 +35,7 @@ extern "C" {
 #include "macula.h"
 }
 
-static_assert(MACULA_ABI_VERSION == 1, "this addon is written against macula C ABI 1");
+static_assert(MACULA_ABI_VERSION == 2, "this addon is written against macula C ABI 2");
 
 namespace {
 
@@ -912,9 +912,9 @@ Napi::Value PoolGetContent(const Napi::CallbackInfo& info) {
 // --- serving ------------------------------------------------------------
 
 // poolServe(pool, realm, procedure, optionsJson, callback) -> Promise<handle>;
-// optionsJson {"confidential"} as macula_pool_serve_opts takes it; the
-// callback gets {kind: "request", handle, json} per CALL, handle the pending
-// call.
+// optionsJson {"policy" (required), "confidential"} as macula_pool_serve_opts
+// takes it; the callback gets {kind: "request", handle, json} per CALL,
+// handle the pending call.
 Napi::Value PoolServe(const Napi::CallbackInfo& info) {
   bool ok = false;
   macula_handle h = ToHandle(info.Env(), info[0], &ok);

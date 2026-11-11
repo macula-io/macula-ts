@@ -6,7 +6,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStations, type TestStations } from "../test/station.js";
-import { ContentUnavailableError, NodeKey, NotSharedError, Pool, ProviderError, RecordType, StreamMode, type Seed } from "./index.js";
+import { ContentUnavailableError, NodeKey, NotSharedError, Pool, ProviderError, RecordType, StreamMode, Ucan, type Seed } from "./index.js";
 
 // Starting the stations, and every test here (each dials them), takes seconds
 // on a CPU-capped runner (macula-ts#16): explicit timeouts, generous enough for
@@ -66,7 +66,7 @@ describe("calls", DIALS, () => {
     const served = await provider.serve(env.realmId, procedure, (r) => {
       if (r.payload === "fail") throw new Error("refused by the handler");
       return { echo: r.payload, caller: r.caller };
-    });
+    }, { policy: Ucan.open() });
     const caller = await node(1);
     const result = (await caller.call(env.realmId, procedure, "hello")) as { echo: string; caller: string };
     expect(result.echo).toBe("hello");
@@ -93,7 +93,7 @@ describe("calls", DIALS, () => {
       return "done";
     };
     const providers = [await node(0, true), await node(1, true)];
-    const served = await Promise.all(providers.map((p) => p.serve(env.realmId, procedure, handler)));
+    const served = await Promise.all(providers.map((p) => p.serve(env.realmId, procedure, handler, { policy: Ucan.open() })));
     const caller = await node(0);
     await eventually("both providers found", async () =>
       (await caller.providers(env.realmId, procedure)).length === 2);
@@ -118,7 +118,7 @@ describe("a node's own namespace", DIALS, () => {
     const provider = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
     const ring = provider.ownProcedure("ring");
     expect(ring).toBe(`~${provider.nodeId()}/ring`);
-    const served = await provider.serve(env.realmId, ring, (r) => ({ rung_by: r.caller }));
+    const served = await provider.serve(env.realmId, ring, (r) => ({ rung_by: r.caller }), { policy: Ucan.open() });
     const caller = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(1)]);
     expect(await caller.call(env.realmId, ring, {})).toEqual({ rung_by: caller.nodeId() });
     expect((await caller.providers(env.realmId, ring)).map((p) => p.node)).toEqual([provider.nodeId()]);
@@ -129,7 +129,7 @@ describe("a node's own namespace", DIALS, () => {
 
   it("refuses to serve in another node's namespace", async () => {
     const node = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
-    await expect(node.serve(env.realmId, `~${"01".repeat(32)}/ring`, () => 1)).rejects.toThrow(/own namespace/);
+    await expect(node.serve(env.realmId, `~${"01".repeat(32)}/ring`, () => 1, { policy: Ucan.open() })).rejects.toThrow(/own namespace/);
     await node.close();
   });
 });
@@ -140,7 +140,7 @@ describe("streams", DIALS, () => {
     const procedure = `${env.org}/watch`;
     const served = await provider.serveStream(env.realmId, procedure, StreamMode.Server, async (s) => {
       for (const chunk of ["one", "two", "three"]) await s.send(new TextEncoder().encode(chunk));
-    });
+    }, { policy: Ucan.open() });
     const caller = await node(1);
     const stream = await caller.openStream(env.realmId, procedure, StreamMode.Server);
     const got: string[] = [];
@@ -166,7 +166,7 @@ describe("streams", DIALS, () => {
         if (event.kind === "end") break;
       }
       await s.reply(total);
-    });
+    }, { policy: Ucan.open() });
     const caller = await node(0);
     const stream = await caller.openStream(env.realmId, procedure, StreamMode.Client);
     for (const chunk of ["ab", "cde", "f"]) await stream.send(new TextEncoder().encode(chunk));
@@ -245,7 +245,7 @@ describe("the shared C ABI underneath", DIALS, () => {
   it("gives bytes as 0x hex by default, and tagged when asked", async () => {
     const provider = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(0)]);
     const back = provider.ownProcedure("bytes_back");
-    const served = await provider.serve(env.realmId, back, (r) => r.payload, { bytes: "tagged" });
+    const served = await provider.serve(env.realmId, back, (r) => r.payload, { policy: Ucan.open(), bytes: "tagged" });
     const caller = await Pool.connect(await NodeKey.generate("pq_pure"), [seed(1)]);
     const sent = { b: { $bytes: "AQID" } };
     expect(await caller.call(env.realmId, back, sent)).toEqual({ b: "0x010203" });

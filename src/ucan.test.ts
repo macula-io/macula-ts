@@ -4,7 +4,7 @@
 // the handler runs.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startStations, type TestStations } from "../test/station.js";
-import { NodeKey, Pool, ProviderError, StreamError, StreamMode, Ucan, type Capability, type Seed } from "./index.js";
+import { MaculaError, NodeKey, Pool, ProviderError, StreamError, StreamMode, Ucan, type Capability, type Seed } from "./index.js";
 
 // Starting the stations, and every test here (each dials them), takes seconds
 // on a CPU-capped runner (macula-ts#16): explicit timeouts, generous enough for
@@ -148,6 +148,41 @@ describe("a gated procedure", DIALS, () => {
   });
 });
 
+describe("what a serve must say", DIALS, () => {
+  // macula-ts#30: a serve that names no policy used to advertise a procedure
+  // open, and no line said so. macula-go v0.31.0's ABI 2 refuses it, before a
+  // realm key is resolved or a link dialed (macula-go#57, #60).
+  it("refuses a serve that names no policy, before anything reaches the station", async () => {
+    const provider = await node(0, true);
+    const procedure = `${env.org}/unnamed`;
+    // The options are required, and so is the policy in them: this call is the
+    // one the type system exists to stop, and the ABI stops it too.
+    // @ts-expect-error a serve names its policy.
+    const refused = await provider.serve(env.realmId, procedure, () => 1, {}).catch((e) => e);
+    expect(refused).toBeInstanceOf(MaculaError);
+    expect(refused.kind).toBe("invalid_argument");
+    expect(refused.message).toMatch(/policy is required/);
+    // The refusal names both fixes: the open policy, and the ABI door that takes a gated one.
+    expect(refused.message).toContain('{"policy":{"kind":"open"}}');
+    expect(refused.message).toMatch(/macula_pool_serve/);
+    const caller = await node(1);
+    await expect(caller.providers(env.realmId, procedure)).rejects.toThrow(/no trusted provider/);
+    await provider.close();
+    await caller.close();
+  });
+
+  it("serves anyone when — and only when — the serve says Ucan.open()", async () => {
+    const provider = await node(0, true);
+    const procedure = `${env.org}/answered_by_anyone`;
+    const served = await provider.serve(env.realmId, procedure, (r) => ({ served: r.caller }), { policy: Ucan.open() });
+    const caller = await node(1);
+    expect(await caller.call(env.realmId, procedure, {})).toEqual({ served: caller.nodeId() });
+    await served.stop();
+    await provider.close();
+    await caller.close();
+  });
+});
+
 describe("what never reaches the wire", DIALS, () => {
   it("refuses an empty UCAN, and proofs with no UCAN to prove", async () => {
     const caller = await node(0);
@@ -161,6 +196,7 @@ describe("what never reaches the wire", DIALS, () => {
     const id = "ab".repeat(32);
     expect(Ucan.realmMemberRequired(id.toUpperCase(), "call")).toEqual({ kind: "realm_member_required", key_id: id, can: "call" });
     expect(Ucan.ucanRequired(Uint8Array.from(Buffer.from(id, "hex")))).toEqual({ kind: "ucan_required", issuer: id });
+    expect(Ucan.open()).toEqual({ kind: "open" });
     expect(() => Ucan.realmMemberRequired("abcd", "call")).toThrow();
     expect(() => Ucan.realmMemberRequired(id, "")).toThrow(/names a can/);
   });

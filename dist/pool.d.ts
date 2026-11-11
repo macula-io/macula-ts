@@ -217,24 +217,25 @@ export declare class Pool {
      * this release cannot call it after that; without kemAdvertise it names
      * no key and serves in the clear. "required" refuses every clear call
      * (sealed_required) and needs kemAdvertise; "off" serves in the clear.
-     * `policy` (Ucan.ucanRequired, Ucan.realmMemberRequired) serves only
-     * callers whose UCAN chain it accepts; a refused call never reaches the
-     * handler. A station that refuses the advertisement, or none answering
+     * `policy` names who may call, and every serve names one: `Ucan.open()` for
+     * anyone, `Ucan.ucanRequired(issuer)` or `Ucan.realmMemberRequired(keyId,
+     * can)` for callers whose UCAN chain it accepts, and a refused call never
+     * reaches the handler. A station that refuses the advertisement, or none answering
      * within 30 seconds, rejects it with a RefusedError naming the reason
      * (`too_many_providers`, `not_authorized`, `unacknowledged`, ...) and the
      * station. */
-    serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>, options?: {
+    serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>, options: {
+        policy: ServePolicy;
         confidential?: ServedConfidential;
-        policy?: ServePolicy;
         bytes?: BytesOutput;
     }): Promise<Served>;
     /** Serves procedure in realm as a stream of mode: handler drives each
      * session. The stream is closed when the handler returns without ending
      * it, aborted with code error when it throws, and released either way.
-     * `confidential` and `policy` as serve's. */
-    serveStream(realm: Id, procedure: string, mode: StreamMode, handler: (stream: Stream, request: StreamRequest) => void | Promise<void>, options?: {
+     * `confidential` and `policy` as serve's: the policy is required. */
+    serveStream(realm: Id, procedure: string, mode: StreamMode, handler: (stream: Stream, request: StreamRequest) => void | Promise<void>, options: {
+        policy: ServePolicy;
         confidential?: ServedConfidential;
-        policy?: ServePolicy;
         bytes?: BytesOutput;
     }): Promise<Served>;
     /** Opens a stream of mode on procedure in realm at a provider, by direct

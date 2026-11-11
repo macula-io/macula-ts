@@ -44,13 +44,13 @@ function callOptionsJson(provider, confidential, presented, report) {
         o.report = report;
     return JSON.stringify(o);
 }
-/** A served procedure's options, as macula_pool_serve_opts takes them. */
-function serveOptionsJson(confidential, policy) {
-    const o = {};
+/** A served procedure's options, as macula_pool_serve_opts takes them: the
+ * policy is required there since macula-go v0.31.0 (ABI 2), so a serve that
+ * means to reach anyone says {"kind":"open"} rather than saying nothing. */
+function serveOptionsJson(policy, confidential) {
+    const o = { policy };
     if (confidential !== undefined)
         o.confidential = confidential;
-    if (policy !== undefined)
-        o.policy = policy;
     return JSON.stringify(o);
 }
 /** macula 12's record types. */
@@ -237,15 +237,16 @@ export class Pool {
      * this release cannot call it after that; without kemAdvertise it names
      * no key and serves in the clear. "required" refuses every clear call
      * (sealed_required) and needs kemAdvertise; "off" serves in the clear.
-     * `policy` (Ucan.ucanRequired, Ucan.realmMemberRequired) serves only
-     * callers whose UCAN chain it accepts; a refused call never reaches the
-     * handler. A station that refuses the advertisement, or none answering
+     * `policy` names who may call, and every serve names one: `Ucan.open()` for
+     * anyone, `Ucan.ucanRequired(issuer)` or `Ucan.realmMemberRequired(keyId,
+     * can)` for callers whose UCAN chain it accepts, and a refused call never
+     * reaches the handler. A station that refuses the advertisement, or none answering
      * within 30 seconds, rejects it with a RefusedError naming the reason
      * (`too_many_providers`, `not_authorized`, `unacknowledged`, ...) and the
      * station. */
-    async serve(realm, procedure, handler, options = {}) {
+    async serve(realm, procedure, handler, options) {
         bytesOut(null, options.bytes);
-        const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, serveOptionsJson(options.confidential, options.policy), (d) => {
+        const handle = await native.poolServe(this.live(), id32(realm, "realm"), procedure, serveOptionsJson(options.policy, options.confidential), (d) => {
             if (d.kind !== "request")
                 return;
             void answer(d, handler, options.bytes);
@@ -255,10 +256,10 @@ export class Pool {
     /** Serves procedure in realm as a stream of mode: handler drives each
      * session. The stream is closed when the handler returns without ending
      * it, aborted with code error when it throws, and released either way.
-     * `confidential` and `policy` as serve's. */
-    async serveStream(realm, procedure, mode, handler, options = {}) {
+     * `confidential` and `policy` as serve's: the policy is required. */
+    async serveStream(realm, procedure, mode, handler, options) {
         bytesOut(null, options.bytes);
-        const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode, serveOptionsJson(options.confidential, options.policy), (d) => {
+        const handle = await native.poolServeStream(this.live(), id32(realm, "realm"), procedure, mode, serveOptionsJson(options.policy, options.confidential), (d) => {
             if (d.kind !== "request")
                 return;
             void runStream(new Stream(d.handle, options.bytes), handler);

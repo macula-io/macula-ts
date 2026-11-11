@@ -4,6 +4,12 @@
 import { native } from "./binding.js";
 import { hex, id32 } from "./wire.js";
 export const Ucan = {
+    /** Any caller: the statement that a procedure serves whoever reaches it.
+     * A serve names Ucan.open(), Ucan.ucanRequired() or
+     * Ucan.realmMemberRequired() — libmacula refuses a serve that names none. */
+    open() {
+        return { kind: "open" };
+    },
     /** The proof id a child token's `prf` names token by: lowercase hex SHA-384
      * of its text. */
     proofId(token) {

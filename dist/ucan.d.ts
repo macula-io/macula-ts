@@ -5,12 +5,15 @@ export interface Capability {
     readonly with: string;
     readonly can: string;
 }
-/** Who may call or open a served procedure: a UCAN chain rooted at a node's
- * identity key (ucanRequired), or at a realm key granting a can
- * (realmMemberRequired). A refused call is a ProviderError of code
- * "unauthorized" ("malformed_frame" for a proof no token names), a refused
- * open a StreamError of the same code. */
+/** Who may call or open a served procedure: anyone at all (open, which a serve
+ * must say in so many words), a UCAN chain rooted at a node's identity key
+ * (ucanRequired), or at a realm key granting a can (realmMemberRequired). A
+ * refused call is a ProviderError of code "unauthorized" ("malformed_frame"
+ * for a proof no token names), a refused open a StreamError of the same code;
+ * an open procedure ignores any token. */
 export type ServePolicy = {
+    readonly kind: "open";
+} | {
     readonly kind: "ucan_required";
     readonly issuer: string;
 } | {
@@ -19,6 +22,10 @@ export type ServePolicy = {
     readonly can: string;
 };
 export declare const Ucan: {
+    /** Any caller: the statement that a procedure serves whoever reaches it.
+     * A serve names Ucan.open(), Ucan.ucanRequired() or
+     * Ucan.realmMemberRequired() — libmacula refuses a serve that names none. */
+    open(): ServePolicy;
     /** The proof id a child token's `prf` names token by: lowercase hex SHA-384
      * of its text. */
     proofId(token: string): string;

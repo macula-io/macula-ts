@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startStations, type TestStations } from "../test/station.js";
 import { native } from "./binding.js";
-import { ConfidentialityError, MaculaError, NodeKey, Pool, StreamMode, type Seed } from "./index.js";
+import { ConfidentialityError, MaculaError, NodeKey, Pool, StreamMode, Ucan, type Seed } from "./index.js";
 
 // Starting the stations, and every test here (each dials them), takes seconds
 // on a CPU-capped runner (macula-ts#16): explicit timeouts, generous enough for
@@ -30,7 +30,7 @@ describe("a sealed call", DIALS, () => {
     const provider = await node(0, 1);
     const procedure = provider.ownProcedure("sealed_echo");
     const served = await provider.serve(env.realmId, procedure, (r) => ({ echoed: r.payload, sealed: r.sealed }),
-      { confidential: "required" });
+      { policy: Ucan.open(), confidential: "required" });
     const caller = await node(1);
     expect(await caller.call(env.realmId, procedure, { word: "hush" }, { confidential: "required" }))
       .toEqual({ echoed: { word: "hush" }, sealed: 1 });
@@ -45,7 +45,7 @@ describe("a sealed call", DIALS, () => {
     const provider = await node(0, 1);
     const other = await node(0, 1);
     const procedure = provider.ownProcedure("pinned");
-    const served = await provider.serve(env.realmId, procedure, () => provider.nodeId());
+    const served = await provider.serve(env.realmId, procedure, () => provider.nodeId(), { policy: Ucan.open() });
     const caller = await node(1);
     expect(await caller.call(env.realmId, procedure, {}, { provider: provider.nodeId(), confidential: "required" }))
       .toBe(provider.nodeId());
@@ -61,7 +61,7 @@ describe("a sealed call", DIALS, () => {
   it("goes in the clear by default to a provider that names no key, and required refuses it", async () => {
     const provider = await node(0);
     const procedure = provider.ownProcedure("clear_echo");
-    const served = await provider.serve(env.realmId, procedure, (r) => ({ sealed: r.sealed }));
+    const served = await provider.serve(env.realmId, procedure, (r) => ({ sealed: r.sealed }), { policy: Ucan.open() });
     const caller = await node(1);
     expect(await caller.call(env.realmId, procedure, {})).toEqual({ sealed: 0 });
     const refused = await caller.call(env.realmId, procedure, {}, { confidential: "required" }).catch((e) => e);
@@ -85,7 +85,8 @@ describe("a sealed call", DIALS, () => {
 describe("serving confidentially", DIALS, () => {
   it("required needs kemAdvertise, and says so", async () => {
     const provider = await node(0);
-    const refused = await provider.serve(env.realmId, provider.ownProcedure("x"), () => 1, { confidential: "required" })
+    const refused = await provider.serve(env.realmId, provider.ownProcedure("x"), () => 1,
+      { policy: Ucan.open(), confidential: "required" })
       .catch((e) => e);
     expect(refused).toBeInstanceOf(ConfidentialityError);
     expect(refused.reason).toBe("kem_advertise_disabled");
@@ -95,7 +96,8 @@ describe("serving confidentially", DIALS, () => {
   it("off serves in the clear even from a node that names its key", async () => {
     const provider = await node(0, 1);
     const procedure = provider.ownProcedure("off_echo");
-    const served = await provider.serve(env.realmId, procedure, (r) => ({ sealed: r.sealed }), { confidential: "off" });
+    const served = await provider.serve(env.realmId, procedure, (r) => ({ sealed: r.sealed }),
+      { policy: Ucan.open(), confidential: "off" });
     const caller = await node(1);
     expect(await caller.call(env.realmId, procedure, {})).toEqual({ sealed: 0 });
     await served.stop();
@@ -115,7 +117,7 @@ describe("a sealed stream", DIALS, () => {
         if (event.kind === "end") break;
       }
       await s.reply({ total, sealed: request.sealed });
-    }, { confidential: "required" });
+    }, { policy: Ucan.open(), confidential: "required" });
     const caller = await node(1);
     const stream = await caller.openStream(env.realmId, procedure, StreamMode.Client, {}, { confidential: "required" });
     for (const chunk of ["ab", "cde"]) await stream.send(new TextEncoder().encode(chunk));
@@ -130,7 +132,8 @@ describe("a sealed stream", DIALS, () => {
   it("required will not open one to a provider that names no key", async () => {
     const provider = await node(0);
     const procedure = provider.ownProcedure("clear_watch");
-    const served = await provider.serveStream(env.realmId, procedure, StreamMode.Server, async () => {});
+    const served = await provider.serveStream(env.realmId, procedure, StreamMode.Server, async () => {},
+      { policy: Ucan.open() });
     const caller = await node(1);
     const refused = await caller.openStream(env.realmId, procedure, StreamMode.Server, {}, { confidential: "required" })
       .catch((e) => e);
@@ -162,7 +165,7 @@ describe("the seal report", DIALS, () => {
   it("says a call to a provider that names its key went sealed, to that provider and key", async () => {
     const provider = await node(0, 1);
     const procedure = provider.ownProcedure("reported");
-    const served = await provider.serve(env.realmId, procedure, (r) => ({ echoed: r.payload }));
+    const served = await provider.serve(env.realmId, procedure, (r) => ({ echoed: r.payload }), { policy: Ucan.open() });
     const caller = await node(1);
     const { result, report } = await caller.callReport(env.realmId, procedure, { word: "hush" });
     expect(result).toEqual({ echoed: { word: "hush" } });
@@ -177,7 +180,7 @@ describe("the seal report", DIALS, () => {
   it("says a call to a provider that names no key went in the clear, with no key id", async () => {
     const provider = await node(0);
     const procedure = provider.ownProcedure("reported_clear");
-    const served = await provider.serve(env.realmId, procedure, () => 1);
+    const served = await provider.serve(env.realmId, procedure, () => 1, { policy: Ucan.open() });
     const caller = await node(1);
     const { result, report } = await caller.callReport(env.realmId, procedure, {});
     expect(result).toBe(1);
@@ -199,7 +202,7 @@ describe("the seal report", DIALS, () => {
       providerSide = (() => { try { return s.report(); } catch (e) { return e; } })();
       await released;
       await s.send(new TextEncoder().encode("one"));
-    }, { confidential: "required" });
+    }, { policy: Ucan.open(), confidential: "required" });
     const caller = await node(1);
     const stream = await caller.openStream(env.realmId, procedure, StreamMode.Server, {}, { confidential: "required" });
     const early = (() => { try { return stream.report(); } catch (e) { return e; } })();
@@ -225,7 +228,7 @@ describe("the seal report", DIALS, () => {
     const provider = await node(0, 1);
     const procedure = provider.ownProcedure("ended_unsettled");
     const served = await provider.serveStream(env.realmId, procedure, StreamMode.Server, async () => {},
-      { confidential: "required" });
+      { policy: Ucan.open(), confidential: "required" });
     const caller = await node(1);
     const stream = await caller.openStream(env.realmId, procedure, StreamMode.Server, {}, { confidential: "required" });
     expect((await stream.recv({ timeoutMs: 5_000 }))?.kind).toBe("end");
