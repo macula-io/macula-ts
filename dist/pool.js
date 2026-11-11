@@ -379,9 +379,13 @@ function toRecords(out, bytes) {
     return { records: (out.records ?? []).map((r) => toRecord(r, bytes)), dropped: out.dropped ?? 0 };
 }
 /** One item a subscription handed over: an event to onEvent, a notice that
- * events may have been missed to onNotice. A notice is never handed on as an
- * event, whatever its fields say (macula-go v0.30.0). */
-function hear(d, onEvent, options, settle) {
+ * events may have been missed to onNotice, the closing notice to the
+ * subscription's own promise. A notice is never handed on as an event,
+ * whatever its fields say (macula-go v0.30.0).
+ *
+ * Exported for its own test, which needs no station: the items are the ABI's.
+ * @internal */
+export function hear(d, onEvent, options, settle) {
     if (d.kind === "closed") {
         settle(d.json === "" ? null : d.json);
         return;
