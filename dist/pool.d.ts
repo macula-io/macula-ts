@@ -227,10 +227,10 @@ export declare class Pool {
      * `policy` names who may call, and every serve names one: `Ucan.open()` for
      * anyone, `Ucan.ucanRequired(issuer)` or `Ucan.realmMemberRequired(keyId,
      * can)` for callers whose UCAN chain it accepts, and a refused call never
-     * reaches the handler. A station that refuses the advertisement, or none answering
-     * within 30 seconds, rejects it with a RefusedError naming the reason
-     * (`too_many_providers`, `not_authorized`, `unacknowledged`, ...) and the
-     * station. */
+     * reaches the handler. A station that refuses the advertisement, or none
+     * answering within 30 seconds, rejects it with a RefusedError naming the
+     * reason (`too_many_providers`, `not_authorized`, `unacknowledged`, ...) and
+     * the station. */
     serve(realm: Id, procedure: string, handler: (request: Request) => JsonValue | Promise<JsonValue>, options: {
         policy: ServePolicy;
         confidential?: ServedConfidential;
