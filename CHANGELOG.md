@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-11-11
+
+The native library is built from macula-go v0.31.0, whose C ABI is 2: a served
+procedure names who may call it, and a binding written for another ABI is
+refused at load. A serve that named no policy used to advertise a procedure to
+any caller, unary and streaming alike, with no line in the app saying so
+(macula-ts#30, #27); every serve says now, and `Ucan.open()` is how it says
+"anyone". A subscription also reports events that may have been missed, which
+the library this package now binds delivers and the one before it could not.
+
+### Security (breaking)
+
+- **A serve names who may call it, and a serve that names no policy is refused
+  (macula-ts#30, #27).** `serve` and `serveStream` take a required `policy`:
+  `Ucan.open()` serves any caller, `Ucan.ucanRequired(issuer)` only callers
+  whose UCAN chain is rooted at that node's identity key, and
+  `Ucan.realmMemberRequired(keyId, can)` only those rooted at the realm key,
+  granting that can. Options that name none are refused `invalid_argument` by
+  libmacula, before a realm key is resolved or a link dialed, and the refusal
+  names both fixes: `{"policy":{"kind":"open"}}`, and the ABI door that takes
+  a gated policy. An `open` serve writes one INFO line naming the procedure,
+  so an operator can see a procedure that opted out of gating; a gated serve
+  writes nothing. Every offer in this package's own tests and examples gains a
+  policy, and two tests pin the behaviour (macula-ts#30): a serve with no
+  policy is refused and reaches no station, and `Ucan.open()` serves a caller
+  end to end.
+- **The addon binds macula-go's C ABI 2, and refuses another at load
+  (macula-ts#30).** `macula_pool_serve` and `macula_pool_serve_stream` are
+  gone from the ABI — they served open without saying so — and the options
+  doors this package already used require the policy. The addon is written
+  against `MACULA_ABI_VERSION` 2, and a library built for ABI 1 is refused at
+  load, by name, before anything serves.
+
+### Added
+
+- **A subscription reports events that may have been missed.** macula-go
+  v0.30.0's pool delivers a notice when the link carrying a subscription ends
+  (`interrupted`, from when that link last heard from its station) and when a
+  new link carries it again (`gap`, with the span whose events may be gone);
+  macula-go writes every inbox item with its `kind`. `subscribe` and
+  `subscribeGroup` take an `onNotice` beside their `onEvent`, and the `Notice`
+  type is exported. Left out, notices are not reported. Nothing that is not an
+  event is handed to `onEvent`, which before this release would have made an
+  event of a gap with every field undefined.
+
+### Changed
+
+- **The native library is built from macula-go v0.31.0** (`native/MACULA_GO`,
+  `99580b4d`), taken through `go mod download` and the Go checksum database,
+  whose origin commit must be the one recorded beside the tag. That release
+  asks for Go 1.27.4, which closes GO-2026-6859 and is what this repository's
+  `.tool-versions` now names.
+
 ## [0.32.1] - 2026-10-29
 
 The native library is built from macula-go v0.29.0, the release that carries the A0 contract; the
